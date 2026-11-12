@@ -50,6 +50,67 @@ use crate::common::{
 };
 
 #[test]
+fn requests_do_not_starve_retained_input() {
+    use crate::common::manifold::client::kind::competing::Competing;
+    use std::time::Duration;
+
+    TcpScript::with(
+        |stream| {
+            stream.write_all(b"x").expect("retained input");
+            assert_eq!(stream.read(&mut [0]).expect("retirement"), 0);
+        },
+        |server| {
+            let mut finish = Completion::new();
+            let left = Rc::new(Cell::new(0));
+            let at_resume = Rc::new(Cell::new(0));
+            let resumed = Gate::new();
+            let drained = Gate::new();
+            let errors = Rc::new(Trace::new());
+            let planned = Connector::<1>::new(
+                server.addr(),
+                Duration::from_secs(1),
+                Duration::from_secs(1),
+            )
+            .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Value::new(Competing {
+                left: left.clone(),
+                at_resume: at_resume.clone(),
+                resumed: resumed.clone(),
+                drained: drained.clone(),
+                errors: errors.clone(),
+            }))
+            .expect("client layout");
+            let mut reports = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
+            planned
+                .with_run(
+                    &mut finish,
+                    |case| {
+                        assert_eq!(
+                            case.try_wait(&resumed, 1).expect("input resume"),
+                            fibers::Wait::Reached
+                        );
+                        assert_eq!(
+                            case.try_wait(&drained, 1).expect("remaining requests"),
+                            fibers::Wait::Reached
+                        );
+                    },
+                    recovery::Policy::new(|event| reports.push(event), recover),
+                    native,
+                )
+                .expect("client retirement");
+            assert_reclaimed(&reports);
+            assert!(errors.values().expect("errors").is_empty());
+            assert!(
+                at_resume.get() != 0,
+                "input resumes before the producer is exhausted"
+            );
+            assert_eq!(left.get(), 0);
+            server.finish().expect("peer retirement");
+        },
+    )
+    .expect("native peer");
+}
+
+#[test]
 fn drain_resumes_next_turn() {
     let mut finish = Completion::new();
 

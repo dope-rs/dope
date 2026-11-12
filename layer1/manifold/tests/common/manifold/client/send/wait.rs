@@ -42,6 +42,8 @@ pub struct Wait {
     pub(crate) index: Rc<Cell<Option<usize>>>,
     pub(crate) reasons: Rc<Trace<(usize, Reason), 2>>,
     pub(crate) connected: Gate,
+    pub(crate) order: Rc<Trace<usize, 2>>,
+    pub(crate) negotiated: Gate,
     pub(crate) seen: Gate,
     pub(crate) closed: Gate,
 }
@@ -101,6 +103,20 @@ impl<'d> Plain<'d> for Wait {
     }
 }
 impl<'d> Output<'d> for Wait {
+    fn flush<'w, W: wire::Spec + 'w>(
+        wire: &W::Connection<'w, KeyTag<0>>,
+    ) -> Option<impl for<'a, 'c, 't, 'e> Call<output::Args<'a, 'c, 't, 'e, 'd, Self, KeyTag<0>>>>
+    {
+        if W::negotiated_protocol(wire).is_pending() {
+            return None;
+        }
+        Some(
+            |(owner, _, _): output::Args<'_, '_, '_, '_, 'd, Self, KeyTag<0>>| {
+                owner.negotiated.hit();
+            },
+        )
+    }
+
     fn cancel() -> impl for<'a, 't> Call<(
         &'a mut Self,
         Self::Send,
@@ -167,6 +183,7 @@ impl<'d> session::Connected<'d> for Wait {
         let index = context.connection().index().into_usize();
         let slot = &self.pending[index];
         slot.set(Some(load(b"x")));
+        self.order.record(index);
         self.connected.hit();
     }
 }

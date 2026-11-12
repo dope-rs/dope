@@ -72,6 +72,7 @@ where
     ) {
         let mut engine = self.as_mut();
         let target = engine.as_ref().backoff();
+        let owner = driver.driver_ref();
         let result = {
             let this = engine.as_mut().project();
             this.links.settle(
@@ -89,7 +90,17 @@ where
                         closing::Callback::new(&slot.state.closing),
                         closing::Callback::Ready
                     ) {
-                        slot.cancel(deadline::Kind::Send);
+                        if slot.state.work.has_requests()
+                            && !matches!(outcome, SendOutcome::Terminal { .. })
+                        {
+                            slot.arm_after(
+                                deadline::Fixed::Send,
+                                owner.clock().now(),
+                                <E::Timing as crate::timing::Policy>::SEND_DEADLINE,
+                            );
+                        } else {
+                            slot.cancel(deadline::Kind::Send);
+                        }
                     }
                 },
                 target,

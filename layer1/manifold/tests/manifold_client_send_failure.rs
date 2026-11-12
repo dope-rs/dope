@@ -1,10 +1,7 @@
 use crate::common::manifold::client::error;
 pub mod common;
 
-use crate::common::manifold::{
-    client::{assert_reclaimed},
-    native,
-};
+use crate::common::manifold::{client::assert_reclaimed, native};
 
 use std::{cell::Cell, convert::Infallible, mem, net, rc::Rc, time::Duration};
 
@@ -243,6 +240,8 @@ fn starts_on_capacity_wait() {
     let index = Rc::new(Cell::new(None));
     let reasons = Rc::new(Trace::new());
     let connected = Gate::new();
+    let order = Rc::new(Trace::new());
+    let negotiated = Gate::new();
     let seen = Gate::new();
     let closed = Gate::new();
 
@@ -257,6 +256,8 @@ fn starts_on_capacity_wait() {
             index: index.clone(),
             reasons: reasons.clone(),
             connected: connected.clone(),
+            order: order.clone(),
+            negotiated: negotiated.clone(),
             seen: seen.clone(),
             closed: closed.clone(),
         }))
@@ -267,13 +268,14 @@ fn starts_on_capacity_wait() {
         .with_run(
             &mut finish,
             |case| {
-                for (index, slot) in held.iter_mut().enumerate() {
+                for index in 0..held.len() {
                     assert_eq!(
                         case.try_wait(&connected, index as u32 + 1)
                             .expect("connect"),
                         fibers::Wait::Reached
                     );
-                    *slot = Some(
+                    let id = order.values().expect("connected order")[index];
+                    held[id] = Some(
                         listener
                             .accept_for(GUARD)
                             .expect("accept")
@@ -282,6 +284,16 @@ fn starts_on_capacity_wait() {
                 }
                 assert_eq!(
                     case.try_wait(&seen, 1).expect("progress wait"),
+                    fibers::Wait::Reached
+                );
+                let waiting = index.get().expect("waiting connection");
+                held[waiting]
+                    .as_ref()
+                    .expect("waiting peer")
+                    .write_all(b"negotiate")
+                    .expect("negotiate while credit is denied");
+                assert_eq!(
+                    case.try_wait(&negotiated, 1).expect("negotiation progress"),
                     fibers::Wait::Reached
                 );
                 assert_eq!(

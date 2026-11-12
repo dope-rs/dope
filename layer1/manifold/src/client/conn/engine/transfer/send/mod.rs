@@ -237,7 +237,8 @@ where
                     ..
                 } = sender.view();
                 let status = slot.send_status();
-                let live = !egress.is_empty()
+                let live = slot.state.work.has_requests()
+                    || !egress.is_empty()
                     || status.is_inflight()
                     || status.retention() == outcome::Retention::Held
                     || status.is_closing();
@@ -352,8 +353,21 @@ where
             conn::CloseStatus::Open | conn::CloseStatus::Closing(..) => {}
         }
         let wake = slot.io().wake_target();
+        if <A::Continuation as liveness::Inspection<'d, ID, A>>::RESUMABLE
+            && slot.state.work.resume_first()
+            && !slot.is_discarded()
+        {
+            slot.state.work.drain();
+            handle.wake();
+            return Deadline::None;
+        }
         let Some(conn) = slot.state.conn_mut() else {
             return Deadline::None;
+        };
+        let before = if <A::Continuation as liveness::Inspection<'d, ID, A>>::RESUMABLE {
+            turn.reborrow().app().remaining()
+        } else {
+            0
         };
         let mut reqs = request::Turn::new(
             conn::Id::from_key(key),
@@ -365,6 +379,12 @@ where
         );
         app.drain(&mut reqs);
         let (done, close) = reqs.finish();
+        let served = <A::Continuation as liveness::Inspection<'d, ID, A>>::RESUMABLE
+            && turn.reborrow().app().remaining() < before;
+        slot.state.work.drained(
+            done.contains(request::Flag::Waiting) || done.contains(request::Flag::Exhausted),
+            served,
+        );
         let queued = !queue.is_empty();
         let flow = match close {
             None => flow::Flow::Continue(()),
@@ -393,8 +413,7 @@ where
             return Deadline::Cancel;
         }
         let status = slot.send_status();
-        if done.contains(request::Flag::Waiting)
-            || done.contains(request::Flag::Exhausted)
+        if slot.state.work.has_requests()
             || queued
             || status.is_inflight()
             || status.retention() == outcome::Retention::Held

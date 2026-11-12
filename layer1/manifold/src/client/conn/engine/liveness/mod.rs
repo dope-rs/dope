@@ -54,6 +54,8 @@ pub(in crate::client) trait Inspection<'d, ID: Identity, A>
 where
     A: app::Application<'d, ID>,
 {
+    const RESUMABLE: bool = false;
+
     fn wake(_: &mut A, _: &mut A::Conn) -> bool {
         false
     }
@@ -84,6 +86,8 @@ impl<'d, ID: Identity, A> Inspection<'d, ID, A> for resume::Retained
 where
     A: app::Resumable<'d, ID, Continuation = Self> + app::Application<'d, ID>,
 {
+    const RESUMABLE: bool = true;
+
     fn wake(app: &mut A, conn: &mut A::Conn) -> bool {
         matches!(app::Resumable::wake(app, conn), app::Wake::Ready)
     }

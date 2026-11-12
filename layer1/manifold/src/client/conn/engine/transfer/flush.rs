@@ -77,7 +77,7 @@ where
                 this.links
                     .pool_mut()
                     .get_mut(key)
-                    .is_some_and(|slot| slot.state.work.take_drain())
+                    .is_some_and(|slot| slot.state.work.has_drain())
             };
             if drain && <A::Requests as send::Policy<'w, 'd, ID, A>>::ENABLED {
                 let target = engine.as_ref().backoff();
@@ -286,7 +286,10 @@ where
                     driver,
                 )
             }) {
-                flow::Active::Ready(callback) => callback,
+                flow::Active::Ready(callback) => {
+                    slot.state.work.resumed();
+                    callback
+                }
                 flow::Active::Opening => {
                     slot.state.work.request_next();
                     return Some((control, reason));

@@ -1,4 +1,5 @@
 pub mod bounded;
+pub mod competing;
 pub mod redial;
 pub mod yielding;
 
