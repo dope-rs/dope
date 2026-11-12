@@ -54,25 +54,6 @@ impl<B: crate::stream::Recv, D: buffer::raw::Segment> ops::DerefMut for Update<'
     }
 }
 
-fn try_close(
-    id: Id,
-    local: &stream::Local,
-    closed: &closed::Set,
-) -> Option<(streams::Relative, Direction, Option<u64>)> {
-    let role = local.next[0].initiator();
-    let stream = streams::Relative::new(id, role);
-    let dir = stream.direction();
-    let done = stream.is_local()
-        && (matches!(dir, Direction::Uni)
-            || closed::Half::try_receive(id, role).is_some_and(|half| closed.contains(half)));
-    let count = if done {
-        Some(dir.bind(&local.active).checked_sub(1)?)
-    } else {
-        None
-    };
-    Some((stream, dir, count))
-}
-
 impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, D> {
     pub(in crate::conn) fn release_conn(&mut self, count: u64, ctrl: &mut control::Pending) {
         let Some(max) = self.receive.connection_window.release(count) else {
@@ -231,20 +212,11 @@ impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, 
         ctrl: &mut control::Pending,
         evidence: &mut E,
     ) {
-        let done = {
-            let stream::State {
-                resident: table,
-                transmit: tx,
-                local_initiated: local,
-                closed,
-                ..
-            } = self.state;
-            Ack::acknowledge(tx, handle, table, ctrl, events, evidence, |id| {
-                try_close(id, local, closed)
-            })
-        };
-        if let Some((id, close)) = done {
-            self.retire_send(events, id, close, ctrl);
+        let stream::State {
+            resident, transmit, ..
+        } = self.state;
+        if let Some(id) = Ack::acknowledge(transmit, handle, resident, ctrl, events, evidence) {
+            self.retire_send(events, id, ctrl);
         }
     }
 
@@ -254,33 +226,29 @@ impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, 
         id: Id,
         ctrl: &mut control::Pending,
     ) -> Result<(), conn::Error> {
-        let done = {
-            let stream::State {
-                resident: table,
-                transmit: tx,
-                local_initiated: local,
-                closed,
-                ..
-            } = self.state;
-            Ack::retire_reset(tx, id, table, ctrl, |id| try_close(id, local, closed))?
-        };
-        if let Some((id, close)) = done {
-            self.retire_send(events, id, close, ctrl);
+        let stream::State {
+            resident, transmit, ..
+        } = self.state;
+        if let Some(id) = Ack::retire_reset(transmit, id, resident, ctrl)? {
+            self.retire_send(events, id, ctrl);
         }
         Ok(())
     }
 
-    fn retire_send(
-        &mut self,
-        events: &mut queue::Pending,
-        id: Id,
-        close: (streams::Relative, Direction, Option<u64>),
-        ctrl: &mut control::Pending,
-    ) {
-        let (stream, dir, count) = close;
+    fn retire_send(&mut self, events: &mut queue::Pending, id: Id, ctrl: &mut control::Pending) {
+        let local = self.local();
+        let stream = streams::Relative::new(id, local);
+        let dir = stream.direction();
         if stream.is_local() {
-            if let Some(count) = count {
-                *dir.bind_mut(&mut self.local_initiated.active) = count;
+            if matches!(dir, Direction::Uni)
+                || closed::Half::try_receive(id, local)
+                    .is_some_and(|half| self.closed.contains(half))
+            {
+                let active = dir.bind_mut(&mut self.local_initiated.active);
+                let Some(count) = active.checked_sub(1) else {
+                    return;
+                };
+                *active = count;
                 return;
             }
         } else if matches!(dir, Direction::Bidi) {

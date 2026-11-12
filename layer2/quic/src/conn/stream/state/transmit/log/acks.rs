@@ -50,15 +50,14 @@ impl Acknowledged {
 }
 
 impl<D: buffer::raw::Segment> Ack<'_, '_, D> {
-    pub(in crate::conn::stream) fn acknowledge<E: release::Sink, C>(
+    pub(in crate::conn::stream) fn acknowledge<E: release::Sink>(
         state: &mut transmit::State<D>,
         handle: delivery::Handle<delivery::Stream>,
         registry: &mut Table,
         control: &mut control::Pending,
         events: &mut Pending,
         evidence: &mut E,
-        prepare: impl FnOnce(Id) -> Option<C>,
-    ) -> Option<(Id, C)> {
+    ) -> Option<Id> {
         let record = Record::bind(&mut state.deliveries, handle)?.acknowledge()?;
         let Some(sender) = state.map.occupied(record.group.get().owner) else {
             record.cancel();
@@ -66,30 +65,24 @@ impl<D: buffer::raw::Segment> Ack<'_, '_, D> {
         };
         let (id, acked, sender) =
             queue::Occupied::ack::<E>(Ack { record, sender }, events, evidence);
-        let done = match acked {
-            outbound::Acked::Live(()) => None,
-            outbound::Acked::Closed(()) => Some(Retired { sender }),
+        let retired = match acked {
+            outbound::Acked::Live(()) => return None,
+            outbound::Acked::Closed(()) => Retired { sender },
         };
-        let retired = done?;
-        let close = prepare(id)?;
         let (key, _) = registry.find::<true>(id)?;
         let recycle = Recycle::new(control, &mut state.deliveries);
         match Occupied::retire(retired, key, registry, recycle) {
             queue::Removal::Absent => None,
-            queue::Removal::Removed => Some((id, close)),
+            queue::Removal::Removed => Some(id),
         }
     }
 
-    pub(in crate::conn::stream) fn retire_reset<C>(
+    pub(in crate::conn::stream) fn retire_reset(
         state: &mut transmit::State<D>,
         id: Id,
         registry: &mut Table,
         control: &mut control::Pending,
-        prepare: impl FnOnce(Id) -> Option<C>,
-    ) -> Result<Option<(Id, C)>, crate::conn::Error> {
-        let Some(close) = prepare(id) else {
-            return Ok(None);
-        };
+    ) -> Result<Option<Id>, crate::conn::Error> {
         let Some((key, sender)) = state.map.bind(id, registry) else {
             return Ok(None);
         };
@@ -100,7 +93,7 @@ impl<D: buffer::raw::Segment> Ack<'_, '_, D> {
         let recycle = Recycle::new(control, &mut state.deliveries);
         Ok(match Occupied::retire(retired, key, registry, recycle) {
             queue::Removal::Absent => None,
-            queue::Removal::Removed => Some((id, close)),
+            queue::Removal::Removed => Some(id),
         })
     }
 }
