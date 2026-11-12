@@ -231,7 +231,7 @@ impl<'turn, 'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Requests<'_, 'turn,
         }
     }
 
-    pub(in crate::client) fn admit_front(&mut self) -> Option<Work<'_, 'turn, 'e, 'd, B>> {
+    pub fn admit_front(&mut self) -> Option<Work<'_, 'turn, 'e, 'd, B>> {
         self.drain.admit_front()
     }
 }
