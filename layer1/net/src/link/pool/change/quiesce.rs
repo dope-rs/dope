@@ -8,7 +8,7 @@ use o3::base::cell::region;
 
 use crate::{
     link::{
-        egress::reserve::demand,
+        egress::{data, reserve::demand},
         event,
         pool::{
             Key, Released,
@@ -22,7 +22,7 @@ use crate::{
     wire::{self, send::Store as _},
 };
 
-impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
     change::raw::Prepared<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
     T: crate::Transport,

@@ -117,7 +117,9 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>, R>
     }
 }
 
-impl<'p, 's, 'd, ID: Identity, B, R> Commit<memory::DirectSlot<'p, 's, 'd, ID, B>, B, R> {
+impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>, R>
+    Commit<memory::DirectSlot<'p, 's, 'd, ID, B>, B, R>
+{
     pub(in crate::network::listener) fn direct(
         self,
     ) -> (R, write::End, Option<access::Direct<'p, 's, 'd, ID, B>>) {

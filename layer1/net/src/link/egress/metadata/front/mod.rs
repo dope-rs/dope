@@ -7,6 +7,7 @@ use vacant::Vacant;
 
 use crate::link::egress::{
     self, data,
+    data::position,
     load::credit,
     metadata::{self, head, lane, pool::store::index::Index},
     reserve::{demand, exact, guard::Rollback},
@@ -124,8 +125,8 @@ impl<'queue, 'token, 'p, 'd, T, D: demand::Mode> Front<'queue, 'token, 'p, 'd, T
     }
 }
 
-pub(in crate::link::egress) fn take<'p, 'd, T, D: demand::Mode>(
-    queue: metadata::Queue<'_, 'p, 'd, T, credit::Ready<'p, 'd>, D>,
+pub(in crate::link::egress) fn take<'p, 'd, T, D: demand::Mode, P: position::State>(
+    queue: metadata::Queue<'_, 'p, 'd, T, credit::Ready<'p, 'd>, D, P>,
     token: &mut region::Token<region::Identity<'d>>,
 ) -> Option<egress::NonEmpty<T>> {
     let (value, slot, stored) = head::detach(queue, token)?;
@@ -138,8 +139,8 @@ pub(in crate::link::egress) fn take<'p, 'd, T, D: demand::Mode>(
     Some(value)
 }
 
-pub(in crate::link::egress) fn advance<'p, 'd, T, D: demand::Mode>(
-    queue: metadata::Queue<'_, 'p, 'd, T, credit::Ready<'p, 'd>, D>,
+pub(in crate::link::egress) fn advance<'p, 'd, T, D: demand::Mode, P: position::State>(
+    queue: metadata::Queue<'_, 'p, 'd, T, credit::Ready<'p, 'd>, D, P>,
     prefix: lane::Prefix<'p, 'd>,
     token: &mut region::Token<region::Identity<'d>>,
     bytes: transfer::NonZero,

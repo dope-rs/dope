@@ -1,21 +1,20 @@
 use std::cell;
 
 use dope_core::io::transfer;
-use o3::buffer::segments::scatter;
 
 use crate::link::egress::{self, data};
 
 /// The immutable owner and its exact unconsumed suffix from one occupied cell.
-pub(in crate::link::egress) struct View<'a, T> {
+pub(in crate::link::egress) struct View<'a, T, P: data::position::State = ()> {
     pub(super) source: &'a egress::NonEmpty<T>,
     pub(super) remaining: transfer::NonZero,
-    pub(super) position: &'a cell::Cell<scatter::raw::Position>,
+    pub(super) position: &'a cell::Cell<P>,
 }
 
-impl<'a, T> View<'a, T> {
+impl<'a, T, P: data::position::State> View<'a, T, P> {
     pub(in crate::link::egress) fn chunks<'d>(self) -> T::Cursor<'a>
     where
-        T: data::raw::Payload<'d>,
+        T: data::raw::Payload<'d, Position = P>,
     {
         let total = transfer::Len::from_nonzero(self.source.geometry().wire());
         let rest = transfer::Len::from_nonzero(self.remaining);

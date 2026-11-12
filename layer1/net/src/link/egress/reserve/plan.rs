@@ -4,7 +4,7 @@ use dope_core::driver::schedule::ready;
 use o3::{base::cell::region, buffer::resident::bound};
 
 use crate::link::egress::{
-    self,
+    self, data,
     load::credit,
     metadata,
     reserve::{Bounds, Vacant, demand, error},
@@ -12,22 +12,22 @@ use crate::link::egress::{
 
 /// Queue-bound geometry proof reusable across capacity polls.
 #[must_use]
-pub struct Plan<'queue, 'p, 'd, B, D: demand::Mode = demand::Fallible> {
-    queue: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
+pub struct Plan<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode = demand::Fallible> {
+    queue: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
     bounds: Bounds,
 }
 
-impl<'p, B, D: demand::Mode> Clone for Plan<'_, 'p, '_, B, D> {
+impl<'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode> Clone for Plan<'_, 'p, 'd, B, D> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'p, B, D: demand::Mode> Copy for Plan<'_, 'p, '_, B, D> {}
+impl<'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode> Copy for Plan<'_, 'p, 'd, B, D> {}
 
-impl<'queue, 'p, 'd, B, D: demand::Mode> Plan<'queue, 'p, 'd, B, D> {
+impl<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode> Plan<'queue, 'p, 'd, B, D> {
     pub(in crate::link::egress) fn new(
-        queue: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
+        queue: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
         bounds: Bounds,
     ) -> Result<Self, error::Lane> {
         let amount = bounds.amount();
@@ -38,7 +38,7 @@ impl<'queue, 'p, 'd, B, D: demand::Mode> Plan<'queue, 'p, 'd, B, D> {
     }
 
     pub(in crate::link::egress) const fn proven(
-        queue: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
+        queue: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
         bounds: Bounds,
     ) -> Self {
         Self { queue, bounds }
@@ -81,14 +81,23 @@ impl<'queue, 'p, 'd, B, D: demand::Mode> Plan<'queue, 'p, 'd, B, D> {
 
 const _: () = {
     let word = mem::size_of::<usize>();
-    assert!(mem::size_of::<Plan<'static, 'static, 'static, ()>>() == 6 * word);
+    assert!(mem::size_of::<Plan<'static, 'static, 'static, &'static [u8]>>() == 6 * word);
     assert!(
-        mem::size_of::<Plan<'static, 'static, 'static, (), demand::Guaranteed<bound::AtMost<0>, 1>>>(
-        ) == 6 * word
+        mem::size_of::<
+            Plan<'static, 'static, 'static, &'static [u8], demand::Guaranteed<bound::AtMost<0>, 1>>,
+        >() == 6 * word
     );
     assert!(
         mem::size_of::<
-            Option<Plan<'static, 'static, 'static, (), demand::Guaranteed<bound::AtMost<0>, 1>>>,
+            Option<
+                Plan<
+                    'static,
+                    'static,
+                    'static,
+                    &'static [u8],
+                    demand::Guaranteed<bound::AtMost<0>, 1>,
+                >,
+            >,
         >() == 6 * word
     );
 };

@@ -1,7 +1,7 @@
 use o3::base::cell::region;
 
 use crate::link::egress::{
-    NonEmpty,
+    NonEmpty, data,
     load::{Value, credit},
     metadata::pool,
     reserve::{
@@ -13,13 +13,13 @@ use crate::link::egress::{
 };
 
 #[must_use = "reserved slots must be committed or rolled back"]
-pub(super) enum Slots<'queue, 'p, 'd, B, D: demand::Mode> {
+pub(super) enum Slots<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode> {
     Empty,
-    First(pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D>),
-    Second(pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D>),
+    First(pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, B::Position>),
+    Second(pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, B::Position>),
     Pair(
-        pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D>,
-        pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D>,
+        pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, B::Position>,
+        pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, B::Position>,
     ),
 }
 
@@ -67,7 +67,7 @@ fn validate<B>(
     Ok((first, second))
 }
 
-impl<'queue, 'p, 'd, B, D: demand::Mode> Slots<'queue, 'p, 'd, B, D> {
+impl<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode> Slots<'queue, 'p, 'd, B, D> {
     pub(super) fn try_publish(
         self,
         bounds: Bounds,
@@ -204,11 +204,11 @@ impl<'queue, 'p, 'd, B, D: demand::Mode> Slots<'queue, 'p, 'd, B, D> {
     }
 }
 
-fn bind<'queue, 'p, 'd, B, D: demand::Mode>(
-    node: pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D>,
+fn bind<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode>(
+    node: pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, B::Position>,
     load: NonEmpty<B>,
     limit: limit::Limit,
-) -> Result<pool::Bound<'queue, 'p, 'd, B, D>, BindFailure<'queue, 'p, 'd, B, D>> {
+) -> Result<pool::Bound<'queue, 'p, 'd, B, D, B::Position>, BindFailure<'queue, 'p, 'd, B, D>> {
     if let Err(cause) = limit.check(load.geometry().wire()) {
         return Err((node, load, cause));
     }
@@ -216,7 +216,7 @@ fn bind<'queue, 'p, 'd, B, D: demand::Mode>(
         .map_err(|(node, load, cause)| (node, load, limit::Mismatch::Credit(cause)))
 }
 
-impl<'p, 'd, B, D: demand::Mode> Rollback<'d> for Slots<'_, 'p, 'd, B, D> {
+impl<'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode> Rollback<'d> for Slots<'_, 'p, 'd, B, D> {
     fn rollback(self, token: &mut region::Token<region::Identity<'d>>) {
         match self {
             Self::Empty => {}
@@ -232,7 +232,16 @@ impl<'p, 'd, B, D: demand::Mode> Rollback<'d> for Slots<'_, 'p, 'd, B, D> {
 }
 
 type BindFailure<'queue, 'p, 'd, B, D> = (
-    pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D>,
+    pool::Vacant<
+        'queue,
+        'p,
+        'd,
+        B,
+        (),
+        credit::Ready<'p, 'd>,
+        D,
+        <B as data::raw::Payload<'d>>::Position,
+    >,
     NonEmpty<B>,
     limit::Mismatch,
 );

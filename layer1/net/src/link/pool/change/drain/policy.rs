@@ -3,7 +3,7 @@ use o3::base::cell::region;
 
 use crate::{
     link::{
-        egress::reserve::demand,
+        egress::{data, reserve::demand},
         pool::{
             self,
             change::{
@@ -56,6 +56,7 @@ pub trait Policy<W: wire::Spec>: Sized {
         T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
         C: Finalize<R>;
 
@@ -68,6 +69,7 @@ pub trait Policy<W: wire::Spec>: Sized {
         T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
         F: FnMut(B, &mut region::Token<region::Identity<'d, 1>>);
 
@@ -80,6 +82,7 @@ pub trait Policy<W: wire::Spec>: Sized {
         T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
         F: FnMut(pool::Key<'d, ID>, pool::Released<'_, S, B>);
 }
@@ -120,6 +123,7 @@ where
         T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
         C: Finalize<R>,
     {
@@ -237,6 +241,7 @@ where
         T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
         F: FnMut(B, &mut region::Token<region::Identity<'d, 1>>),
     {
@@ -252,6 +257,7 @@ where
         T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
         F: FnMut(pool::Key<'d, ID>, pool::Released<'_, S, B>),
     {

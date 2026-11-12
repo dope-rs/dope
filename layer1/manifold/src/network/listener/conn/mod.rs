@@ -108,14 +108,14 @@ pub struct Ref<
     ID: Identity,
     W: wire::Spec + 'w + 'd,
     C,
-    B = resident::Shared<'d>,
+    B: data::raw::Payload<'d> = resident::Shared<'d>,
 > {
     control: &'a types::Control<'w, 'd, ID, W>,
     state: &'a C,
     retained: marker::PhantomData<&'a state::Control<'p, 's, 'd, ID, B>>,
 }
 
-impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B>
+impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw::Payload<'d>>
     Ref<'a, 'p, 's, 'w, 'd, ID, W, C, B>
 {
     pub(super) fn new(
@@ -155,7 +155,15 @@ impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B>
 }
 
 /// Final owned state after the connection slot and every egress owner retire.
-pub struct Retired<'p, 's, 'd, ID: Identity, W: wire::Spec, C, B = resident::Shared<'d>> {
+pub struct Retired<
+    'p,
+    's,
+    'd,
+    ID: Identity,
+    W: wire::Spec,
+    C,
+    B: data::raw::Payload<'d> = resident::Shared<'d>,
+> {
     id: Id<'d, ID>,
     state: C,
     failure: Option<Failure>,
@@ -224,7 +232,9 @@ impl<
     }
 }
 
-impl<'p, 's, 'd, ID: Identity, W: wire::Spec, C, B> Retired<'p, 's, 'd, ID, W, C, B> {
+impl<'p, 's, 'd, ID: Identity, W: wire::Spec, C, B: data::raw::Payload<'d>>
+    Retired<'p, 's, 'd, ID, W, C, B>
+{
     pub fn map_state<T>(self, select: impl FnOnce(C) -> T) -> Retired<'p, 's, 'd, ID, W, T, B> {
         Retired {
             id: self.id,

@@ -18,24 +18,46 @@ use crate::{
     wire::send,
 };
 
-pub(in crate::link) enum Preparation<'flight, 'queue, 'p, 'd, const IOV: usize, B, D: demand::Mode>
-{
+pub(in crate::link) enum Preparation<
+    'flight,
+    'queue,
+    'p,
+    'd,
+    const IOV: usize,
+    B: data::raw::Payload<'d>,
+    D: demand::Mode,
+> {
     Empty,
     Ready(Plan<'flight, 'queue, 'p, 'd, IOV, B, D>),
 }
 
-pub(in crate::link) enum Reservation<'flight, 'queue, 'p, 'd, const IOV: usize, B, D: demand::Mode>
-{
+pub(in crate::link) enum Reservation<
+    'flight,
+    'queue,
+    'p,
+    'd,
+    const IOV: usize,
+    B: data::raw::Payload<'d>,
+    D: demand::Mode,
+> {
     Ready(Prepared<'flight, 'queue, 'p, 'd, IOV, B, D>),
     Active,
     Unavailable,
 }
 
 #[must_use]
-pub(in crate::link) struct Prepared<'flight, 'queue, 'p, 'd, const IOV: usize, B, D: demand::Mode> {
+pub(in crate::link) struct Prepared<
+    'flight,
+    'queue,
+    'p,
+    'd,
+    const IOV: usize,
+    B: data::raw::Payload<'d>,
+    D: demand::Mode,
+> {
     lease: &'flight mut Option<Lease<'p, 'd, IOV>>,
     reservation: Lease<'p, 'd, IOV>,
-    entries: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
+    entries: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
 }
 
 impl<'flight, 'queue, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
@@ -100,7 +122,7 @@ pub(in crate::link) struct Output<
     'p,
     'd,
     const IOV: usize,
-    B,
+    B: data::raw::Payload<'d>,
     D: demand::Mode = demand::Fallible,
 > {
     queue: egress::Queue<'a, 'p, 'd, IOV, B, D>,
@@ -108,11 +130,13 @@ pub(in crate::link) struct Output<
     flights: &'p recycle::Store<Entry<IOV>>,
 }
 
-impl<'a, 'p, 'd, const IOV: usize, B, D: demand::Mode> Output<'a, 'p, 'd, IOV, B, D> {
+impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
+    Output<'a, 'p, 'd, IOV, B, D>
+{
     pub(in crate::link::egress) fn new(
         (lease, entries): (
             &'a mut Option<Lease<'p, 'd, IOV>>,
-            metadata::Queue<'a, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
+            metadata::Queue<'a, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
         ),
         flights: &'p recycle::Store<Entry<IOV>>,
     ) -> Self {
@@ -131,7 +155,7 @@ impl<'a, 'p, 'd, const IOV: usize, B, D: demand::Mode> Output<'a, 'p, 'd, IOV, B
     }
 }
 
-impl<'a, 'p, 'd, const IOV: usize, B, D: demand::Mode> ops::Deref
+impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode> ops::Deref
     for Output<'a, 'p, 'd, IOV, B, D>
 {
     type Target = egress::Queue<'a, 'p, 'd, IOV, B, D>;
@@ -171,13 +195,22 @@ impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
 }
 
 const _: () = assert!(
-    mem::size_of::<Output<'static, 'static, 'static, 32, ()>>() == 4 * mem::size_of::<usize>()
+    mem::size_of::<Output<'static, 'static, 'static, 32, &'static [u8]>>()
+        == 4 * mem::size_of::<usize>()
 );
 
 /// One retained nonempty source prefix before descriptor reservation.
-pub(in crate::link) struct Plan<'flight, 'queue, 'p, 'd, const IOV: usize, B, D: demand::Mode> {
+pub(in crate::link) struct Plan<
+    'flight,
+    'queue,
+    'p,
+    'd,
+    const IOV: usize,
+    B: data::raw::Payload<'d>,
+    D: demand::Mode,
+> {
     output: &'flight mut Output<'queue, 'p, 'd, IOV, B, D>,
-    source: metadata::Prefix<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
+    source: metadata::Prefix<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
 }
 
 /// Prepared retains this queue's immutable suffixes and exact descriptor sum.
@@ -209,9 +242,9 @@ impl<'a, 'p, 'd, const IOV: usize> Released<'a, 'p, 'd, IOV> {
         })
     }
 
-    fn consume<'queue, B, D: demand::Mode>(
+    fn consume<'queue, B: data::raw::Payload<'d>, D: demand::Mode>(
         self,
-        entries: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
+        entries: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
         token: &mut region::Token<region::Identity<'d>>,
         release: &mut impl FnMut(B),
     ) {

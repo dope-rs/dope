@@ -14,7 +14,7 @@ use egress::reserve;
 use o3::{
     alloc,
     base::{cell::region, num::bounded},
-    buffer::{resident, segments::scatter},
+    buffer::resident,
     depot::{arena::pool::recycle, capacity},
 };
 use reserve::demand;
@@ -29,7 +29,8 @@ pub(in crate::network::listener) use release::Claim;
 
 pub(in crate::network::listener) const WRITE_BUF_CAP: usize = 16 * 1024;
 
-type DirectSource<'p, 's, 'd, ID, B> = release::Source<'p, 's, 'd, Flight<B>, ID>;
+type DirectSource<'p, 's, 'd, ID, B> =
+    release::Source<'p, 's, 'd, Flight<B, <B as data::raw::Payload<'d>>::Position>, ID>;
 type HeaderSource<'p, 's, 'd, ID> = release::Source<'p, 's, 'd, Header, ID>;
 
 /// Byte length proven to fit one listener header owner.
@@ -98,31 +99,36 @@ impl Header {
 
 /// Pinned retention for one active direct send.
 #[pin_project::pin_project(!Unpin)]
-pub(in crate::network::listener) struct Flight<B> {
+pub(in crate::network::listener) struct Flight<B, P: data::position::State> {
     #[pin]
     pub(super) header: Header,
     pub(super) source: Option<B>,
-    pub(super) position: scatter::raw::Position,
+    pub(super) position: P,
     pub(super) iovecs: [msg::Iovec; listener::IOV_CAP],
     pub(super) message: msg::Header,
 }
 
-impl<B> Flight<B> {
+impl<B, P: data::position::State> Flight<B, P> {
     fn init(slot: &mut mem::MaybeUninit<Self>) {
         let slot = slot.as_mut_ptr();
         // SAFETY: disjoint field writes initialize the complete exclusive slot.
         unsafe {
             Header::init(&mut *(&raw mut (*slot).header).cast());
             (&raw mut (*slot).source).write(None);
-            (&raw mut (*slot).position).write(scatter::raw::Position::new());
+            (&raw mut (*slot).position).write(P::default());
             (&raw mut (*slot).iovecs).write([msg::Iovec::empty(); listener::IOV_CAP]);
             (&raw mut (*slot).message).write(msg::Header::new());
         }
     }
 }
 
-pub(in crate::network::listener) struct Arena<'s, 'd, ID: Identity, B = resident::Shared<'d>> {
-    direct: release::Gate<'s, 'd, Flight<B>, ID>,
+pub(in crate::network::listener) struct Arena<
+    's,
+    'd,
+    ID: Identity,
+    B: data::raw::Payload<'d> = resident::Shared<'d>,
+> {
+    direct: release::Gate<'s, 'd, Flight<B, <B as data::raw::Payload<'d>>::Position>, ID>,
     headers: release::Gate<'s, 'd, Header, ID>,
 }
 
@@ -169,7 +175,7 @@ pub(in crate::network::listener) struct Retention<
     's,
     'd,
     ID: Identity,
-    B = resident::Shared<'d>,
+    B: data::raw::Payload<'d> = resident::Shared<'d>,
 > {
     arena: &'p Arena<'s, 'd, ID, B>,
     lane: pool::raw::Physical<'d, ID>,
@@ -256,7 +262,7 @@ pub(in crate::network::listener) type HeaderSlot<'p, 's, 'd, ID> =
     release::Lease<'p, 's, 'd, Header, ID>;
 
 pub(in crate::network::listener) type DirectSlot<'p, 's, 'd, ID, B = resident::Shared<'d>> =
-    release::Lease<'p, 's, 'd, Flight<B>, ID>;
+    release::Lease<'p, 's, 'd, Flight<B, <B as data::raw::Payload<'d>>::Position>, ID>;
 
 pub(in crate::network::listener) type Plan<'a, 'p, 's, 'e, 'd, ID, B> =
     reserve::Plan<'a, 'e, 'd, writer::Payload<'p, 's, 'd, ID, B>, writer::Reserve<'d, B>>;
@@ -306,13 +312,20 @@ impl<'p, 's, 'd, ID: Identity> HeaderSlot<'p, 's, 'd, ID> {
     }
 }
 
-impl<ID: Identity, B> AsMut<[u8; WRITE_BUF_CAP]> for DirectSlot<'_, '_, '_, ID, B> {
+impl<'d, ID: Identity, B: data::raw::Payload<'d>> AsMut<[u8; WRITE_BUF_CAP]>
+    for DirectSlot<'_, '_, 'd, ID, B>
+{
     fn as_mut(&mut self) -> &mut [u8; WRITE_BUF_CAP] {
         self.get_mut().project().header.as_mut_slice()
     }
 }
 
 const _: () = {
+    assert!(
+        mem::size_of::<Flight<resident::Shared<'_>, data::position::Saved>>()
+            == mem::size_of::<Flight<resident::Shared<'_>, ()>>()
+                + mem::size_of::<data::position::Saved>()
+    );
     assert!(mem::size_of::<Len>() == mem::size_of::<transfer::Len>());
     assert!(mem::size_of::<NonZero>() == mem::size_of::<Len>());
     assert!(mem::size_of::<Option<NonZero>>() == mem::size_of::<Len>());

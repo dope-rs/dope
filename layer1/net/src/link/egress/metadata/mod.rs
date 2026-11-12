@@ -14,8 +14,8 @@ use o3::{
 use pool::store;
 
 use crate::link::egress::{
-    self, data,
-    data::compose,
+    self,
+    data::{self, compose, position},
     load::{Value, credit},
     reserve::{demand, error},
 };
@@ -152,24 +152,40 @@ impl<'p, 'd> credit::Access<'p, 'd> for Local {
     }
 }
 
-pub struct Queue<'a, 'p, 'd, T, M = Local, D: demand::Mode = demand::Fallible> {
-    pub(in crate::link::egress) pool: &'a pool::Pool<'p, 'd, T, M, D>,
+pub struct Queue<
+    'a,
+    'p,
+    'd,
+    T,
+    M = Local,
+    D: demand::Mode = demand::Fallible,
+    P: position::State = (),
+> {
+    pub(in crate::link::egress) pool: &'a pool::Pool<'p, 'd, T, M, D, P>,
     pub(in crate::link::egress) lane: Lane,
 }
 
 /// One queue paired with its own retained nonempty lane prefix.
-pub(in crate::link::egress) struct Prefix<'queue, 'p, 'd, T, M, D: demand::Mode> {
-    queue: Queue<'queue, 'p, 'd, T, M, D>,
+pub(in crate::link::egress) struct Prefix<
+    'queue,
+    'p,
+    'd,
+    T,
+    M,
+    D: demand::Mode,
+    P: position::State = (),
+> {
+    queue: Queue<'queue, 'p, 'd, T, M, D, P>,
     prefix: lane::Prefix<'p, 'd>,
 }
 
-impl<'p, T, M, D: demand::Mode> Clone for Queue<'_, 'p, '_, T, M, D> {
+impl<'p, T, M, D: demand::Mode, P: position::State> Clone for Queue<'_, 'p, '_, T, M, D, P> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'p, T, M, D: demand::Mode> Copy for Queue<'_, 'p, '_, T, M, D> {}
+impl<'p, T, M, D: demand::Mode, P: position::State> Copy for Queue<'_, 'p, '_, T, M, D, P> {}
 
 impl<'queue, 'p, 'd, T> Queue<'queue, 'p, 'd, T> {
     /// Borrows the current head without detaching it.
@@ -226,12 +242,12 @@ impl<'queue, 'p, 'd, T> Queue<'queue, 'p, 'd, T> {
     }
 }
 
-impl<'queue, 'p, 'd, T, M, D: demand::Mode> Queue<'queue, 'p, 'd, T, M, D> {
+impl<'queue, 'p, 'd, T, M, D: demand::Mode, P: position::State> Queue<'queue, 'p, 'd, T, M, D, P> {
     pub(super) fn try_acquire(
         &self,
         token: &mut region::Token<region::Identity<'d>>,
         amount: credit::Amount,
-    ) -> Result<credit::Reserve<'queue, 'p, 'd, T, M, D>, egress::Admission>
+    ) -> Result<credit::Reserve<'queue, 'p, 'd, T, M, D, P>, egress::Admission>
     where
         M: credit::Access<'p, 'd>,
     {
@@ -254,7 +270,7 @@ impl<'queue, 'p, 'd, T, M, D: demand::Mode> Queue<'queue, 'p, 'd, T, M, D> {
         credit::Lane::new(*self).account().state()
     }
 
-    pub(in crate::link::egress) fn prefix(self) -> Option<Prefix<'queue, 'p, 'd, T, M, D>>
+    pub(in crate::link::egress) fn prefix(self) -> Option<Prefix<'queue, 'p, 'd, T, M, D, P>>
     where
         M: credit::Access<'p, 'd>,
     {
@@ -266,12 +282,12 @@ impl<'queue, 'p, 'd, T, M, D: demand::Mode> Queue<'queue, 'p, 'd, T, M, D> {
     }
 }
 
-impl<'queue, 'p, 'd, T, M, D: demand::Mode> Prefix<'queue, 'p, 'd, T, M, D> {
+impl<'queue, 'p, 'd, T, M, D: demand::Mode, P: position::State> Prefix<'queue, 'p, 'd, T, M, D, P> {
     pub(in crate::link::egress) fn visit(
         self,
         token: &region::Token<region::Identity<'d>>,
-        mut f: impl FnMut(store::View<'_, T>) -> ops::ControlFlow<()>,
-    ) -> (Queue<'queue, 'p, 'd, T, M, D>, lane::Prefix<'p, 'd>) {
+        mut f: impl FnMut(store::View<'_, T, P>) -> ops::ControlFlow<()>,
+    ) -> (Queue<'queue, 'p, 'd, T, M, D, P>, lane::Prefix<'p, 'd>) {
         let Self { queue, prefix } = self;
         let mut slot = Some(prefix.index());
         while let Some(index) = slot {
@@ -286,14 +302,16 @@ impl<'queue, 'p, 'd, T, M, D: demand::Mode> Prefix<'queue, 'p, 'd, T, M, D> {
     }
 }
 
-impl<'queue, 'p, 'd, T, D: demand::Mode> Queue<'queue, 'p, 'd, T, credit::Ready<'p, 'd>, D> {
+impl<'queue, 'p, 'd, T, D: demand::Mode, P: position::State>
+    Queue<'queue, 'p, 'd, T, credit::Ready<'p, 'd>, D, P>
+{
     pub(in crate::link::egress) fn poll_acquire(
         &self,
         token: &mut region::Token<region::Identity<'d>>,
         amount: credit::Queued,
         target: ready::Target<'d>,
     ) -> task::Poll<
-        Result<credit::Reserve<'queue, 'p, 'd, T, credit::Ready<'p, 'd>, D>, egress::Tickets>,
+        Result<credit::Reserve<'queue, 'p, 'd, T, credit::Ready<'p, 'd>, D, P>, egress::Tickets>,
     > {
         credit::Lane::new(*self)
             .poll(token, amount, target)
@@ -336,7 +354,7 @@ impl<'p, 'd, T> Queue<'_, 'p, 'd, T> {
     }
 }
 
-impl<'p, 'd, T, M, D: demand::Mode> Queue<'_, 'p, 'd, T, M, D> {
+impl<'p, 'd, T, M, D: demand::Mode, P: position::State> Queue<'_, 'p, 'd, T, M, D, P> {
     pub(in crate::link::egress) fn admit_load(
         &self,
         token: &mut region::Token<region::Identity<'d>>,

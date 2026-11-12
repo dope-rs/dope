@@ -2,6 +2,7 @@ use o3::base::cell::region;
 
 use crate::link::egress::{
     self,
+    data::position,
     load::credit,
     metadata::{self, pool::store::index::Index},
     reserve::demand,
@@ -13,8 +14,9 @@ pub(in crate::link::egress::metadata) fn detach<
     T,
     M: credit::Access<'p, 'd>,
     D: demand::Mode,
+    P: position::State,
 >(
-    queue: metadata::Queue<'_, 'p, 'd, T, M, D>,
+    queue: metadata::Queue<'_, 'p, 'd, T, M, D, P>,
     token: &mut region::Token<region::Identity<'d>>,
 ) -> Option<(egress::NonEmpty<T>, Index<'d>, credit::Stored<'p>)> {
     let metadata::Prefix { queue, prefix } = queue.prefix()?;

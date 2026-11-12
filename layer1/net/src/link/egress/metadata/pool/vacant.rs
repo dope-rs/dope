@@ -4,6 +4,7 @@ use o3::base::cell::region;
 
 use crate::link::egress::{
     self,
+    data::position,
     load::credit,
     metadata::{
         self,
@@ -21,19 +22,20 @@ pub(in crate::link::egress) struct Vacant<
     V,
     M = metadata::Local,
     D: demand::Mode = demand::Fallible,
+    P: position::State = (),
 > where
     M: credit::Access<'p, 'd>,
 {
-    claim: credit::Claim<'queue, 'p, 'd, T, M, D>,
+    claim: credit::Claim<'queue, 'p, 'd, T, M, D, P>,
     index: index::Index<'d>,
     value: V,
 }
 
-impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode>
-    Vacant<'queue, 'p, 'd, T, V, M, D>
+impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
+    Vacant<'queue, 'p, 'd, T, V, M, D, P>
 {
     pub(in crate::link::egress) fn new(
-        claim: credit::Claim<'queue, 'p, 'd, T, M, D>,
+        claim: credit::Claim<'queue, 'p, 'd, T, M, D, P>,
         index: index::Index<'d>,
         value: V,
     ) -> Self {
@@ -45,8 +47,8 @@ impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode>
     }
 
     pub(in crate::link::egress) fn prepare(
-        vacancy: store::Vacancy<'queue, 'p, 'd, T>,
-        claim: credit::Claim<'queue, 'p, 'd, T, M, D>,
+        vacancy: store::Vacancy<'queue, 'p, 'd, T, P>,
+        claim: credit::Claim<'queue, 'p, 'd, T, M, D, P>,
         token: &mut region::Token<region::Identity<'d>>,
         value: V,
     ) -> Self {
@@ -70,16 +72,16 @@ impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode>
     }
 }
 
-impl<'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode> Rollback<'d>
-    for Vacant<'_, 'p, 'd, T, V, M, D>
+impl<'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State> Rollback<'d>
+    for Vacant<'_, 'p, 'd, T, V, M, D, P>
 {
     fn rollback(self, token: &mut region::Token<region::Identity<'d>>) {
         drop(self.reclaim(token));
     }
 }
 
-impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
-    Vacant<'queue, 'p, 'd, T, (), M, D>
+impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
+    Vacant<'queue, 'p, 'd, T, (), M, D, P>
 {
     pub(in crate::link::egress) fn replace(
         self,
@@ -90,16 +92,25 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
     }
 }
 
-pub(in crate::link::egress) struct Bound<'queue, 'p, 'd, B, D: demand::Mode> {
-    credit: credit::Part<'queue, 'p, 'd, B, B, credit::Ready<'p, 'd>, D>,
+pub(in crate::link::egress) struct Bound<
+    'queue,
+    'p,
+    'd,
+    B,
+    D: demand::Mode,
+    P: position::State = (),
+> {
+    credit: credit::Part<'queue, 'p, 'd, B, B, credit::Ready<'p, 'd>, D, P>,
     index: index::Index<'d>,
 }
 
-impl<'queue, 'p, 'd, B, D: demand::Mode> Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D> {
+impl<'queue, 'p, 'd, B, D: demand::Mode, P: position::State>
+    Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, P>
+{
     pub(in crate::link::egress) fn try_bind(
         self,
         load: egress::NonEmpty<B>,
-    ) -> Result<Bound<'queue, 'p, 'd, B, D>, (Self, egress::NonEmpty<B>, egress::Shortage)> {
+    ) -> Result<Bound<'queue, 'p, 'd, B, D, P>, (Self, egress::NonEmpty<B>, egress::Shortage)> {
         let Self {
             claim,
             index,
@@ -120,11 +131,11 @@ impl<'queue, 'p, 'd, B, D: demand::Mode> Vacant<'queue, 'p, 'd, B, (), credit::R
     }
 }
 
-impl<'queue, 'p, 'd, B, D: demand::Mode> Bound<'queue, 'p, 'd, B, D> {
+impl<'queue, 'p, 'd, B, D: demand::Mode, P: position::State> Bound<'queue, 'p, 'd, B, D, P> {
     pub(in crate::link::egress) fn into_parts(
         self,
     ) -> (
-        Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D>,
+        Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, P>,
         egress::NonEmpty<B>,
     ) {
         let Self { credit, index } = self;
@@ -149,8 +160,8 @@ impl<'queue, 'p, 'd, B, D: demand::Mode> Bound<'queue, 'p, 'd, B, D> {
     }
 }
 
-impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
-    Vacant<'queue, 'p, 'd, T, egress::NonEmpty<T>, M, D>
+impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
+    Vacant<'queue, 'p, 'd, T, egress::NonEmpty<T>, M, D, P>
 {
     pub(in crate::link::egress::metadata) const fn value(&self) -> &T {
         self.value.as_inner()
@@ -168,8 +179,8 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
     }
 }
 
-fn commit<'p, 'd, T>(
-    queue: metadata::Queue<'_, 'p, 'd, T, impl credit::Access<'p, 'd>, impl demand::Mode>,
+fn commit<'p, 'd, T, P: position::State>(
+    queue: metadata::Queue<'_, 'p, 'd, T, impl credit::Access<'p, 'd>, impl demand::Mode, P>,
     token: &mut region::Token<region::Identity<'d>>,
     index: index::Index<'d>,
     value: egress::NonEmpty<T>,

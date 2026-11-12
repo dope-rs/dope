@@ -12,7 +12,7 @@ use pending::node::{Next, Node, State};
 
 use crate::{
     link::{
-        egress::reserve::demand,
+        egress::{data, reserve::demand},
         pool::{
             self, pending,
             recv::{input, storage::tail},
@@ -37,7 +37,7 @@ pub struct Pending<
     W: wire::Spec,
     S,
     M: input::Mode<W>,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode = demand::Fallible,
 > where
@@ -60,7 +60,7 @@ pub enum Disposition {
     Gone,
 }
 
-impl<'a, 'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+impl<'a, 'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
     Pending<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
     'd: 'w,
@@ -112,7 +112,7 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec, S>
 where
     'd: 'w,
 {
-    pub fn of<'p, T, M, B, const IOV: usize, D>(
+    pub fn of<'p, T, M, B: data::raw::Payload<'d>, const IOV: usize, D>(
         pool: &'a mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
     ) -> Self
     where

@@ -128,8 +128,8 @@ unsafe impl mem::raw::Exact<2, u32, credit::Amount> for Pair {
 
 impl<'a, 'p, 'd, M> Lane<'a, 'p, 'd, M> {
     /// Binds the lane already proved by its metadata queue owner.
-    pub(in crate::link::egress) fn new<T, D: Mode>(
-        queue: metadata::Queue<'a, 'p, 'd, T, M, D>,
+    pub(in crate::link::egress) fn new<T, D: Mode, P: egress::data::position::State>(
+        queue: metadata::Queue<'a, 'p, 'd, T, M, D, P>,
     ) -> Self {
         Self {
             pool: &queue.pool.credit,

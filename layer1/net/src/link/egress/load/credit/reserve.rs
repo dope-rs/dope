@@ -2,6 +2,7 @@ use o3::base::cell::region;
 
 use crate::link::egress::{
     self,
+    data::position,
     load::credit,
     metadata::{self, batch},
     reserve::{demand, guard::Rollback},
@@ -16,18 +17,19 @@ pub(in crate::link::egress) struct Reserve<
     T,
     M = metadata::Local,
     D: demand::Mode = demand::Fallible,
+    P: position::State = (),
 > where
     M: credit::Access<'p, 'd>,
 {
-    queue: metadata::Queue<'queue, 'p, 'd, T, M, D>,
+    queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
     grant: credit::Grant<'p>,
 }
 
-impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
-    Reserve<'queue, 'p, 'd, T, M, D>
+impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
+    Reserve<'queue, 'p, 'd, T, M, D, P>
 {
     pub(in crate::link::egress) const fn new(
-        queue: metadata::Queue<'queue, 'p, 'd, T, M, D>,
+        queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
         grant: credit::Grant<'p>,
     ) -> Self {
         Self { queue, grant }
@@ -37,7 +39,7 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
         self.grant.amount()
     }
 
-    pub(in crate::link::egress) fn queue(&self) -> metadata::Queue<'queue, 'p, 'd, T, M, D> {
+    pub(in crate::link::egress) fn queue(&self) -> metadata::Queue<'queue, 'p, 'd, T, M, D, P> {
         self.queue
     }
 
@@ -50,7 +52,10 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
 
     pub(super) fn into_parts(
         self,
-    ) -> (metadata::Queue<'queue, 'p, 'd, T, M, D>, credit::Grant<'p>) {
+    ) -> (
+        metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
+        credit::Grant<'p>,
+    ) {
         (self.queue, self.grant)
     }
 
@@ -61,8 +66,8 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
     }
 }
 
-impl<'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode> Rollback<'d>
-    for Reserve<'_, 'p, 'd, T, M, D>
+impl<'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State> Rollback<'d>
+    for Reserve<'_, 'p, 'd, T, M, D, P>
 {
     fn rollback(self, token: &mut region::Token<region::Identity<'d>>) {
         credit::Lane::new(self.queue).release(token, self.grant);

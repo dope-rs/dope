@@ -9,7 +9,7 @@ use o3::buffer::storage::Shared;
 
 use crate::{
     link::{
-        egress::{self, reserve::demand},
+        egress::{self, data, reserve::demand},
         pool::{
             self, change, pending,
             recv::{self, input, storage::tail},
@@ -23,14 +23,23 @@ use crate::{
 ///
 /// Connection state and its wire runtime enter after this storage scope exists.
 /// Consumption retains the same egress owner, pending queue and flight proof.
-pub struct Storage<'p, 'd, ID: Identity, B, const IOV: usize, D: demand::Mode> {
+pub struct Storage<
+    'p,
+    'd,
+    ID: Identity,
+    B: data::raw::Payload<'d>,
+    const IOV: usize,
+    D: demand::Mode,
+> {
     capacity: conn::Capacity,
     flights: flight::Need<ID>,
     egress: egress::Storage<'p, 'd, ID, B, IOV, D>,
     pending: &'p pending::Queue<'d, ID>,
 }
 
-impl<'d, ID: Identity, B, const IOV: usize, D: demand::Mode> Storage<'_, 'd, ID, B, IOV, D> {
+impl<'d, ID: Identity, B: data::raw::Payload<'d>, const IOV: usize, D: demand::Mode>
+    Storage<'_, 'd, ID, B, IOV, D>
+{
     /// Opens the existing egress and pending-queue loans before application creation.
     pub fn try_with<C, O>(
         setup: demand::Setup<D>,
@@ -64,7 +73,9 @@ impl<'d, ID: Identity, B, const IOV: usize, D: demand::Mode> Storage<'_, 'd, ID,
     }
 }
 
-impl<'p, 'd, ID: Identity, B, const IOV: usize, D: demand::Mode> Storage<'p, 'd, ID, B, IOV, D> {
+impl<'p, 'd, ID: Identity, B: data::raw::Payload<'d>, const IOV: usize, D: demand::Mode>
+    Storage<'p, 'd, ID, B, IOV, D>
+{
     /// Initializes owned connection state inside the established storage loan.
     pub fn prepare<'w, T, W, S, M, R>(
         self,
@@ -122,7 +133,7 @@ pub struct Prepared<
     W: wire::Spec + 'w + 'd,
     S,
     M: input::Mode<W>,
-    B = Shared,
+    B: data::raw::Payload<'d> = Shared,
     const IOV: usize = 32,
     D: demand::Mode = demand::Fallible,
     F = flight::Slots<'d, ID>,
@@ -137,7 +148,7 @@ pub struct Prepared<
     pub(in crate::link::pool) policy: marker::PhantomData<(T, M)>,
 }
 
-impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
     Prepared<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D, ()>
 where
     T: crate::Transport,
@@ -169,7 +180,7 @@ where
     }
 }
 
-impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
     Prepared<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
     T: crate::Transport,

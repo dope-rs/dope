@@ -2,7 +2,7 @@ use std::pin;
 
 use dope_core::driver::{route, route::Identity, schedule};
 use dope_net::link::egress::{data, data::exec};
-use o3::buffer::{hold, segments::scatter};
+use o3::buffer::hold;
 
 use crate::{
     app::{dispatch, env},
@@ -44,6 +44,7 @@ impl<'p, 's, 'd, ID: Identity> Owned<'p, 's, 'd, ID> {
 // SAFETY: The committed header lease and bounded prefix fix the source bytes until release.
 unsafe impl<'d, ID: Identity> data::raw::Payload<'d> for Owned<'_, '_, 'd, ID> {
     type Mode = exec::Fallible;
+    type Position = ();
     type Cursor<'a>
         = &'a [u8]
     where
@@ -66,11 +67,7 @@ unsafe impl<'d, ID: Identity> data::raw::Payload<'d> for Owned<'_, '_, 'd, ID> {
         offset.tail(bytes)
     }
 
-    unsafe fn resume(
-        &self,
-        _: &mut scatter::raw::Position,
-        offset: data::Offset,
-    ) -> Self::Cursor<'_> {
+    unsafe fn resume(&self, _: &mut Self::Position, offset: data::Offset) -> Self::Cursor<'_> {
         // SAFETY: the caller retains this unchanged header and proves its nonempty suffix.
         unsafe { self.as_slice().get_unchecked(offset.get()..) }
     }

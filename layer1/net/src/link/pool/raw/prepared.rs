@@ -11,7 +11,7 @@ use o3::buffer::storage::Shared;
 
 use crate::{
     link::{
-        egress::reserve::demand,
+        egress::{data, reserve::demand},
         pool::{self, change, outbound, recv::input},
     },
     wire,
@@ -29,7 +29,7 @@ pub struct Prepared<
     W: wire::Spec + 'w + 'd,
     S,
     M: input::Mode<W>,
-    B = Shared,
+    B: data::raw::Payload<'d> = Shared,
     const IOV: usize = 32,
     D: demand::Mode = demand::Fallible,
     F = flight::Need<ID>,
@@ -42,7 +42,7 @@ pub struct Prepared<
     addresses: outbound::AddressTable<'d, ID, T::Prepared>,
 }
 
-impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
     Prepared<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
     T: crate::Transport,
@@ -98,7 +98,7 @@ where
     }
 }
 
-impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
     Admitted<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
     T: crate::Transport,

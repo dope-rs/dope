@@ -11,10 +11,7 @@ use dope_net::{
     link::{self, egress, egress::data, event},
     wire::send,
 };
-use o3::{
-    buffer::{resident, segments::scatter},
-    depot::array,
-};
+use o3::{buffer::resident, depot::array};
 pub(in crate::network::listener::writer) use step::{Finish, Step};
 
 use crate::network::listener::{
@@ -163,13 +160,14 @@ const _: () = {
     assert!(mem::size_of::<Motion>() == mem::size_of::<u8>());
 };
 
-pub(in crate::network::listener) struct Direct<'p, 's, 'd, ID: Identity, B> {
-    lease: release::Lease<'p, 's, 'd, memory::Flight<B>, ID>,
+pub(in crate::network::listener) struct Direct<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>>
+{
+    lease: release::Lease<'p, 's, 'd, memory::Flight<B, B::Position>, ID>,
     head: memory::Len,
     pub(in crate::network::listener::writer) progress: Progress,
 }
 
-impl<'p, 's, 'd, ID: Identity, B> Direct<'p, 's, 'd, ID, B> {
+impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID, B> {
     /// Preserves the accepted total: header bytes plus the unchanged source length.
     pub(in crate::network::listener) fn new(
         mut slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
@@ -179,7 +177,7 @@ impl<'p, 's, 'd, ID: Identity, B> Direct<'p, 's, 'd, ID, B> {
     ) -> Self {
         let flight = slot.get_mut().project();
         *flight.source = source;
-        *flight.position = scatter::raw::Position::new();
+        *flight.position = B::Position::default();
         Self {
             lease: slot,
             head,
@@ -199,10 +197,7 @@ impl<'p, 's, 'd, ID: Identity, B> Direct<'p, 's, 'd, ID, B> {
         self.lease.get_mut().project().source.take()
     }
 
-    pub(in crate::network::listener::writer) fn prepare(&mut self) -> Result<Prepared<'_>, Fault>
-    where
-        B: data::raw::Payload<'d>,
-    {
+    pub(in crate::network::listener::writer) fn prepare(&mut self) -> Result<Prepared<'_>, Fault> {
         let State::Active(active) = &self.progress.0 else {
             return Ok(Prepared::Idle);
         };
@@ -288,7 +283,7 @@ impl<'p, 's, 'd, ID: Identity, B> Direct<'p, 's, 'd, ID, B> {
     }
 }
 
-impl<B, ID: Identity> Drop for Direct<'_, '_, '_, ID, B> {
+impl<'d, B: data::raw::Payload<'d>, ID: Identity> Drop for Direct<'_, '_, 'd, ID, B> {
     fn drop(&mut self) {
         *self.lease.get_mut().project().source = None;
     }

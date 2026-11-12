@@ -17,7 +17,7 @@ use crate::{
             Cancel,
             state::{self, Ownership},
         },
-        egress::{self, reserve::demand},
+        egress::{self, data, reserve::demand},
         event,
         pool::{
             change::{
@@ -52,7 +52,7 @@ pub(in crate::link::pool::change) struct Storage<
     W: wire::Spec + 'w + 'd,
     S,
     M: input::Mode<W>,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode,
 > where
@@ -93,7 +93,7 @@ pub(in crate::link::pool::change) struct Plan<
     W: wire::Spec + 'w + 'd,
     S,
     M: input::Mode<W>,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode,
     C,
@@ -110,8 +110,27 @@ pub(in crate::link::pool::change) struct Plan<
     pub(in crate::link::pool::change) call: Call<'a, 'd, ID, C, X, O, K, F>,
 }
 
-impl<'a, 'm, 'r, 'p, 'w, 'd, ID: Identity + 'w, W, S, M, B, const IOV: usize, D, C, X, O, K, F, R>
-    Plan<'a, 'm, 'r, 'p, 'w, 'd, ID, W, S, M, B, IOV, D, C, X, O, K, F>
+impl<
+    'a,
+    'm,
+    'r,
+    'p,
+    'w,
+    'd,
+    ID: Identity + 'w,
+    W,
+    S,
+    M,
+    B: data::raw::Payload<'d>,
+    const IOV: usize,
+    D,
+    C,
+    X,
+    O,
+    K,
+    F,
+    R,
+> Plan<'a, 'm, 'r, 'p, 'w, 'd, ID, W, S, M, B, IOV, D, C, X, O, K, F>
 where
     'd: 'w,
     W: wire::Spec + 'w + 'd,

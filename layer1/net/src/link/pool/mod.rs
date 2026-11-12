@@ -69,7 +69,7 @@ pub struct Connections<
     W: wire::Spec + 'w + 'd,
     S,
     M: input::Mode<W>,
-    B = Shared,
+    B: data::raw::Payload<'d> = Shared,
     const IOV: usize = 32,
     D: demand::Mode = demand::Fallible,
 > where
@@ -88,7 +88,7 @@ impl<
     W: wire::Spec + 'w + 'd,
     S,
     M: input::Mode<W>,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode,
 > Drop for Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
@@ -110,7 +110,7 @@ pub struct Pool<
     W: wire::Spec + 'w + 'd,
     S,
     M: input::Mode<W>,
-    B = Shared,
+    B: data::raw::Payload<'d> = Shared,
     const IOV: usize = 32,
     D: demand::Mode = demand::Fallible,
 > where
@@ -128,7 +128,7 @@ pub struct EgressMut<
     ID: Identity + 'w,
     W: wire::Spec + 'w,
     S,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode = demand::Fallible,
 > {
@@ -147,7 +147,7 @@ impl<
     W: wire::Spec + 'w + 'd,
     S,
     M,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode,
 > ops::Deref for Pool<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
@@ -171,7 +171,7 @@ impl<
     W: wire::Spec + 'w + 'd,
     S,
     M,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode,
 > ops::DerefMut for Pool<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
@@ -193,7 +193,7 @@ impl<
     W: wire::Spec + 'w + 'd,
     S,
     M,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode,
 > Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
@@ -280,10 +280,7 @@ where
     pub fn egress_mut(
         &mut self,
         key: Key<'d, ID>,
-    ) -> Option<EgressMut<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>>
-    where
-        B: data::raw::Payload<'d>,
-    {
+    ) -> Option<EgressMut<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>> {
         let sender = self.sender(key)?;
         Some(EgressMut {
             flights: sender.flights,
@@ -296,10 +293,7 @@ where
     pub fn sender(
         &mut self,
         key: Key<'d, ID>,
-    ) -> Option<transmit::Sender<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>>
-    where
-        B: data::raw::Payload<'d>,
-    {
+    ) -> Option<transmit::Sender<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>> {
         let (sender, ()) = self.sender_with(key, |_| ())?;
         Some(sender)
     }
@@ -307,10 +301,7 @@ where
     pub fn sender_with_recv(
         &mut self,
         key: Key<'d, ID>,
-    ) -> Sending<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>
-    where
-        B: data::raw::Payload<'d>,
-    {
+    ) -> Sending<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D> {
         self.sender_with(key, |recv| recv.storage.has_queued())
     }
 
@@ -320,7 +311,6 @@ where
         query: impl FnOnce(recv::Borrow<'a, 'd, ID, M::Ingress, input::Receipt<W, M>>) -> R,
     ) -> Sending<'a, 'p, 'w, 'd, ID, W, S, B, IOV, D, R>
     where
-        B: data::raw::Payload<'d>,
         input::Receipt<W, M>: 'a,
     {
         let prepared = &mut self.prepared;
@@ -357,6 +347,7 @@ where
     T: crate::Transport,
     W: wire::Spec + 'w + 'd,
     M: input::Mode<W>,
+    L: data::raw::Payload<'d>,
     R: data::raw::Payload<'d>,
     'd: 'w,
 {
@@ -393,7 +384,7 @@ impl<
     W: wire::Spec + 'w + 'd,
     S,
     M,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode,
 > Pool<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>

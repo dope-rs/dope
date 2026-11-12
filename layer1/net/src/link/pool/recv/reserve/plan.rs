@@ -4,7 +4,7 @@ use storage::queue::{Ops, Write};
 
 use crate::{
     link::{
-        egress::reserve::demand,
+        egress::{data, reserve::demand},
         event,
         pool::{
             self,
@@ -54,7 +54,7 @@ where
     M: input::Mode<W>,
     input::Receipt<W, M>: 'a,
 {
-    pub(super) fn observe<T, B, const IOV: usize, D, A>(
+    pub(super) fn observe<T, B: data::raw::Payload<'d>, const IOV: usize, D, A>(
         pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         item: A,
         capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,

@@ -11,7 +11,7 @@ use storage::queue::{Ops, Write};
 
 use crate::{
     link::{
-        egress::reserve::demand,
+        egress::{data, reserve::demand},
         event,
         pool::{
             self,
@@ -154,7 +154,13 @@ where
     W: wire::Spec + 'w + 'd,
     M: input::Mode<W>,
 {
-    pub(in crate::link::pool::recv) fn observe<'p, T, B, const IOV: usize, D>(
+    pub(in crate::link::pool::recv) fn observe<
+        'p,
+        T,
+        B: data::raw::Payload<'d>,
+        const IOV: usize,
+        D,
+    >(
         pool: &'a mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         item: event::Control<'d>,
         timing: arrival::Timing,

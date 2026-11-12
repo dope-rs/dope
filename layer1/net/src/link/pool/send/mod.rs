@@ -61,7 +61,7 @@ pub struct Settlement<
     W: wire::Spec + 'w + 'd,
     S,
     M: input::Mode<W>,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode = demand::Fallible,
 > where
@@ -71,7 +71,7 @@ pub struct Settlement<
     done: Completion<'d>,
 }
 
-impl<'a, 'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+impl<'a, 'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
     Settlement<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
     'd: 'w,
@@ -93,10 +93,7 @@ where
         direct: impl for<'scope> FnOnce(Direct<'scope, S>) -> O,
         free: impl FnMut(pool::Key<'d, ID>, B),
         complete: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>, &SendOutcome<'d, ID, O>),
-    ) -> SendOutcome<'d, ID, O>
-    where
-        B: data::raw::Payload<'d>,
-    {
+    ) -> SendOutcome<'d, ID, O> {
         self.run(
             driver,
             |_| {},
@@ -117,20 +114,14 @@ where
         driver: &mut driver::Context<'_, 'd>,
         before: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>),
         complete: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>, &SendOutcome<'d, ID, ()>),
-    ) -> SendOutcome<'d, ID, ()>
-    where
-        B: data::raw::Payload<'d>,
-    {
+    ) -> SendOutcome<'d, ID, ()> {
         self.run(driver, before, Self::close, |_, body| drop(body), complete)
     }
 
     fn close<O>(
         egress: &mut transmit::Sender<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>,
         result: Data,
-    ) -> SendOutcome<'d, ID, O>
-    where
-        B: data::raw::Payload<'d>,
-    {
+    ) -> SendOutcome<'d, ID, O> {
         let key = egress.connection.key();
         egress.connection.sending().abort_queue(&mut egress.queue);
         match result {
@@ -160,10 +151,7 @@ where
         egress: &mut transmit::Sender<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>,
         result: Data,
         settle: impl for<'scope> FnOnce(Direct<'scope, S>) -> O,
-    ) -> SendOutcome<'d, ID, O>
-    where
-        B: data::raw::Payload<'d>,
-    {
+    ) -> SendOutcome<'d, ID, O> {
         let status = match result {
             Data::Sent(sent) => {
                 let len = sent.into_len();
@@ -194,10 +182,7 @@ where
         ) -> SendOutcome<'d, ID, O>,
         release: impl FnMut(pool::Key<'d, ID>, B),
         complete: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>, &SendOutcome<'d, ID, O>),
-    ) -> SendOutcome<'d, ID, O>
-    where
-        B: data::raw::Payload<'d>,
-    {
+    ) -> SendOutcome<'d, ID, O> {
         let Self { pool, done } = self;
         let (token, result) = done.into_parts();
         let key = match pool.keys.parse(token) {

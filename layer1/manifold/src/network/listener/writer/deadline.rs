@@ -7,7 +7,7 @@ use dope_core::driver::{
     schedule::clock,
 };
 use dope_net::{
-    link::{egress, pool, slot::types},
+    link::{egress, egress::data, pool, slot::types},
     wire,
 };
 use o3::{
@@ -231,7 +231,7 @@ pub(in crate::network::listener) struct Slot<
     ID: Identity,
     W: wire::Spec + 'w + 'd,
     C,
-    B,
+    B: data::raw::Payload<'d>,
 > {
     pub(in crate::network::listener) source: &'a mut types::Control<'w, 'd, ID, W>,
     pub(in crate::network::listener) state: &'a mut conn::state::Control<'p, 's, 'd, ID, B>,
@@ -239,7 +239,7 @@ pub(in crate::network::listener) struct Slot<
     schedule: Option<&'a mut Schedule<'d, ID>>,
 }
 
-impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B>
+impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw::Payload<'d>>
     Slot<'a, 'p, 's, 'w, 'd, ID, W, C, B>
 {
     pub(in crate::network::listener) fn reborrow(
@@ -444,7 +444,7 @@ impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B>
     }
 }
 
-impl<'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B> ops::Deref
+impl<'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw::Payload<'d>> ops::Deref
     for Slot<'_, '_, '_, 'w, 'd, ID, W, C, B>
 {
     type Target = types::Control<'w, 'd, ID, W>;
@@ -453,7 +453,7 @@ impl<'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B> ops::Deref
     }
 }
 
-impl<'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B> ops::DerefMut
+impl<'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw::Payload<'d>> ops::DerefMut
     for Slot<'_, '_, '_, 'w, 'd, ID, W, C, B>
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
@@ -463,11 +463,21 @@ impl<'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B> ops::DerefMut
 
 const _: () = assert!(
     mem::size_of::<
-        Slot<'static, 'static, 'static, 'static, 'static, KeyTag<0>, wire::Identity, (), ()>,
+        Slot<
+            'static,
+            'static,
+            'static,
+            'static,
+            'static,
+            KeyTag<0>,
+            wire::Identity,
+            (),
+            &'static [u8],
+        >,
     >() == 4 * mem::size_of::<usize>()
 );
 
-impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B>
+impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw::Payload<'d>>
     From<
         depot::raw::Proof<
             (

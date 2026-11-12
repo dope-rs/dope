@@ -2,6 +2,7 @@ use o3::base::cell::region;
 
 use crate::link::egress::{
     self,
+    data::position,
     load::credit,
     metadata::{self, pool::store::index::Index},
     reserve::{
@@ -18,23 +19,32 @@ pub(in crate::link::egress::metadata::front) struct Vacant<
     T,
     M,
     D: demand::Mode,
+    P: position::State = (),
 > where
     M: credit::Access<'p, 'd>,
 {
-    parts: Guard<'token, 'd, Parts<'queue, 'p, 'd, T, M, D>>,
+    parts: Guard<'token, 'd, Parts<'queue, 'p, 'd, T, M, D, P>>,
 }
 
-pub(super) struct Parts<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode> {
-    pub(super) queue: metadata::Queue<'queue, 'p, 'd, T, M, D>,
+pub(super) struct Parts<
+    'queue,
+    'p,
+    'd,
+    T,
+    M: credit::Access<'p, 'd>,
+    D: demand::Mode,
+    P: position::State = (),
+> {
+    pub(super) queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
     pub(super) slot: Index<'d>,
     pub(super) stored: credit::Stored<'p>,
 }
 
-impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
-    Vacant<'queue, 'token, 'p, 'd, T, M, D>
+impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
+    Vacant<'queue, 'token, 'p, 'd, T, M, D, P>
 {
     pub(in crate::link::egress::metadata::front) fn new(
-        queue: metadata::Queue<'queue, 'p, 'd, T, M, D>,
+        queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
         slot: Index<'d>,
         token: &'token mut region::Token<region::Identity<'d>>,
         stored: credit::Stored<'p>,
@@ -72,8 +82,8 @@ impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
     }
 }
 
-impl<'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode> Rollback<'d>
-    for Parts<'_, 'p, 'd, T, M, D>
+impl<'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State> Rollback<'d>
+    for Parts<'_, 'p, 'd, T, M, D, P>
 {
     fn rollback(self, token: &mut region::Token<region::Identity<'d>>) {
         let Parts {

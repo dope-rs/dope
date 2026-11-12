@@ -44,7 +44,7 @@ pub struct Outbound<
     W: wire::Spec,
     S,
     M: input::Mode<W>,
-    B = storage::Shared,
+    B: data::raw::Payload<'d> = storage::Shared,
     const IOV: usize = 32,
     D: demand::Mode = demand::Fallible,
 > where
@@ -55,8 +55,8 @@ pub struct Outbound<
     pub(super) addresses: AddressTable<'d, ID, T::Prepared>,
 }
 
-impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D> ops::Deref
-    for Outbound<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
+impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
+    ops::Deref for Outbound<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
     'd: 'w,
     T: crate::Transport,
@@ -71,8 +71,8 @@ where
     }
 }
 
-impl<'p, 'w, 'd: 'w, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D> ops::DerefMut
-    for Outbound<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
+impl<'p, 'w, 'd: 'w, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
+    ops::DerefMut for Outbound<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
     T: crate::Transport,
     W: wire::Spec,
@@ -84,7 +84,7 @@ where
     }
 }
 
-impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+impl<'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
     Outbound<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
     'd: 'w,
@@ -108,10 +108,7 @@ where
     pub fn send_slot(
         &mut self,
         key: pool::Key<'d, ID>,
-    ) -> pool::Sending<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>
-    where
-        B: data::raw::Payload<'d>,
-    {
+    ) -> pool::Sending<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D> {
         let (egress, queued) = self.storage.sender_with_recv(key)?;
         if egress.connection.engine.operations.lifecycle.is_closing() {
             return None;

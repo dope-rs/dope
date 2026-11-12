@@ -3,9 +3,10 @@ use o3::{base::cell::region, depot::arena::linked::fifo::ends};
 
 use crate::link::egress::{
     self,
+    data::position,
     load::credit,
     metadata::{self, batch},
-    reserve::guard::Rollback,
+    reserve::{demand, guard::Rollback},
 };
 
 pub(in crate::link::egress) struct Draft<
@@ -15,15 +16,18 @@ pub(in crate::link::egress) struct Draft<
     'd,
     T,
     M: credit::Access<'p, 'd> = metadata::Local,
+    P: position::State = (),
 > {
     links: ends::Exclusive<Option<Index<'d>>>,
     token: &'token mut region::Token<region::Identity<'d>>,
-    credit: credit::Reserve<'queue, 'p, 'd, T, M>,
+    credit: credit::Reserve<'queue, 'p, 'd, T, M, demand::Fallible, P>,
 }
 
-impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>> Draft<'queue, 'token, 'p, 'd, T, M> {
+impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>, P: position::State>
+    Draft<'queue, 'token, 'p, 'd, T, M, P>
+{
     pub(in crate::link::egress) fn try_new(
-        queue: metadata::Queue<'queue, 'p, 'd, T, M>,
+        queue: metadata::Queue<'queue, 'p, 'd, T, M, demand::Fallible, P>,
         token: &'token mut region::Token<region::Identity<'d>>,
         plan: batch::Plan,
     ) -> Result<Self, egress::Admission> {

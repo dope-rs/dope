@@ -7,7 +7,7 @@ use storage::queue::Ops;
 use crate::{
     link::{
         duplex,
-        egress::reserve::demand,
+        egress::{data, reserve::demand},
         pool::{
             self, pending,
             recv::{self, Missing, delivery, input, storage},
@@ -42,7 +42,13 @@ where
     M: input::Mode<W>,
     input::Receipt<W, M>: 'a,
 {
-    pub(in crate::link::pool::recv) fn try_new<'p, T, B, const IOV: usize, D>(
+    pub(in crate::link::pool::recv) fn try_new<
+        'p,
+        T,
+        B: data::raw::Payload<'d>,
+        const IOV: usize,
+        D,
+    >(
         pool: &'a mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         target: route::Target<'d, ID>,
     ) -> Result<Self, Missing<'d, ID>>

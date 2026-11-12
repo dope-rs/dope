@@ -99,7 +99,7 @@ pub struct Io<
     ID: Identity + 'w,
     W: wire::Spec,
     S,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode,
 > {
@@ -108,8 +108,18 @@ pub struct Io<
     pub(in crate::link::pool::change) egress: &'a mut egress::Storage<'p, 'd, ID, B, IOV, D>,
 }
 
-impl<'a, 'p, 'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec, S, B, const IOV: usize, D: demand::Mode>
-    Io<'a, 'p, 'w, 'd, ID, W, S, B, IOV, D>
+impl<
+    'a,
+    'p,
+    'w,
+    'd: 'w,
+    ID: Identity + 'w,
+    W: wire::Spec,
+    S,
+    B: data::raw::Payload<'d>,
+    const IOV: usize,
+    D: demand::Mode,
+> Io<'a, 'p, 'w, 'd, ID, W, S, B, IOV, D>
 {
     pub fn failure(&self) -> dope_core::Errno {
         self.cause
@@ -153,7 +163,7 @@ const _: () = {
                 KeyTag<0>,
                 wire::Identity,
                 (),
-                (),
+                &'static [u8],
                 1,
                 demand::Fallible,
             >,
@@ -170,7 +180,7 @@ const _: () = {
                     KeyTag<0>,
                     wire::Identity,
                     (),
-                    (),
+                    &'static [u8],
                     1,
                     demand::Fallible,
                 >,

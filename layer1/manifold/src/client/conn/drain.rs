@@ -128,7 +128,17 @@ impl<'d, ID: Identity> Drain<'d, ID> {
         Self { conn }
     }
 
-    pub(in crate::client) fn release<'w, T, W, C, O, M, B, const IOV: usize, D>(
+    pub(in crate::client) fn release<
+        'w,
+        T,
+        W,
+        C,
+        O,
+        M,
+        B: dope_net::link::egress::data::raw::Payload<'d>,
+        const IOV: usize,
+        D,
+    >(
         self,
         pool: &mut pool::Connections<'_, 'w, 'd, ID, T, W, State<'d, C, O>, M, B, IOV, D>,
     ) -> Recovery<'d, ID>

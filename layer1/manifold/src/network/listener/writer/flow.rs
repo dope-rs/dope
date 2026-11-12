@@ -36,7 +36,7 @@ pub(in crate::network::listener) fn flow<
     'd: 'w,
     ID: Identity,
     W: wire::Spec + 'w + 'd,
-    B,
+    B: data::raw::Payload<'d>,
 >(
     control: &types::Control<'w, 'd, ID, W>,
     send: &state::Send<'p, 's, 'd, ID, B>,

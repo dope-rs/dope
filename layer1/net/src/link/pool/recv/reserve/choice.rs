@@ -2,7 +2,7 @@ use dope_core::driver::route::Identity;
 
 use crate::{
     link::{
-        egress::reserve::demand,
+        egress::{data, reserve::demand},
         event,
         pool::{
             self,
@@ -35,6 +35,7 @@ pub trait Choice<W: wire::Spec, P: Flag> {
         W: 'w + 'd,
         M: input::Mode<W, Ingress = P>,
         input::Receipt<W, M>: 'a,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
         A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>;
 }
@@ -56,6 +57,7 @@ where
         W: 'w + 'd,
         M: input::Mode<W, Ingress = mode::Disabled>,
         input::Receipt<W, M>: 'a,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
         A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
@@ -84,6 +86,7 @@ where
         W: 'w + 'd,
         M: input::Mode<W, Ingress = mode::Parking>,
         input::Receipt<W, M>: 'a,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
         A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
@@ -115,6 +118,7 @@ where
         W: 'w + 'd,
         M: input::Mode<W, Ingress = mode::Enabled>,
         input::Receipt<W, M>: 'a,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
         A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
@@ -149,6 +153,7 @@ where
         W: 'w + 'd,
         M: input::Mode<W, Ingress = mode::Waiting<R>>,
         input::Receipt<W, M>: 'a,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
         A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {

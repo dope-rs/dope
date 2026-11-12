@@ -1,7 +1,10 @@
 use dope_core::driver::{self, route::Identity};
 
 use crate::{
-    link::{egress::reserve::demand, pool::recv::input},
+    link::{
+        egress::{data, reserve::demand},
+        pool::recv::input,
+    },
     wire::{self, domain},
 };
 
@@ -17,7 +20,21 @@ pub mod raw;
 pub use prepare::Prepare;
 
 /// Pairs one admitted rearm allocation with the selected receive-mode storage.
-pub fn try_prepare<'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D, R, C, O>(
+pub fn try_prepare<
+    'w,
+    'd,
+    ID: Identity + 'w,
+    T,
+    W,
+    S,
+    M,
+    B: data::raw::Payload<'d>,
+    const IOV: usize,
+    D,
+    R,
+    C,
+    O,
+>(
     retain: domain::Retained,
     bytes: domain::Resident,
     setup: demand::Setup<D>,

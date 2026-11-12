@@ -7,7 +7,7 @@ use dope_net::link::egress::{
     metadata,
 };
 use o3::{
-    buffer::{hold, pool, segments::scatter, storage, write::consume},
+    buffer::{hold, pool, storage, write::consume},
     mem::{self, credit::fair},
 };
 
@@ -46,6 +46,7 @@ pub struct Payload<'a> {
 // SAFETY: Only observation counters change; the borrowed bytes, length, and charge remain fixed.
 unsafe impl<'a: 'd, 'd> data::raw::Payload<'d> for Payload<'a> {
     type Mode = exec::Fallible;
+    type Position = ();
     type Cursor<'b>
         = &'b [u8]
     where
@@ -71,11 +72,7 @@ unsafe impl<'a: 'd, 'd> data::raw::Payload<'d> for Payload<'a> {
         offset.tail(self.bytes)
     }
 
-    unsafe fn resume(
-        &self,
-        _: &mut scatter::raw::Position,
-        offset: data::Offset,
-    ) -> Self::Cursor<'_> {
+    unsafe fn resume(&self, _: &mut Self::Position, offset: data::Offset) -> Self::Cursor<'_> {
         // SAFETY: resume requires this offset to lie inside the unchanged
         // slice retained by the complete shared borrow.
         unsafe { self.bytes.get_unchecked(offset.get()..) }

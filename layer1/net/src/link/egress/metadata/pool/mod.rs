@@ -3,6 +3,7 @@ use o3::{alloc, base::cell::region, buffer::resident::bound};
 
 use crate::link::egress::{
     self, create,
+    data::position,
     load::credit,
     metadata::{self, arena},
     reserve::{self, demand},
@@ -19,8 +20,9 @@ pub(in crate::link::egress) struct Pool<
     T,
     M = metadata::Local,
     D: demand::Mode = demand::Fallible,
+    P: position::State = (),
 > {
-    pub(in crate::link::egress) store: store::Slab<'p, 'd, T>,
+    pub(in crate::link::egress) store: store::Slab<'p, 'd, T, P>,
     pub(in crate::link::egress) credit: credit::Pool<'p, 'd, M>,
     config: egress::Config,
     mode: D,
@@ -40,7 +42,7 @@ impl<'p, 'd, T> Pool<'p, 'd, T, metadata::Local, demand::Fallible> {
     }
 }
 
-impl<'p, 'd, T, D: demand::Mode> Pool<'p, 'd, T, credit::Ready<'p, 'd>, D> {
+impl<'p, 'd, T, D: demand::Mode, P: position::State> Pool<'p, 'd, T, credit::Ready<'p, 'd>, D, P> {
     pub(in crate::link::egress) fn try_driver(
         token: &region::Token<region::Identity<'d>>,
         mode: D,
@@ -57,14 +59,14 @@ impl<'p, 'd, T, D: demand::Mode> Pool<'p, 'd, T, credit::Ready<'p, 'd>, D> {
     }
 }
 
-impl<'p, T, M, D: demand::Mode> Pool<'p, '_, T, M, D> {
+impl<'p, T, M, D: demand::Mode, P: position::State> Pool<'p, '_, T, M, D, P> {
     pub(in crate::link::egress) const fn config(&self) -> egress::Config {
         self.config
     }
 }
 
-impl<'p, T, M, G: bound::Bound, const PREFIX: usize>
-    Pool<'p, '_, T, M, demand::Guaranteed<G, PREFIX>>
+impl<'p, T, M, G: bound::Bound, const PREFIX: usize, P: position::State>
+    Pool<'p, '_, T, M, demand::Guaranteed<G, PREFIX>, P>
 {
     pub(in crate::link::egress) const fn bounds(&self) -> Option<reserve::Bounds> {
         self.mode.bounds()

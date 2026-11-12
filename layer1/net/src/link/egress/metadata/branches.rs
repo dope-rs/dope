@@ -7,6 +7,7 @@ use o3::base::cell::region;
 
 use crate::link::egress::{
     self, data,
+    data::position,
     load::credit,
     metadata,
     reserve::{demand, error},
@@ -23,15 +24,16 @@ pub(in crate::link::egress) struct Prepared<
     S,
     M: credit::Access<'p, 'd> = metadata::Local,
     D: demand::Mode = demand::Fallible,
+    P: position::State = (),
 > {
     token: &'token mut region::Token<region::Identity<'d>>,
-    claim: credit::Claim<'queue, 'p, 'd, T, M, D>,
-    vacancy: store::Vacancy<'queue, 'p, 'd, T>,
+    claim: credit::Claim<'queue, 'p, 'd, T, M, D, P>,
+    vacancy: store::Vacancy<'queue, 'p, 'd, T, P>,
     load: egress::NonEmpty<S>,
 }
 
-impl<'queue, 'p, 'd, L, R, M: credit::Access<'p, 'd>, D: demand::Mode>
-    Prepared<'queue, '_, 'p, 'd, compose::Either<L, R>, L, M, D>
+impl<'queue, 'p, 'd, L, R, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
+    Prepared<'queue, '_, 'p, 'd, compose::Either<L, R>, L, M, D, P>
 {
     pub(super) fn left(self) {
         let (token, claim) = (self.token, self.claim);
@@ -39,8 +41,8 @@ impl<'queue, 'p, 'd, L, R, M: credit::Access<'p, 'd>, D: demand::Mode>
     }
 }
 
-impl<'queue, 'p, 'd, L, R, M: credit::Access<'p, 'd>, D: demand::Mode>
-    Prepared<'queue, '_, 'p, 'd, compose::Either<L, R>, R, M, D>
+impl<'queue, 'p, 'd, L, R, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
+    Prepared<'queue, '_, 'p, 'd, compose::Either<L, R>, R, M, D, P>
 {
     pub(in crate::link::egress) fn right(self) {
         let (token, claim) = (self.token, self.claim);
@@ -48,8 +50,8 @@ impl<'queue, 'p, 'd, L, R, M: credit::Access<'p, 'd>, D: demand::Mode>
     }
 }
 
-impl<'queue, 'p, 'd, B, M: credit::Access<'p, 'd>, D: demand::Mode>
-    Prepared<'queue, '_, 'p, 'd, B, B, M, D>
+impl<'queue, 'p, 'd, B, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
+    Prepared<'queue, '_, 'p, 'd, B, B, M, D, P>
 {
     pub(in crate::link::egress) fn retain(self) {
         let (token, claim) = (self.token, self.claim);
@@ -67,13 +69,14 @@ impl<'queue, 'token, 'p, 'd, T, D: demand::Mode>
     }
 }
 
-impl<'queue, 'token, 'p, 'd, T, S, M, D> Prepared<'queue, 'token, 'p, 'd, T, S, M, D>
+impl<'queue, 'token, 'p, 'd, T, S, M, D, P: position::State>
+    Prepared<'queue, 'token, 'p, 'd, T, S, M, D, P>
 where
     M: credit::Access<'p, 'd>,
     D: demand::Mode,
 {
     pub(in crate::link::egress) fn prepare(
-        queue: metadata::Queue<'queue, 'p, 'd, T, M, D>,
+        queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
         token: &'token mut region::Token<region::Identity<'d>>,
         load: egress::NonEmpty<S>,
     ) -> Result<Self, error::Capacity<S>> {

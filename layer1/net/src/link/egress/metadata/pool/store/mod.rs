@@ -4,7 +4,7 @@ use dope_core::io::transfer;
 use o3::{
     alloc,
     base::cell::region,
-    buffer::{resident, segments::scatter},
+    buffer::resident,
     depot,
     depot::arena::linked::{fifo::ends, head},
 };
@@ -17,15 +17,15 @@ pub(in crate::link::egress) use view::View;
 
 /// Free-list cell without the unused FIFO plane required by `pool::Lanes`.
 #[repr(C)]
-struct Cell<'p, 'd, T> {
+struct Cell<'p, 'd, T, P: data::position::State = ()> {
     value: mem::MaybeUninit<egress::NonEmpty<T>>,
     entry: mem::MaybeUninit<credit::Stored<'p>>,
-    position: cell::Cell<scatter::raw::Position>,
+    position: mem::MaybeUninit<cell::Cell<P>>,
     next: Option<Index<'d>>,
     occupied: bool,
 }
 
-impl<T> Drop for Cell<'_, '_, T> {
+impl<T, P: data::position::State> Drop for Cell<'_, '_, T, P> {
     fn drop(&mut self) {
         if self.occupied {
             // SAFETY: publication initializes both owners before setting occupied;
@@ -38,19 +38,19 @@ impl<T> Drop for Cell<'_, '_, T> {
 }
 
 /// Values move only after their node has been detached from every chain.
-impl<'p, T> Unpin for Cell<'p, '_, T> {}
+impl<'p, T, P: data::position::State> Unpin for Cell<'p, '_, T, P> {}
 
-struct Node<'p, 'd, T> {
-    cell: region::Value<region::Identity<'d>, Cell<'p, 'd, T>>,
+struct Node<'p, 'd, T, P: data::position::State = ()> {
+    cell: region::Value<region::Identity<'d>, Cell<'p, 'd, T, P>>,
 }
 
-impl<'p, 'd, T> Node<'p, 'd, T> {
+impl<'p, 'd, T, P: data::position::State> Node<'p, 'd, T, P> {
     const fn vacant(token: &region::Token<region::Identity<'d>>, next: Option<Index<'d>>) -> Self {
         Self {
             cell: token.bind(Cell {
                 value: mem::MaybeUninit::uninit(),
                 entry: mem::MaybeUninit::uninit(),
-                position: cell::Cell::new(scatter::raw::Position::new()),
+                position: mem::MaybeUninit::uninit(),
                 next,
                 occupied: false,
             }),
@@ -72,30 +72,31 @@ impl<'p, 'd, T> Node<'p, 'd, T> {
     }
 }
 
-pub(in crate::link::egress) struct Slab<'p, 'd, T> {
-    nodes: Box<[Node<'p, 'd, T>]>,
+pub(in crate::link::egress) struct Slab<'p, 'd, T, P: data::position::State = ()> {
+    nodes: Box<[Node<'p, 'd, T, P>]>,
     free: head::Cell<Option<Index<'d>>>,
 }
 
-pub(in crate::link::egress) struct Vacancy<'a, 'p, 'd, T> {
-    slab: &'a Slab<'p, 'd, T>,
+pub(in crate::link::egress) struct Vacancy<'a, 'p, 'd, T, P: data::position::State = ()> {
+    slab: &'a Slab<'p, 'd, T, P>,
     front: head::Front<'a, Option<Index<'d>>>,
 }
 
-pub(in crate::link::egress) struct Reservation<'a, 'token, 'p, 'd, T> {
-    vacancy: Vacancy<'a, 'p, 'd, T>,
+pub(in crate::link::egress) struct Reservation<'a, 'token, 'p, 'd, T, P: data::position::State = ()>
+{
+    vacancy: Vacancy<'a, 'p, 'd, T, P>,
     token: &'token mut region::Token<region::Identity<'d>>,
 }
 
-pub(in crate::link::egress) struct Pair<'a, 'token, 'p, 'd, T> {
-    vacancy: Vacancy<'a, 'p, 'd, T>,
+pub(in crate::link::egress) struct Pair<'a, 'token, 'p, 'd, T, P: data::position::State = ()> {
+    vacancy: Vacancy<'a, 'p, 'd, T, P>,
     second: Index<'d>,
     token: &'token mut region::Token<region::Identity<'d>>,
 }
 
-pub(in crate::link::egress) enum Pairing<'a, 'token, 'p, 'd, T> {
+pub(in crate::link::egress) enum Pairing<'a, 'token, 'p, 'd, T, P: data::position::State = ()> {
     One(&'token mut region::Token<region::Identity<'d>>),
-    Two(Pair<'a, 'token, 'p, 'd, T>),
+    Two(Pair<'a, 'token, 'p, 'd, T, P>),
 }
 
 struct Free<'a, 'd> {
@@ -108,9 +109,9 @@ struct Second<'a, 'd> {
     index: Index<'d>,
 }
 
-unsafe impl<'a, 'p, 'd, T>
+unsafe impl<'a, 'p, 'd, T, P: data::position::State>
     depot::raw::HeadPop<Option<Index<'d>>, &'a mut region::Token<region::Identity<'d>>>
-    for &Slab<'p, 'd, T>
+    for &Slab<'p, 'd, T, P>
 {
     type Output = Index<'d>;
 
@@ -124,8 +125,8 @@ unsafe impl<'a, 'p, 'd, T>
     }
 }
 
-unsafe impl<'a, 'p, 'd, T> depot::raw::HeadPop<Option<Index<'d>>, Second<'a, 'd>>
-    for &Slab<'p, 'd, T>
+unsafe impl<'a, 'p, 'd, T, P: data::position::State>
+    depot::raw::HeadPop<Option<Index<'d>>, Second<'a, 'd>> for &Slab<'p, 'd, T, P>
 {
     type Output = (
         &'a mut region::Token<region::Identity<'d>>,
@@ -143,8 +144,8 @@ unsafe impl<'a, 'p, 'd, T> depot::raw::HeadPop<Option<Index<'d>>, Second<'a, 'd>
     }
 }
 
-unsafe impl<'a, 'p, 'd, T> depot::raw::HeadPush<Option<Index<'d>>, Free<'a, 'd>>
-    for &Slab<'p, 'd, T>
+unsafe impl<'a, 'p, 'd, T, P: data::position::State>
+    depot::raw::HeadPush<Option<Index<'d>>, Free<'a, 'd>> for &Slab<'p, 'd, T, P>
 {
     unsafe fn push(self, free: Free<'a, 'd>, head: Option<Index<'d>>) -> Index<'d> {
         self.set_next(free.token, free.index, head);
@@ -152,8 +153,8 @@ unsafe impl<'a, 'p, 'd, T> depot::raw::HeadPush<Option<Index<'d>>, Free<'a, 'd>>
     }
 }
 
-impl<'p, 'd, T> Slab<'p, 'd, T> {
-    fn node(&self, index: Index<'d>) -> &Node<'p, 'd, T> {
+impl<'p, 'd, T, P: data::position::State> Slab<'p, 'd, T, P> {
+    fn node(&self, index: Index<'d>) -> &Node<'p, 'd, T, P> {
         // SAFETY: only this store constructs indices, within its allocated extent.
         // Reservations and lane chains retain their exact originating pool; neither
         // moving the boxed store nor changing a token changes that allocation.
@@ -182,7 +183,7 @@ impl<'p, 'd, T> Slab<'p, 'd, T> {
         })
     }
 
-    pub(in crate::link::egress) fn vacancy(&self) -> Option<Vacancy<'_, 'p, 'd, T>> {
+    pub(in crate::link::egress) fn vacancy(&self) -> Option<Vacancy<'_, 'p, 'd, T, P>> {
         let front = self.free.front()?;
         Some(Vacancy { slab: self, front })
     }
@@ -190,8 +191,10 @@ impl<'p, 'd, T> Slab<'p, 'd, T> {
     pub(in crate::link::egress) fn reservation<'a, 'token>(
         &'a self,
         token: &'token mut region::Token<region::Identity<'d>>,
-    ) -> Result<Reservation<'a, 'token, 'p, 'd, T>, &'token mut region::Token<region::Identity<'d>>>
-    {
+    ) -> Result<
+        Reservation<'a, 'token, 'p, 'd, T, P>,
+        &'token mut region::Token<region::Identity<'d>>,
+    > {
         let Some(vacancy) = self.vacancy() else {
             return Err(token);
         };
@@ -207,7 +210,7 @@ impl<'p, 'd, T> Slab<'p, 'd, T> {
     ) {
         let cell = token.borrow_mut(&self.node(slot).cell);
         cell.value = mem::MaybeUninit::new(value);
-        cell.position.set(scatter::raw::Position::new());
+        cell.position = mem::MaybeUninit::new(cell::Cell::new(P::default()));
         cell.entry = mem::MaybeUninit::new(entry);
         cell.occupied = true;
     }
@@ -232,15 +235,21 @@ impl<'p, 'd, T> Slab<'p, 'd, T> {
         &'a self,
         token: &'a region::Token<region::Identity<'d>>,
         slot: Index<'d>,
-    ) -> View<'a, T> {
+    ) -> View<'a, T, P> {
         let cell = token.borrow(&self.node(slot).cell);
-        // SAFETY: a linked cell retains its initialized source and original credit.
-        let (source, entry) =
-            unsafe { (cell.value.assume_init_ref(), cell.entry.assume_init_ref()) };
+        // SAFETY: publication initializes the source, checkpoint, and credit
+        // before linking; detach and restore preserve that same owner.
+        let (source, entry, position) = unsafe {
+            (
+                cell.value.assume_init_ref(),
+                cell.entry.assume_init_ref(),
+                cell.position.assume_init_ref(),
+            )
+        };
         View {
             source,
             remaining: entry.count(),
-            position: &cell.position,
+            position,
         }
     }
 
@@ -340,7 +349,7 @@ impl<'p, 'd, T> Slab<'p, 'd, T> {
     }
 }
 
-impl<'a, 'p, 'd, T> Vacancy<'a, 'p, 'd, T> {
+impl<'a, 'p, 'd, T, P: data::position::State> Vacancy<'a, 'p, 'd, T, P> {
     pub(in crate::link::egress::metadata) fn reserve(
         self,
         token: &mut region::Token<region::Identity<'d>>,
@@ -350,8 +359,8 @@ impl<'a, 'p, 'd, T> Vacancy<'a, 'p, 'd, T> {
     }
 }
 
-impl<'a, 'token, 'p, 'd, T> Reservation<'a, 'token, 'p, 'd, T> {
-    pub(in crate::link::egress) fn pair(self) -> Pairing<'a, 'token, 'p, 'd, T> {
+impl<'a, 'token, 'p, 'd, T, P: data::position::State> Reservation<'a, 'token, 'p, 'd, T, P> {
+    pub(in crate::link::egress) fn pair(self) -> Pairing<'a, 'token, 'p, 'd, T, P> {
         let Self { vacancy, token } = self;
         let first = vacancy.front.item();
         let Some(second) = vacancy.slab.next(token, first) else {
@@ -373,7 +382,7 @@ impl<'a, 'token, 'p, 'd, T> Reservation<'a, 'token, 'p, 'd, T> {
     }
 }
 
-impl<'a, 'token, 'p, 'd, T> Pair<'a, 'token, 'p, 'd, T> {
+impl<'a, 'token, 'p, 'd, T, P: data::position::State> Pair<'a, 'token, 'p, 'd, T, P> {
     pub(in crate::link::egress) fn reserve(
         self,
     ) -> (
@@ -406,9 +415,11 @@ const _: () =
     assert!(mem::size_of::<head::Cell<Option<Index<'static>>>>() == mem::size_of::<u32>());
 
 const _: () = {
-    let tail = mem::size_of::<credit::Stored<'_>>()
-        + mem::size_of::<[u32; 2]>()
-        + mem::size_of::<scatter::raw::Position>();
+    let tail = mem::size_of::<credit::Stored<'_>>() + mem::size_of::<[u32; 2]>();
+    assert!(
+        mem::size_of::<Cell<'_, '_, &[u8], data::position::Saved>>()
+            == mem::size_of::<Cell<'_, '_, &[u8]>>() + mem::size_of::<data::position::Saved>()
+    );
     assert!(
         mem::size_of::<Cell<'_, '_, &[u8]>>() == mem::size_of::<egress::NonEmpty<&[u8]>>() + tail
     );

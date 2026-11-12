@@ -5,7 +5,7 @@ use o3::base::cell::region;
 use slots::Slots;
 
 use crate::link::egress::{
-    self,
+    self, data,
     load::{Value, credit},
     metadata,
     reserve::{
@@ -29,12 +29,21 @@ fn storage(lane: metadata::Lane, bounds: Bounds, free: egress::Entries) -> egres
 
 /// Reserved final-link nodes whose state owns their capacity charge.
 #[must_use = "dropping vacant final-link nodes rolls the reservation back"]
-pub struct Vacant<'queue, 'token, 'p, 'd, B, D: demand::Mode = demand::Fallible> {
+pub struct Vacant<
+    'queue,
+    'token,
+    'p,
+    'd,
+    B: data::raw::Payload<'d>,
+    D: demand::Mode = demand::Fallible,
+> {
     bounds: Bounds,
     state: Guard<'token, 'd, Slots<'queue, 'p, 'd, B, D>>,
 }
 
-impl<'queue, 'token, 'p, 'd, B, D: demand::Mode> Vacant<'queue, 'token, 'p, 'd, B, D> {
+impl<'queue, 'token, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode>
+    Vacant<'queue, 'token, 'p, 'd, B, D>
+{
     pub(super) const fn empty(
         token: &'token mut region::Token<region::Identity<'d>>,
         bounds: Bounds,
@@ -49,7 +58,7 @@ impl<'queue, 'token, 'p, 'd, B, D: demand::Mode> Vacant<'queue, 'token, 'p, 'd, 
         bounds: Bounds,
         shape: Shape,
         token: &'token mut region::Token<region::Identity<'d>>,
-        mut credit: credit::Reserve<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
+        mut credit: credit::Reserve<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
     ) -> Result<Self, egress::Admission> {
         let queue = credit.queue();
         let slots = match queue.pool.store.reservation(token) {
@@ -112,17 +121,25 @@ impl<'queue, 'token, 'p, 'd, B, D: demand::Mode> Vacant<'queue, 'token, 'p, 'd, 
 
 const _: () = {
     assert!(
-        mem::size_of::<Vacant<'static, 'static, 'static, 'static, ()>>()
+        mem::size_of::<Vacant<'static, 'static, 'static, 'static, &'static [u8]>>()
             == mem::size_of::<(
                 Bounds,
-                Guard<'static, 'static, Slots<'static, 'static, 'static, (), demand::Fallible>>,
+                Guard<
+                    'static,
+                    'static,
+                    Slots<'static, 'static, 'static, &'static [u8], demand::Fallible>,
+                >,
             )>()
     );
     assert!(
-        mem::align_of::<Vacant<'static, 'static, 'static, 'static, ()>>()
+        mem::align_of::<Vacant<'static, 'static, 'static, 'static, &'static [u8]>>()
             == mem::align_of::<(
                 Bounds,
-                Guard<'static, 'static, Slots<'static, 'static, 'static, (), demand::Fallible>>,
+                Guard<
+                    'static,
+                    'static,
+                    Slots<'static, 'static, 'static, &'static [u8], demand::Fallible>,
+                >,
             )>()
     );
 };

@@ -5,6 +5,7 @@ use o3::mem;
 
 use crate::link::egress::{
     self,
+    data::position,
     load::credit,
     metadata::{self, batch},
     reserve::demand,
@@ -33,20 +34,21 @@ pub(in crate::link::egress) struct Part<
     V,
     M: credit::Access<'p, 'd>,
     D: demand::Mode,
+    P: position::State = (),
 > {
-    claim: credit::Claim<'queue, 'p, 'd, T, M, D>,
+    claim: credit::Claim<'queue, 'p, 'd, T, M, D, P>,
     rest: credit::Amount,
     load: egress::NonEmpty<V>,
 }
 
-impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode>
-    Part<'queue, 'p, 'd, T, V, M, D>
+impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
+    Part<'queue, 'p, 'd, T, V, M, D, P>
 {
     /// The claim supplies one entry; admission checks its resident charge.
     pub(in crate::link::egress) fn try_new(
-        claim: credit::Claim<'queue, 'p, 'd, T, M, D>,
+        claim: credit::Claim<'queue, 'p, 'd, T, M, D, P>,
         load: egress::NonEmpty<V>,
-    ) -> Result<Self, Rejected<'queue, 'p, 'd, T, V, M, D>> {
+    ) -> Result<Self, Rejected<'queue, 'p, 'd, T, V, M, D, P>> {
         let current = claim.reserve.amount().resident();
         let rest = match current.checked_sub(load.geometry().resident()) {
             Ok(rest) => credit::Amount::new(egress::Entries::new(0), rest),
@@ -57,14 +59,17 @@ impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode>
 
     pub(in crate::link::egress) fn into_parts(
         self,
-    ) -> (credit::Claim<'queue, 'p, 'd, T, M, D>, egress::NonEmpty<V>) {
+    ) -> (
+        credit::Claim<'queue, 'p, 'd, T, M, D, P>,
+        egress::NonEmpty<V>,
+    ) {
         (self.claim, self.load)
     }
 
     pub(in crate::link::egress) fn take(
         self,
     ) -> (
-        credit::Reserve<'queue, 'p, 'd, T, M, D>,
+        credit::Reserve<'queue, 'p, 'd, T, M, D, P>,
         Stored<'p>,
         egress::NonEmpty<V>,
     ) {
@@ -217,13 +222,13 @@ impl<'p> Stored<'p> {
     }
 }
 
-impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode>
-    credit::Claim<'queue, 'p, 'd, T, M, D>
+impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
+    credit::Claim<'queue, 'p, 'd, T, M, D, P>
 {
     pub(in crate::link::egress) fn bind(
         self,
         bytes: transfer::NonZero,
-    ) -> (metadata::Queue<'queue, 'p, 'd, T, M, D>, Stored<'p>) {
+    ) -> (metadata::Queue<'queue, 'p, 'd, T, M, D, P>, Stored<'p>) {
         let (queue, grant) = self.into_parts();
         // SAFETY: Claim is constructed only from an exact one-entry acquisition.
         let stored = Stored(unsafe { grant.bind(Hold { bytes }) }.map());
@@ -245,8 +250,8 @@ const _: () = {
     );
 };
 
-type Rejected<'queue, 'p, 'd, T, V, M, D> = (
-    credit::Claim<'queue, 'p, 'd, T, M, D>,
+type Rejected<'queue, 'p, 'd, T, V, M, D, P> = (
+    credit::Claim<'queue, 'p, 'd, T, M, D, P>,
     egress::NonEmpty<V>,
     egress::Shortage,
 );

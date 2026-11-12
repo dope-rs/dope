@@ -3,7 +3,7 @@ use dope_core::driver::{route, route::Identity};
 use crate::{
     link::{
         duplex,
-        egress::reserve::demand,
+        egress::{data, reserve::demand},
         event,
         pool::{
             self,
@@ -45,6 +45,7 @@ pub trait Dispatch<W: wire::Spec>: Sized + storage::raw::Mode + drain::Policy<W>
         T: crate::Transport,
         W: wire::Spec + 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
     {
         let (item, timing) = item.into_parts();
@@ -65,6 +66,7 @@ pub trait Dispatch<W: wire::Spec>: Sized + storage::raw::Mode + drain::Policy<W>
         T: crate::Transport,
         W: wire::Spec + 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
     {
         match Resume::try_new(pool, target) {
@@ -82,6 +84,7 @@ pub trait Dispatch<W: wire::Spec>: Sized + storage::raw::Mode + drain::Policy<W>
         T: crate::Transport,
         W: wire::Spec + 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
     {
         let key = item.key();
@@ -105,6 +108,7 @@ pub trait Dispatch<W: wire::Spec>: Sized + storage::raw::Mode + drain::Policy<W>
         T: crate::Transport,
         W: wire::Spec + 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
     {
         let Some((slot, mut recv)) =
@@ -140,6 +144,7 @@ pub trait Dispatch<W: wire::Spec>: Sized + storage::raw::Mode + drain::Policy<W>
         T: crate::Transport,
         W: wire::Spec + 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
     {
         let Some((slot, queued)) = pool.prepared.slab.read(key.parts()) else {
@@ -190,6 +195,7 @@ where
         T: crate::Transport,
         W: wire::Spec + 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
     {
         match Resume::try_new(pool, target) {
@@ -226,6 +232,7 @@ where
         T: crate::Transport,
         W: wire::Spec + 'w + 'd,
         M: input::Mode<W, Ingress = Self>,
+        B: data::raw::Payload<'d>,
         D: demand::Mode,
     {
         match Resume::try_new(pool, target) {

@@ -19,7 +19,7 @@ use crate::{
     link::{
         duplex,
         duplex::Cancel,
-        egress::reserve::demand,
+        egress::{data, reserve::demand},
         event,
         pool::{
             self, pending,
@@ -41,7 +41,7 @@ pub struct Receiver<
     W: wire::Spec + 'w + 'd,
     S,
     M: input::Mode<W>,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode = demand::Fallible,
 > where
@@ -50,7 +50,7 @@ pub struct Receiver<
     pool: &'a mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
 }
 
-impl<'a, 'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+impl<'a, 'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
     Receiver<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
     'd: 'w,

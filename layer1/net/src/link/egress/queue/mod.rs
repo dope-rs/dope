@@ -30,10 +30,10 @@ pub struct Queue<
     'p,
     'd,
     const IOV: usize,
-    B = storage::Shared,
+    B: data::raw::Payload<'d> = storage::Shared,
     D: demand::Mode = demand::Fallible,
 > {
-    pub(super) entries: metadata::Queue<'a, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
+    pub(super) entries: metadata::Queue<'a, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
 }
 
 impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
@@ -105,7 +105,7 @@ impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
     }
 }
 
-impl<'a, 'p, 'd, const IOV: usize, B> Queue<'a, 'p, 'd, IOV, B> {
+impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>> Queue<'a, 'p, 'd, IOV, B> {
     pub fn try_batch<'token, R, E>(
         &self,
         token: &'token mut region::Token<region::Identity<'d>>,

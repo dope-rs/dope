@@ -2,6 +2,7 @@ use o3::base::cell::region;
 
 use crate::link::egress::{
     self,
+    data::position,
     load::credit,
     metadata,
     reserve::{demand, guard::Rollback},
@@ -16,21 +17,24 @@ pub(in crate::link::egress) struct Claim<
     T,
     M = metadata::Local,
     D: demand::Mode = demand::Fallible,
+    P: position::State = (),
 > where
     M: credit::Access<'p, 'd>,
 {
-    pub(super) reserve: credit::Reserve<'queue, 'p, 'd, T, M, D>,
+    pub(super) reserve: credit::Reserve<'queue, 'p, 'd, T, M, D, P>,
 }
 
-impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode> Claim<'queue, 'p, 'd, T, M, D> {
+impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
+    Claim<'queue, 'p, 'd, T, M, D, P>
+{
     pub(in crate::link::egress) const fn from(
-        reserve: credit::Reserve<'queue, 'p, 'd, T, M, D>,
+        reserve: credit::Reserve<'queue, 'p, 'd, T, M, D, P>,
     ) -> Self {
         Self { reserve }
     }
 
     pub(in crate::link::egress) fn try_acquire(
-        queue: metadata::Queue<'queue, 'p, 'd, T, M, D>,
+        queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
         token: &mut region::Token<region::Identity<'d>>,
         held: egress::Resident,
     ) -> Result<Self, egress::Admission> {
@@ -40,19 +44,22 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode> Claim<'queue
         })
     }
 
-    pub(in crate::link::egress) fn queue(&self) -> metadata::Queue<'queue, 'p, 'd, T, M, D> {
+    pub(in crate::link::egress) fn queue(&self) -> metadata::Queue<'queue, 'p, 'd, T, M, D, P> {
         self.reserve.queue()
     }
 
     pub(super) fn into_parts(
         self,
-    ) -> (metadata::Queue<'queue, 'p, 'd, T, M, D>, credit::Grant<'p>) {
+    ) -> (
+        metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
+        credit::Grant<'p>,
+    ) {
         self.reserve.into_parts()
     }
 }
 
-impl<'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode> Rollback<'d>
-    for Claim<'_, 'p, 'd, T, M, D>
+impl<'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State> Rollback<'d>
+    for Claim<'_, 'p, 'd, T, M, D, P>
 {
     fn rollback(self, token: &mut region::Token<region::Identity<'d>>) {
         self.reserve.rollback(token);

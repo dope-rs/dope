@@ -9,7 +9,6 @@ use o3::buffer::{
     self, pool,
     raw::Scatter,
     resident::{self, bound},
-    segments::scatter,
     storage,
 };
 
@@ -176,7 +175,7 @@ fn resumes_split_edges() {
         let body = resident::Shared::from(&bytes[split..]);
         let pair = pair::Source::try_new(prefix, body).ok().expect("pair");
         let payload = pair.as_inner();
-        let mut position = scatter::raw::Position::new();
+        let mut position = ();
         for start in 0..bytes.len() {
             let offset = transfer::Len::try_new(start).expect("offset");
             // SAFETY: the position traverses only this unchanged pair, and every

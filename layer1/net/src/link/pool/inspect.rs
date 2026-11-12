@@ -24,7 +24,7 @@ pub struct Inspect<
     W: wire::Spec,
     S,
     M: input::Mode<W>,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode = demand::Fallible,
 > where
@@ -33,7 +33,7 @@ pub struct Inspect<
     pool: &'a pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
 }
 
-impl<'a, 'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+impl<'a, 'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
     Inspect<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
     'd: 'w,
@@ -77,10 +77,7 @@ where
     pub fn egress(
         &self,
         key: pool::Key<'d, ID>,
-    ) -> Option<(&'a types::Connection<'w, 'd, ID, W, S>, egress::Pending)>
-    where
-        B: data::raw::Payload<'d>,
-    {
+    ) -> Option<(&'a types::Connection<'w, 'd, ID, W, S>, egress::Pending)> {
         let slot = self.pool.prepared.slab.get(key.parts())?;
         let pending = self.pool.prepared.egress.pending(key);
         Some((slot, pending))

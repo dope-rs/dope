@@ -21,16 +21,26 @@ pub(in crate::link) struct Storage<
     'p,
     'd,
     ID: Identity,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode = demand::Fallible,
 > {
-    lanes:
-        arena::Arena<'p, 'd, B, Option<flight::Lease<'p, 'd, IOV>>, credit::Ready<'p, 'd>, ID, D>,
+    lanes: arena::Arena<
+        'p,
+        'd,
+        B,
+        Option<flight::Lease<'p, 'd, IOV>>,
+        credit::Ready<'p, 'd>,
+        ID,
+        D,
+        B::Position,
+    >,
     flights: &'p recycle::Store<flight::Entry<IOV>>,
 }
 
-impl<'p, 'd, ID: Identity, B, const IOV: usize, D: demand::Mode> Storage<'p, 'd, ID, B, IOV, D> {
+impl<'p, 'd, ID: Identity, B: data::raw::Payload<'d>, const IOV: usize, D: demand::Mode>
+    Storage<'p, 'd, ID, B, IOV, D>
+{
     pub(in crate::link) fn has_work(&self) -> bool {
         self.lanes.pool.credit.has_work()
     }
@@ -143,8 +153,15 @@ impl<'p, 'd, ID: Identity, B: data::raw::Payload<'d>, const IOV: usize, D: deman
     }
 }
 
-impl<'p, 'd, ID: Identity, L, R: data::raw::Payload<'d>, const IOV: usize, D: demand::Mode>
-    Storage<'p, 'd, ID, compose::Either<L, R>, IOV, D>
+impl<
+    'p,
+    'd,
+    ID: Identity,
+    L: data::raw::Payload<'d>,
+    R: data::raw::Payload<'d>,
+    const IOV: usize,
+    D: demand::Mode,
+> Storage<'p, 'd, ID, compose::Either<L, R>, IOV, D>
 {
     pub(in crate::link) fn try_right(
         &self,

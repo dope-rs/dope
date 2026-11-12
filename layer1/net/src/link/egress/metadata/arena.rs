@@ -14,6 +14,7 @@ use o3::{alloc, base::cell::region, mem, mem::quota};
 use crate::link::{
     egress::{
         self, create,
+        data::position,
         load::credit,
         metadata::{self, arena, lane, pool::Pool},
         reserve::demand,
@@ -21,16 +22,33 @@ use crate::link::{
     pool,
 };
 
-pub struct Arena<'p, 'd, T, S = (), M = metadata::Local, O = (), D: demand::Mode = demand::Fallible>
-{
-    pub(in crate::link::egress) pool: Pool<'p, 'd, T, M, D>,
+pub struct Arena<
+    'p,
+    'd,
+    T,
+    S = (),
+    M = metadata::Local,
+    O = (),
+    D: demand::Mode = demand::Fallible,
+    P: position::State = (),
+> {
+    pub(in crate::link::egress) pool: Pool<'p, 'd, T, M, D, P>,
     slots: Box<[S]>,
     lanes: metadata::LaneCount,
     owner: marker::PhantomData<O>,
 }
 
-pub struct Slot<'a, 'p, 'd, T, S, M = metadata::Local, D: demand::Mode = demand::Fallible> {
-    pool: &'a Pool<'p, 'd, T, M, D>,
+pub struct Slot<
+    'a,
+    'p,
+    'd,
+    T,
+    S,
+    M = metadata::Local,
+    D: demand::Mode = demand::Fallible,
+    P: position::State = (),
+> {
+    pool: &'a Pool<'p, 'd, T, M, D, P>,
     state: &'a S,
     lane: metadata::Lane,
 }
@@ -72,7 +90,9 @@ impl<'p, 'd, T, S> Arena<'p, 'd, T, S, metadata::Local, (), demand::Fallible> {
     }
 }
 
-impl<'p, 'd, T, S, O, D: demand::Mode> Arena<'p, 'd, T, S, credit::Ready<'p, 'd>, O, D> {
+impl<'p, 'd, T, S, O, D: demand::Mode, P: position::State>
+    Arena<'p, 'd, T, S, credit::Ready<'p, 'd>, O, D, P>
+{
     /// Uses the fresh store initialized by retained egress storage construction.
     pub(in crate::link::egress) fn try_driver(
         token: &region::Token<region::Identity<'d>>,
@@ -95,7 +115,7 @@ impl<'p, 'd, T, S, O, D: demand::Mode> Arena<'p, 'd, T, S, credit::Ready<'p, 'd>
     }
 }
 
-impl<'p, 'd, T, S, M, O, D: demand::Mode> Arena<'p, 'd, T, S, M, O, D> {
+impl<'p, 'd, T, S, M, O, D: demand::Mode, P: position::State> Arena<'p, 'd, T, S, M, O, D, P> {
     pub const fn len(&self) -> metadata::LaneCount {
         self.lanes
     }
@@ -106,7 +126,7 @@ impl<'p, 'd, T, S, M, O, D: demand::Mode> Arena<'p, 'd, T, S, M, O, D> {
         self.pool.config()
     }
 
-    pub fn get(&self, lane: metadata::Lane) -> Option<Slot<'_, 'p, 'd, T, S, M, D>> {
+    pub fn get(&self, lane: metadata::Lane) -> Option<Slot<'_, 'p, 'd, T, S, M, D, P>> {
         let state = self.slots.get(lane.index().into_usize())?;
         Some(Slot {
             pool: &self.pool,
@@ -116,11 +136,13 @@ impl<'p, 'd, T, S, M, O, D: demand::Mode> Arena<'p, 'd, T, S, M, O, D> {
     }
 }
 
-impl<'p, 'd, T, S, M, D: demand::Mode, ID: Identity> Arena<'p, 'd, T, S, M, ID, D> {
+impl<'p, 'd, T, S, M, D: demand::Mode, ID: Identity, P: position::State>
+    Arena<'p, 'd, T, S, M, ID, D, P>
+{
     pub(in crate::link::egress) fn bind(
         &self,
         key: pool::Key<'d, ID>,
-    ) -> Slot<'_, 'p, 'd, T, S, M, D> {
+    ) -> Slot<'_, 'p, 'd, T, S, M, D, P> {
         // SAFETY: the tagged arena and route slab are allocated together from
         // one connection capacity. `Key` is minted only by a successful slab
         // reservation and retains the affine route-owner brand.
@@ -135,7 +157,7 @@ impl<'p, 'd, T, S, M, D: demand::Mode, ID: Identity> Arena<'p, 'd, T, S, M, ID, 
     pub(in crate::link::egress) fn bind_mut(
         &mut self,
         key: pool::Key<'d, ID>,
-    ) -> (&mut S, metadata::Queue<'_, 'p, 'd, T, M, D>) {
+    ) -> (&mut S, metadata::Queue<'_, 'p, 'd, T, M, D, P>) {
         let lane = metadata::Lane::from_slot(key.lane());
         // SAFETY: the tagged arena and route slab are allocated together from
         // one connection capacity. `Key` is minted only by a successful slab
@@ -151,20 +173,20 @@ impl<'p, 'd, T, S, M, D: demand::Mode, ID: Identity> Arena<'p, 'd, T, S, M, ID, 
     }
 }
 
-impl<'p, T, S, M, D: demand::Mode> Clone for Slot<'_, 'p, '_, T, S, M, D> {
+impl<'p, T, S, M, D: demand::Mode, P: position::State> Clone for Slot<'_, 'p, '_, T, S, M, D, P> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'p, T, S, M, D: demand::Mode> Copy for Slot<'_, 'p, '_, T, S, M, D> {}
+impl<'p, T, S, M, D: demand::Mode, P: position::State> Copy for Slot<'_, 'p, '_, T, S, M, D, P> {}
 
-impl<'a, 'p, 'd, T, S, M, D: demand::Mode> Slot<'a, 'p, 'd, T, S, M, D> {
+impl<'a, 'p, 'd, T, S, M, D: demand::Mode, P: position::State> Slot<'a, 'p, 'd, T, S, M, D, P> {
     pub fn state(self) -> &'a S {
         self.state
     }
 
-    pub fn queue(self) -> metadata::Queue<'a, 'p, 'd, T, M, D> {
+    pub fn queue(self) -> metadata::Queue<'a, 'p, 'd, T, M, D, P> {
         metadata::Queue {
             pool: self.pool,
             lane: self.lane,

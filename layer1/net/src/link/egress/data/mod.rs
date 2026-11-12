@@ -9,6 +9,7 @@ mod chunks;
 pub mod compose;
 pub mod exec;
 pub mod pair;
+pub mod position;
 pub mod raw;
 
 /// Absolute byte position within one logical payload.

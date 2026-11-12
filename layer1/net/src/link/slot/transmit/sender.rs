@@ -30,7 +30,7 @@ pub struct Sender<
     ID: Identity + 'w,
     W: wire::Spec + 'w,
     S,
-    B,
+    B: data::raw::Payload<'d>,
     const IOV: usize,
     D: demand::Mode = demand::Fallible,
 > {
@@ -40,11 +40,10 @@ pub struct Sender<
     pub(in crate::link) queue: egress::Output<'a, 'p, 'd, IOV, B, D>,
 }
 
-impl<'a, 'p, 'w, 'd, ID: Identity + 'w, W, S, B, const IOV: usize, D>
+impl<'a, 'p, 'w, 'd, ID: Identity + 'w, W, S, B: data::raw::Payload<'d>, const IOV: usize, D>
     Sender<'a, 'p, 'w, 'd, ID, W, S, B, IOV, D>
 where
     W: wire::Spec + 'w,
-    B: data::raw::Payload<'d>,
     D: demand::Mode,
 {
     /// Borrows application state and append access while retaining send ownership.

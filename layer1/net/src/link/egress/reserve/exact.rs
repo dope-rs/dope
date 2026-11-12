@@ -16,8 +16,15 @@ use crate::link::egress::{
 
 /// One owned payload paired with the exact queue geometry derived from it.
 #[must_use]
-pub struct Offer<'queue, 'p, 'd, B, D: demand::Mode = demand::Fallible, S = B> {
-    queue: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
+pub struct Offer<
+    'queue,
+    'p,
+    'd,
+    B: data::raw::Payload<'d>,
+    D: demand::Mode = demand::Fallible,
+    S = B,
+> {
+    queue: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
     value: NonEmpty<S>,
 }
 
@@ -45,7 +52,15 @@ pub enum Failure {
 
 /// One attempt to reserve capacity for an owned exact payload.
 #[must_use]
-pub enum Outcome<'queue, 'token, 'p, 'd, B, D: demand::Mode = demand::Fallible, S = B> {
+pub enum Outcome<
+    'queue,
+    'token,
+    'p,
+    'd,
+    B: data::raw::Payload<'d>,
+    D: demand::Mode = demand::Fallible,
+    S = B,
+> {
     Ready(Prepared<'queue, 'token, 'p, 'd, B, D, S>),
     Pending(NonEmpty<S>),
     Rejected(Unavailable<S>),
@@ -53,14 +68,26 @@ pub enum Outcome<'queue, 'token, 'p, 'd, B, D: demand::Mode = demand::Fallible, 
 
 /// A non-empty payload validated against its exact reserved geometry.
 #[must_use = "dropping a prepared payload rolls its reservation back"]
-pub struct Prepared<'queue, 'token, 'p, 'd, B, D: demand::Mode = demand::Fallible, S = B> {
-    state: Guard<'token, 'd, pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D>>,
+pub struct Prepared<
+    'queue,
+    'token,
+    'p,
+    'd,
+    B: data::raw::Payload<'d>,
+    D: demand::Mode = demand::Fallible,
+    S = B,
+> {
+    state: Guard<
+        'token,
+        'd,
+        pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, B::Position>,
+    >,
     value: NonEmpty<S>,
 }
 
-impl<'queue, 'p, 'd, B, D: demand::Mode, S> Offer<'queue, 'p, 'd, B, D, S> {
+impl<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode, S> Offer<'queue, 'p, 'd, B, D, S> {
     pub(in crate::link::egress) fn new(
-        queue: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D>,
+        queue: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
         value: NonEmpty<S>,
     ) -> Result<Self, Unavailable<S>> {
         let expected = value.geometry();
@@ -137,7 +164,7 @@ impl<S> Unavailable<S> {
     }
 }
 
-impl<'queue, 'token, 'p, 'd, L, R, D: demand::Mode>
+impl<'queue, 'token, 'p, 'd, L: data::raw::Payload<'d>, R: data::raw::Payload<'d>, D: demand::Mode>
     Prepared<'queue, 'token, 'p, 'd, compose::Either<L, R>, D, R>
 {
     pub fn right(self) {
@@ -147,8 +174,16 @@ impl<'queue, 'token, 'p, 'd, L, R, D: demand::Mode>
     }
 }
 
-impl<'queue, 'token, 'p, 'd, H, L, R, D: demand::Mode>
-    Prepared<'queue, 'token, 'p, 'd, compose::Either<H, compose::Either<L, R>>, D, L>
+impl<
+    'queue,
+    'token,
+    'p,
+    'd,
+    H: data::raw::Payload<'d>,
+    L: data::raw::Payload<'d>,
+    R: data::raw::Payload<'d>,
+    D: demand::Mode,
+> Prepared<'queue, 'token, 'p, 'd, compose::Either<H, compose::Either<L, R>>, D, L>
 {
     pub fn right_left(self) {
         let Self { state, value } = self;
@@ -157,8 +192,16 @@ impl<'queue, 'token, 'p, 'd, H, L, R, D: demand::Mode>
     }
 }
 
-impl<'queue, 'token, 'p, 'd, H, L, R, D: demand::Mode>
-    Prepared<'queue, 'token, 'p, 'd, compose::Either<H, compose::Either<L, R>>, D, R>
+impl<
+    'queue,
+    'token,
+    'p,
+    'd,
+    H: data::raw::Payload<'d>,
+    L: data::raw::Payload<'d>,
+    R: data::raw::Payload<'d>,
+    D: demand::Mode,
+> Prepared<'queue, 'token, 'p, 'd, compose::Either<H, compose::Either<L, R>>, D, R>
 {
     pub fn right_right(self) {
         let Self { state, value } = self;
@@ -167,7 +210,7 @@ impl<'queue, 'token, 'p, 'd, H, L, R, D: demand::Mode>
     }
 }
 
-impl<'queue, 'token, 'p, 'd, T, K, D: demand::Mode>
+impl<'queue, 'token, 'p, 'd, T: data::raw::Payload<'d>, K, D: demand::Mode>
     Prepared<'queue, 'token, 'p, 'd, T, D, compose::Tagged<T, K>>
 {
     pub(in crate::link::egress) fn untag(self) {
@@ -177,7 +220,17 @@ impl<'queue, 'token, 'p, 'd, T, K, D: demand::Mode>
     }
 }
 
-impl<'queue, 'token, 'p, 'd, H, L, R, G, D: demand::Mode>
+impl<
+    'queue,
+    'token,
+    'p,
+    'd,
+    H: data::raw::Payload<'d>,
+    L: data::raw::Payload<'d>,
+    R: data::raw::Payload<'d>,
+    G: o3::buffer::resident::bound::Bound,
+    D: demand::Mode,
+>
     Prepared<
         'queue,
         'token,
@@ -195,8 +248,16 @@ impl<'queue, 'token, 'p, 'd, H, L, R, G, D: demand::Mode>
     }
 }
 
-impl<'queue, 'token, 'p, 'd, L, R, D: demand::Mode, U: lease::Commit<Item = L>>
-    Prepared<'queue, 'token, 'p, 'd, compose::Either<L, R>, D, lease::Lease<U>>
+impl<
+    'queue,
+    'token,
+    'p,
+    'd,
+    L: data::raw::Payload<'d>,
+    R: data::raw::Payload<'d>,
+    D: demand::Mode,
+    U: lease::Commit<Item = L>,
+> Prepared<'queue, 'token, 'p, 'd, compose::Either<L, R>, D, lease::Lease<U>>
 {
     pub fn commit_left(self) {
         let Self { state, value } = self;
@@ -207,8 +268,16 @@ impl<'queue, 'token, 'p, 'd, L, R, D: demand::Mode, U: lease::Commit<Item = L>>
     }
 }
 
-impl<'queue, 'token, 'p, 'd, L, R, D: demand::Mode, U: lease::Commit<Item = R>>
-    Prepared<'queue, 'token, 'p, 'd, compose::Either<L, R>, D, lease::Lease<U>>
+impl<
+    'queue,
+    'token,
+    'p,
+    'd,
+    L: data::raw::Payload<'d>,
+    R: data::raw::Payload<'d>,
+    D: demand::Mode,
+    U: lease::Commit<Item = R>,
+> Prepared<'queue, 'token, 'p, 'd, compose::Either<L, R>, D, lease::Lease<U>>
 {
     pub fn commit_right(self) {
         let Self { state, value } = self;
@@ -219,7 +288,9 @@ impl<'queue, 'token, 'p, 'd, L, R, D: demand::Mode, U: lease::Commit<Item = R>>
     }
 }
 
-impl<'queue, 'token, 'p, 'd, B, D: demand::Mode> Prepared<'queue, 'token, 'p, 'd, B, D> {
+impl<'queue, 'token, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode>
+    Prepared<'queue, 'token, 'p, 'd, B, D>
+{
     pub fn publish(self) {
         let Self { state, value } = self;
         let (token, slot) = state.into_parts();
@@ -237,21 +308,21 @@ impl<'queue, 'token, 'p, 'd, B, D: demand::Mode> Prepared<'queue, 'token, 'p, 'd
 const _: () = {
     assert!(mem::size_of::<Failure>() == 2 * mem::size_of::<usize>());
     assert!(
-        mem::size_of::<Offer<'static, 'static, 'static, ()>>()
+        mem::size_of::<Offer<'static, 'static, 'static, &'static [u8]>>()
             == mem::size_of::<(
                 metadata::Queue<
                     'static,
                     'static,
                     'static,
-                    (),
+                    &'static [u8],
                     credit::Ready<'static, 'static>,
                     demand::Fallible,
                 >,
-                NonEmpty<()>,
+                NonEmpty<&'static [u8]>,
             )>()
     );
     assert!(
-        mem::size_of::<Prepared<'static, 'static, 'static, 'static, ()>>()
+        mem::size_of::<Prepared<'static, 'static, 'static, 'static, &'static [u8]>>()
             == mem::size_of::<(
                 Guard<
                     'static,
@@ -260,13 +331,13 @@ const _: () = {
                         'static,
                         'static,
                         'static,
-                        (),
+                        &'static [u8],
                         (),
                         credit::Ready<'static, 'static>,
                         demand::Fallible,
                     >,
                 >,
-                NonEmpty<()>,
+                NonEmpty<&'static [u8]>,
             )>()
     );
 };

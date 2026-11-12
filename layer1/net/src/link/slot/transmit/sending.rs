@@ -141,7 +141,11 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
         }
     }
 
-    pub(in crate::link) fn abort_queue<const IOV: usize, B, D: demand::Mode>(
+    pub(in crate::link) fn abort_queue<
+        const IOV: usize,
+        B: data::raw::Payload<'d>,
+        D: demand::Mode,
+    >(
         &mut self,
         queue: &mut egress::Output<'_, '_, 'd, IOV, B, D>,
     ) {

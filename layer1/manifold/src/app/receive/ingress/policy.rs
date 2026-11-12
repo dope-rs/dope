@@ -6,7 +6,7 @@ use dope_core::{
 };
 use dope_net::{
     link::{
-        egress::reserve::demand,
+        egress::{data, reserve::demand},
         event,
         pool::{
             self,
@@ -30,7 +30,7 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
     type Transport: dope_net::Transport;
     type Wire: wire::Spec + 'w + 'd;
     type State;
-    type Payload;
+    type Payload: data::raw::Payload<'d>;
     type Reserve: demand::Mode;
     type Input: Mode<Self::Wire> + Dispatch<Self::Wire>;
 

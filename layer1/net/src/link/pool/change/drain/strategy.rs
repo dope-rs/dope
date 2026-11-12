@@ -3,7 +3,7 @@ use dope_core::driver::{receive::credit, route::Identity};
 use crate::{
     link::{
         duplex,
-        egress::reserve::demand,
+        egress::{data, reserve::demand},
         pool::{
             change::{
                 close::{Approval, Commit, Decision, Failed, Owner, Resume},
@@ -59,7 +59,7 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
         ID: Identity + 'w,
         S,
         M,
-        B,
+        B: data::raw::Payload<'d>,
         const IOV: usize,
         D,
         R,

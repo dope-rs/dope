@@ -1,21 +1,21 @@
 use std::{mem, num::NonZero};
 
-use o3::buffer::{
-    self, Residency as _, hold, pool, resident, resident::bound, segments, segments::scatter,
-    storage,
-};
+use o3::buffer::{self, Residency as _, hold, pool, resident, resident::bound, segments, storage};
 
 use crate::link::egress::data::{
     self, Bound, compose,
     compose::{Either, Tagged},
-    exec, pair,
+    exec, pair, position,
+    position::State as _,
 };
 
 /// # Safety
 /// Shared access fixes bytes, length, and charge; `start()` spans `len()`.
 /// Offset cursors yield the exact nonempty suffix, or `None` at the end.
+/// `Position::default()` starts traversal for a newly retained payload.
 pub unsafe trait Payload<'d> {
     type Mode: exec::Mode;
+    type Position: position::State;
 
     type Cursor<'a>: buffer::raw::Scatter<'a>
     where
@@ -34,7 +34,7 @@ pub unsafe trait Payload<'d> {
     /// strictly below its length; each implementor rebuilds from that proof.
     unsafe fn resume(
         &self,
-        position: &mut scatter::raw::Position,
+        position: &mut Self::Position,
         offset: data::Offset,
     ) -> Self::Cursor<'_>;
 }
@@ -107,6 +107,7 @@ unsafe impl<'d, 'a: 'd> Contiguous<'d> for &'a [u8] {}
 // borrow. Offset::tail rejects empty suffixes and preserves that exact borrow.
 unsafe impl<'d, T: Contiguous<'d>> Payload<'d> for T {
     type Mode = exec::Fallible;
+    type Position = ();
     type Cursor<'a>
         = &'a [u8]
     where
@@ -129,11 +130,7 @@ unsafe impl<'d, T: Contiguous<'d>> Payload<'d> for T {
         offset.tail(self.as_ref())
     }
 
-    unsafe fn resume(
-        &self,
-        _: &mut scatter::raw::Position,
-        offset: data::Offset,
-    ) -> Self::Cursor<'_> {
+    unsafe fn resume(&self, _: &mut Self::Position, offset: data::Offset) -> Self::Cursor<'_> {
         // SAFETY: resume requires an offset within this unchanged payload;
         // Contiguous fixes the slice length for the complete shared borrow.
         unsafe { self.as_ref().get_unchecked(offset.get()..) }
@@ -146,6 +143,7 @@ where
     O: buffer::raw::Segment + data::raw::StableOwner<'d>,
 {
     type Mode = exec::Fallible;
+    type Position = position::Saved;
     type Cursor<'a>
         = <segments::Chain<O> as buffer::raw::Chunks>::Cursor<'a>
     where
@@ -165,12 +163,12 @@ where
 
     unsafe fn resume(
         &self,
-        position: &mut scatter::raw::Position,
+        position: &mut Self::Position,
         offset: data::Offset,
     ) -> Self::Cursor<'_> {
         // SAFETY: the caller retains this unchanged chain and its position;
         // StableOwner preserves every segment address throughout traversal.
-        unsafe { position.resume(self, offset.get()) }
+        unsafe { position.0.resume(self, offset.get()) }
     }
 
     fn cursor(&self, offset: data::Offset) -> Option<Self::Cursor<'_>> {
@@ -214,6 +212,7 @@ unsafe impl<'a> buffer::raw::Scatter<'a> for pair::Cursor<'a> {
 // SAFETY: The owned buffer or sealed segment owner fixes its bytes and accounting; cursors borrow that same owner.
 unsafe impl<'d, T: data::raw::Payload<'d>, G: bound::Bound> data::raw::Payload<'d> for Bound<T, G> {
     type Mode = exec::Guaranteed<G>;
+    type Position = T::Position;
 
     type Cursor<'a>
         = T::Cursor<'a>
@@ -238,7 +237,7 @@ unsafe impl<'d, T: data::raw::Payload<'d>, G: bound::Bound> data::raw::Payload<'
 
     unsafe fn resume(
         &self,
-        position: &mut scatter::raw::Position,
+        position: &mut Self::Position,
         offset: data::Offset,
     ) -> Self::Cursor<'_> {
         // SAFETY: the bound retains the same immutable payload throughout traversal.
@@ -251,6 +250,7 @@ unsafe impl<'d, A: data::raw::Payload<'d>, B: data::raw::Payload<'d>> data::raw:
     for Either<A, B>
 {
     type Mode = exec::Fallible;
+    type Position = <A::Position as position::State>::Join<B::Position>;
     type Cursor<'a>
         = Either<A::Cursor<'a>, B::Cursor<'a>>
     where
@@ -286,13 +286,17 @@ unsafe impl<'d, A: data::raw::Payload<'d>, B: data::raw::Payload<'d>> data::raw:
 
     unsafe fn resume(
         &self,
-        position: &mut scatter::raw::Position,
+        position: &mut Self::Position,
         offset: data::Offset,
     ) -> Self::Cursor<'_> {
         // SAFETY: shared access preserves this exact variant and its owner.
         match self {
-            Self::Left(value) => Either::Left(unsafe { value.resume(position, offset) }),
-            Self::Right(value) => Either::Right(unsafe { value.resume(position, offset) }),
+            Self::Left(value) => Either::Left(unsafe {
+                value.resume(A::Position::left::<B::Position>(position), offset)
+            }),
+            Self::Right(value) => Either::Right(unsafe {
+                value.resume(A::Position::right::<B::Position>(position), offset)
+            }),
         }
     }
 }
@@ -300,6 +304,7 @@ unsafe impl<'d, A: data::raw::Payload<'d>, B: data::raw::Payload<'d>> data::raw:
 // SAFETY: The retained variant or tag preserves the original payload and its exact cursor contract.
 unsafe impl<'d, T: data::raw::Payload<'d>, K> data::raw::Payload<'d> for Tagged<T, K> {
     type Mode = exec::Fallible;
+    type Position = T::Position;
     type Cursor<'a>
         = T::Cursor<'a>
     where
@@ -323,7 +328,7 @@ unsafe impl<'d, T: data::raw::Payload<'d>, K> data::raw::Payload<'d> for Tagged<
 
     unsafe fn resume(
         &self,
-        position: &mut scatter::raw::Position,
+        position: &mut Self::Position,
         offset: data::Offset,
     ) -> Self::Cursor<'_> {
         // SAFETY: this tag retains the same immutable payload throughout traversal.
@@ -340,6 +345,7 @@ unsafe impl<'d, T: data::raw::Resident<'d>, K> data::raw::Resident<'d> for Tagge
 // and the prefix retains one nonzero-capacity pool slot even when empty.
 unsafe impl<'d, C: buffer::raw::Segment> data::raw::Payload<'d> for pair::Source<C> {
     type Mode = exec::Fallible;
+    type Position = ();
     type Cursor<'a>
         = pair::Cursor<'a>
     where
@@ -383,11 +389,7 @@ unsafe impl<'d, C: buffer::raw::Segment> data::raw::Payload<'d> for pair::Source
         })
     }
 
-    unsafe fn resume(
-        &self,
-        _: &mut scatter::raw::Position,
-        offset: data::Offset,
-    ) -> Self::Cursor<'_> {
+    unsafe fn resume(&self, _: &mut Self::Position, offset: data::Offset) -> Self::Cursor<'_> {
         // SAFETY: resume places this offset strictly below the validated total
         // length, so the selected prefix or body suffix is in range and nonempty.
         match offset.split_at(self.prefix.len()) {
