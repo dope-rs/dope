@@ -12,7 +12,7 @@ use crate::{
         result,
         retained::{
             flight,
-            flight::{GENERATION_BITS, INDEX_BITS, Invariant, Target, storage},
+            flight::{GENERATION_BITS, INDEX_BITS, Target, storage},
         },
         route,
         route::kind,
@@ -24,14 +24,14 @@ use crate::{
 #[repr(transparent)]
 pub struct Slots<'d, Tag: route::Tag> {
     slots: storage::Slots<'d, Target, INDEX_BITS, GENERATION_BITS>,
-    driver: Invariant<'d>,
+    driver: driver::Invariant<'d>,
     tag: marker::PhantomData<Tag>,
 }
 
 impl<'d, Tag: route::Tag> Slots<'d, Tag> {
     pub(super) fn new(
         slots: storage::Slots<'d, Target, INDEX_BITS, GENERATION_BITS>,
-        driver: Invariant<'d>,
+        driver: driver::Invariant<'d>,
     ) -> Self {
         Self {
             slots,

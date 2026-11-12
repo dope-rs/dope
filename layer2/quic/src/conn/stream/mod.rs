@@ -31,6 +31,7 @@ use crate::{
         output::{control, control::kind},
         stream::state::{receive::credits, streams::closed},
     },
+    runtime::brand,
     stream,
     stream::send::{Overflow, admit},
     wire::stream::{Direction, Id, Initiator},
@@ -82,7 +83,7 @@ pub enum Event {
 pub struct BoundEvent<'conn> {
     event: Event,
     key: Option<resident::Key>,
-    invariant: marker::PhantomData<fn(&'conn mut ()) -> &'conn mut ()>,
+    invariant: marker::PhantomData<brand::Token<'conn>>,
 }
 
 impl<'conn> BoundEvent<'conn> {

@@ -9,7 +9,7 @@ use std::{marker, mem};
 
 pub(crate) use complete::Complete;
 use dope_sys::{engine::admit::Cancelled, table::token::host};
-use o3::{alloc, base::marker::ThreadBound};
+use o3::alloc;
 pub(crate) use request::Request;
 use route::table;
 pub use slots::Slots;
@@ -22,8 +22,6 @@ use crate::{
     },
     io::fd::domain::retire,
 };
-
-type Invariant<'d> = (driver::Invariant<'d>, marker::PhantomData<ThreadBound>);
 
 const INDEX_BITS: u32 = route::SLOT_BITS;
 const GENERATION_BITS: u32 = 32;
@@ -194,7 +192,7 @@ pub struct Prepared<'a, 'd, Tags, const GROUPS: usize = 1> {
 pub(crate) struct Vacant<'slot, 'd, Tag: route::Tag, C: kind::Class = <Tag as route::Tag>::Class> {
     vacancy: storage::Vacant<'slot, 'd, Target, INDEX_BITS, GENERATION_BITS>,
     target: Target,
-    driver: Invariant<'d>,
+    driver: driver::Invariant<'d>,
     class: marker::PhantomData<(Tag, C)>,
 }
 
@@ -202,7 +200,7 @@ pub(crate) struct Vacant<'slot, 'd, Tag: route::Tag, C: kind::Class = <Tag as ro
 #[repr(transparent)]
 pub(crate) struct Reserved<'d, C: kind::Class = kind::Any> {
     reservation: storage::Reserved<'d, Target, INDEX_BITS, GENERATION_BITS>,
-    driver: Invariant<'d>,
+    driver: driver::Invariant<'d>,
     class: marker::PhantomData<C>,
 }
 
@@ -212,7 +210,7 @@ pub(crate) struct Reserved<'d, C: kind::Class = kind::Any> {
 #[repr(transparent)]
 pub struct Flight<'d, C: kind::Class = kind::Any> {
     flight: storage::Lease<'d, Target, INDEX_BITS, GENERATION_BITS>,
-    driver: Invariant<'d>,
+    driver: driver::Invariant<'d>,
     class: marker::PhantomData<C>,
 }
 
@@ -248,7 +246,7 @@ impl<'d, Tags, const GROUPS: usize> Prepared<'_, 'd, Tags, GROUPS> {
         self,
     ) -> (
         [storage::Slots<'d, Target, INDEX_BITS, GENERATION_BITS>; GROUPS],
-        Invariant<'d>,
+        driver::Invariant<'d>,
     ) {
         let Self {
             prepared,
@@ -256,7 +254,7 @@ impl<'d, Tags, const GROUPS: usize> Prepared<'_, 'd, Tags, GROUPS> {
             tags: marker::PhantomData,
         } = self;
         let slots = prepared.groups();
-        (slots, (driver, marker::PhantomData))
+        (slots, driver)
     }
 }
 
@@ -354,7 +352,7 @@ impl<'d, C: kind::Class> Flight<'d, C> {
     }
 
     pub fn target(&self) -> route::Erased<'d, C> {
-        self.flight.value().bind(self.driver.0, self.key())
+        self.flight.value().bind(self.driver, self.key())
     }
 
     pub fn matches(&self, target: route::Erased<'d, C>) -> bool {
@@ -362,7 +360,7 @@ impl<'d, C: kind::Class> Flight<'d, C> {
     }
 
     pub(in crate::driver) fn finish(mut self, proof: &mut finish::Finish<'_, 'd>) {
-        self.driver.0 = proof.brand();
+        self.driver = proof.brand();
     }
 }
 

@@ -2,7 +2,7 @@ use std::{cell::Cell, marker, mem, num, ops::ControlFlow, ptr, task, time};
 
 use dope_sys::{engine, io::reactor::ready::delivery::Quota as _, kernel, memory::Context as _};
 use o3::{
-    base::cell::region,
+    base::{cell::region, marker::ThreadBound},
     buffer::{self, storage::provided},
 };
 use route::table;
@@ -50,7 +50,7 @@ type Buffer = <Engine as engine::Buffer>::Token;
 /// Keeps every derived capability in the exact driver lifetime that issued it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(transparent)]
-pub(crate) struct Invariant<'d>(marker::PhantomData<fn(&'d ()) -> &'d ()>);
+pub(crate) struct Invariant<'d>(marker::PhantomData<(fn(&'d ()) -> &'d (), ThreadBound)>);
 
 #[must_use = "application binding must be consumed during startup"]
 pub struct Binding<'d> {

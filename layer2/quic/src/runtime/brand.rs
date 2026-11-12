@@ -1,8 +1,10 @@
 use std::{marker, mem, num};
 
+use o3::base::marker::ThreadBound;
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[doc(hidden)]
-pub struct Token<'id>(marker::PhantomData<fn(&'id mut ()) -> &'id mut ()>);
+pub struct Token<'id>(marker::PhantomData<(fn(&'id mut ()) -> &'id mut (), ThreadBound)>);
 
 impl Token<'_> {
     pub(crate) fn with<R>(op: impl for<'id> FnOnce(Token<'id>) -> R) -> R {

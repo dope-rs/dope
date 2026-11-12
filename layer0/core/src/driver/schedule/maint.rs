@@ -1,6 +1,6 @@
 use std::{marker, mem};
 
-use o3::{base::marker::ThreadBound, mem::quota};
+use o3::mem::quota;
 use state::lanes;
 
 use crate::driver::schedule::state;
@@ -13,7 +13,7 @@ pub struct Work<'turn, 'd> {
 
 #[must_use = "a maintenance permit represents one admitted transition"]
 pub struct Permit<'turn, 'd> {
-    proof: marker::PhantomData<(&'turn mut (), crate::driver::Invariant<'d>, ThreadBound)>,
+    proof: marker::PhantomData<(&'turn mut (), crate::driver::Invariant<'d>)>,
 }
 
 impl<'turn, 'd> Work<'turn, 'd> {

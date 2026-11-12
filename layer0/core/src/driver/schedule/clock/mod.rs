@@ -2,8 +2,6 @@
 
 use std::{borrow, cell, cmp, marker, mem, ops, time};
 
-use o3::base::marker::ThreadBound;
-
 use crate::driver;
 
 mod range;
@@ -17,20 +15,20 @@ pub use range::Range;
 #[repr(C)]
 struct Point<'d> {
     at: time::Instant,
-    driver: (driver::Invariant<'d>, ThreadBound),
+    driver: driver::Invariant<'d>,
 }
 /// Read-only access to the monotonic sample installed for one driver turn.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Clock<'turn, 'd> {
     source: &'turn cell::Cell<time::Instant>,
-    driver: (driver::Invariant<'d>, ThreadBound),
+    driver: driver::Invariant<'d>,
 }
 /// Generative monotonic domain for code running outside a runtime driver.
 ///
 #[derive(Clone, Copy)]
 pub struct Scope<'d> {
-    proof: (driver::Invariant<'d>, ThreadBound),
+    proof: driver::Invariant<'d>,
 }
 /// Owned monotonic origin that accepts no foreign time-domain input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,7 +53,7 @@ pub struct Deadline<'d>(Point<'d>);
 #[repr(transparent)]
 pub struct Bound<'d, T> {
     inner: T,
-    driver: (driver::Invariant<'d>, ThreadBound),
+    driver: driver::Invariant<'d>,
 }
 /// A lexical view combining one attached owner with one branded observation.
 #[repr(C)]
@@ -90,7 +88,7 @@ impl Scope<'_> {
 impl<'d> Scope<'d> {
     const fn new() -> Self {
         Self {
-            proof: (driver::Invariant(marker::PhantomData), ThreadBound::NEW),
+            proof: driver::Invariant(marker::PhantomData),
         }
     }
 
@@ -106,7 +104,7 @@ impl Origin {
 }
 
 impl<'d> Point<'d> {
-    const fn new(at: time::Instant, driver: (driver::Invariant<'d>, ThreadBound)) -> Self {
+    const fn new(at: time::Instant, driver: driver::Invariant<'d>) -> Self {
         Self { at, driver }
     }
 
@@ -141,10 +139,7 @@ impl<'turn, 'd> Clock<'turn, 'd> {
         source: &'turn cell::Cell<time::Instant>,
         driver: driver::Invariant<'d>,
     ) -> Self {
-        Self {
-            source,
-            driver: (driver, ThreadBound::NEW),
-        }
+        Self { source, driver }
     }
 
     /// Returns the one sample installed at the beginning of this turn.
@@ -180,7 +175,7 @@ impl<'turn, 'd> Clock<'turn, 'd> {
 }
 
 impl<'d, T> Bound<'d, T> {
-    const fn new(inner: T, driver: (driver::Invariant<'d>, ThreadBound)) -> Self {
+    const fn new(inner: T, driver: driver::Invariant<'d>) -> Self {
         Self { inner, driver }
     }
 
@@ -226,7 +221,7 @@ impl<'d, T: ?Sized> At<'d, &mut T> {
 }
 
 impl<'d> Moment<'d> {
-    const fn new(at: time::Instant, driver: (driver::Invariant<'d>, ThreadBound)) -> Self {
+    const fn new(at: time::Instant, driver: driver::Invariant<'d>) -> Self {
         Self(Point::new(at, driver))
     }
 

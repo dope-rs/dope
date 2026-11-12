@@ -13,10 +13,7 @@ use key::{
 pub(crate) use key::{DynamicIndex, QueueIndex, Stored};
 use kind::Kind;
 use layout::Layout;
-use o3::{
-    base::{marker::ThreadBound, num::Generation},
-    mem::Lease,
-};
+use o3::{base::num::Generation, mem::Lease};
 use payload::{Link, Task};
 use pool::{Chain, Pool};
 use record::Record;
@@ -82,7 +79,6 @@ impl<'d> Access<'_, 'd> {
         Key {
             stored,
             arena: self.driver,
-            thread: ThreadBound::NEW,
         }
     }
 }
@@ -103,7 +99,6 @@ pub mod wake;
 pub struct Key<'d> {
     stored: Stored,
     arena: driver::Invariant<'d>,
-    thread: ThreadBound,
 }
 
 impl PartialEq for Key<'_> {
@@ -119,7 +114,6 @@ impl<'d> Key<'d> {
         Self {
             stored: Stored::from_parts(index, epoch),
             arena: driver::Invariant(marker::PhantomData),
-            thread: ThreadBound::NEW,
         }
     }
 

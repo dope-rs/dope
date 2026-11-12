@@ -1,7 +1,7 @@
 use std::mem;
 
 use dope_sys::thread::{Thread, timer};
-use o3::base::{marker::ThreadBound, time::Positive};
+use o3::base::time::Positive;
 
 use crate::{
     Backend, driver,
@@ -21,10 +21,7 @@ where
 {
     pub fn try_new(deadline: Positive, owner: driver::Reference<'d>) -> Result<Self, timer::Error> {
         let raw = T::try_new(deadline)?;
-        Ok(Self(clock::Bound::new(
-            raw,
-            (owner.brand, ThreadBound::NEW),
-        )))
+        Ok(Self(clock::Bound::new(raw, owner.brand)))
     }
 
     pub fn refresh(&self, context: driver::Context<'_, 'd>) {
@@ -36,7 +33,7 @@ where
     /// Disarms the timer after driver quiescence and returns the exact native error.
     /// Failure retains this timer; it may remain armed until dropped.
     pub fn try_disarm(&mut self, proof: &mut finish::Finish<'_, 'd>) -> Result<(), crate::Errno> {
-        self.0.driver.0 = proof.brand();
+        self.0.driver = proof.brand();
         self.0.inner.try_disarm()
     }
 }

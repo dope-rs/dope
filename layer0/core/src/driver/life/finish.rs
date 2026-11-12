@@ -1,7 +1,7 @@
 use std::marker;
 
 use dope_sys::Errno;
-use o3::base::{cell::region, marker::ThreadBound};
+use o3::base::cell::region;
 
 use crate::{
     driver::{self, life::Final, receive::credit, schedule::clock},
@@ -90,7 +90,7 @@ const _: () = {
 /// Quiescent authority over one retained-credit owner.
 #[repr(transparent)]
 pub struct Credit<'a, 'd> {
-    borrow: marker::PhantomData<(&'a mut (), driver::Invariant<'d>, ThreadBound)>,
+    borrow: marker::PhantomData<(&'a mut (), driver::Invariant<'d>)>,
 }
 
 impl<'a, 'd> Credit<'a, 'd> {

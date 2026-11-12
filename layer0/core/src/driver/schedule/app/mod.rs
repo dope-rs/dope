@@ -1,11 +1,7 @@
 use std::{marker, mem::size_of};
 
 use mem::{lease, quota};
-use o3::{
-    base::{cell::region, marker::ThreadBound},
-    depot::queue::pool::fair,
-    mem,
-};
+use o3::{base::cell::region, depot::queue::pool::fair, mem};
 use state::lanes;
 
 use crate::driver::{
@@ -69,7 +65,7 @@ pub struct Work<'turn, 'd> {
 
 #[must_use = "an application permit represents one admitted transition"]
 pub struct Permit<'turn, 'd> {
-    proof: marker::PhantomData<(&'turn mut (), crate::driver::Invariant<'d>, ThreadBound)>,
+    proof: marker::PhantomData<(&'turn mut (), crate::driver::Invariant<'d>)>,
 }
 
 #[must_use = "dropping an uncommitted application lease returns its turn"]
