@@ -73,6 +73,46 @@ fn inflight_receive() {
 }
 
 #[test]
+fn negotiation_survives_failure() {
+    use dope::net::wire::{Spec, terminal};
+    use dope_tls::tls::Tls;
+
+    retry::run(
+        Mode::Failed,
+        |pool, [first, second], scope, _| {
+            let conn = pool.get_mut(first).expect("failed peer");
+            assert_eq!(
+                Tls::negotiated_protocol::<KeyTag<0>>(conn.wire()),
+                std::task::Poll::Ready(None)
+            );
+            assert!(matches!(
+                conn.terminal.finish_recv(),
+                terminal::Receive::Ready(terminal::Terminal::Failed(cause))
+                    if matches!(cause.causes(), (dope_tls::Error::Tls(rustls::Error::DecryptError), None))
+            ));
+            assert!(matches!(
+                pool.egress_mut(second)
+                    .expect("second peer")
+                    .queue
+                    .try_enqueue(scope.context().region_token(), b"reply"),
+                egress::Enqueue::Committed
+            ));
+            retry::submit(pool, second, scope)?;
+            Ok::<_, Error>(())
+        },
+        recovery::Policy::new(|_| {}, common::recover),
+        |result| {
+            let replies = result
+                .map_err(|cause| format!("{:?}", cause.cause()))
+                .expect("TLS fixture scope")
+                .expect("TLS failure observation");
+            assert_eq!(replies, [Vec::new(), b"reply".to_vec()]);
+        },
+    )
+    .expect("TLS send fixture");
+}
+
+#[test]
 fn released_output() {
     retry::run(
         Mode::Reply,
@@ -203,6 +243,12 @@ fn pending_close() {
             let close = native::next_send(scope)?;
             assert!(matches!(close.outcome(), Ok(bytes) if !bytes.is_zero()));
             assert_eq!(retry::settle(pool, close, scope)?, second);
+            assert_eq!(
+                <dope_tls::tls::Tls as dope::net::wire::Spec>::negotiated_protocol::<KeyTag<0>>(
+                    pool.inspect().get(second).expect("closed peer").wire(),
+                ),
+                std::task::Poll::Ready(None)
+            );
             retry::submit(pool, second, scope)?;
             assert!(
                 pool.get_mut(second)

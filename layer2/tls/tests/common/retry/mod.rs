@@ -64,6 +64,7 @@ pub enum Mode {
     Reply,
     Close,
     Held,
+    Failed,
 }
 
 #[derive(Debug)]
@@ -101,8 +102,8 @@ pub enum Error {
     Opened,
     Peers,
     CommitLimit,
-    RecvEvent,
-    Reserve,
+    RecvEvent(&'static str),
+    Reserve(&'static str),
     Key,
     Record,
     Control,
@@ -138,8 +139,8 @@ pub fn run(
         .with_receive(settings::Receive::fixed::<8, 4096>());
     Driver::new(config).with_scope(
         |scope| {
-            let send =
-                NonZero::<usize>::MIN.saturating_add(usize::from(matches!(mode, Mode::Held)));
+            let send = NonZero::<usize>::MIN
+                .saturating_add(usize::from(matches!(mode, Mode::Held | Mode::Failed)));
             let Ok(end) = storage.bind(end.with_send(send));
             prepare(scope, end, pubkey, mode, test)
         },
@@ -227,12 +228,28 @@ fn prepare<'w, 'd: 'w>(
                 .with_many::<2, _, _>(
                     move |[first, second]| {
                         let mut first = Peer::establish(first, pubkey)?;
-                        first.try_send(b"A")?;
+                        if matches!(mode, Mode::Failed) {
+                            let mut wire = first.seal(b"A")?;
+                            let mut bad = first.seal(b"bad")?;
+                            *bad.last_mut().ok_or(Connect::WriteZero)? ^= 0xff;
+                            wire.extend_from_slice(&bad);
+                            first.socket.write_all(&wire).map_err(Connect::Peer)?;
+                        } else {
+                            first.try_send(b"A")?;
+                        }
                         let mut second = Peer::establish(second, pubkey)?;
                         second.try_send(b"B")?;
-                        let first = first.try_recv()?;
+                        let first = match (mode, first.try_recv()) {
+                            (
+                                Mode::Failed,
+                                Err(Connect::Tls(rustls::Error::AlertReceived(
+                                    rustls::AlertDescription::BadRecordMac,
+                                ))),
+                            ) => Vec::new(),
+                            (_, result) => result?,
+                        };
                         let second = match mode {
-                            Mode::Reply | Mode::Held => second.try_recv()?,
+                            Mode::Reply | Mode::Held | Mode::Failed => second.try_recv()?,
                             Mode::Close => receive_close(&mut second)?,
                         };
                         Ok::<_, Connect>([first, second])

@@ -6,8 +6,8 @@ use dope::{
         io::event::{self, net::recv},
     },
     net::link::{
-        event::{ControlRecv, DispatchRecv, Reservation},
-        slot::transmit::outcome::Retention,
+        event::{ControlRecv, Dispatch, DispatchRecv, ParkRecv, Reservation},
+        slot::transmit::{Finalize, outcome::Retention},
     },
 };
 
@@ -39,7 +39,7 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
     let mut queued = VecDeque::new();
     let mut held = None;
     let mut observed = None;
-    loop {
+    'events: loop {
         let event = if held.is_some() || observed.is_some() {
             match queued.pop_front() {
                 Some(done) => event::Kind::Recv(done),
@@ -49,7 +49,7 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
             next(scope)?.into_kind()
         };
         match event {
-            event::Kind::Recv(done) => {
+            event::Kind::Recv(done) => 'receive: {
                 if matches!(mode, Mode::Held)
                     && held.is_none()
                     && observed.is_none()
@@ -59,21 +59,32 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
                         .is_some_and(|conn| conn.send_status().is_inflight())
                 {
                     queued.push_back(done);
-                    continue;
+                    continue 'events;
                 }
                 let done =
                     match done.dispatch(|_, _, value| ControlFlow::<_, Infallible>::Break(value)) {
                         ControlFlow::Break(done) => done,
                         ControlFlow::Continue(never) => match never {},
                     };
-                let bytes = match done.classify() {
-                    recv::Kind::Data(bytes) => bytes,
-                    recv::Kind::Control(_) => return Err(Error::RecvEvent),
-                };
-                let data = match pool.recv().data(bytes, |_, _| ()) {
-                    Reservation::Ready(data) => data.scoped(),
-                    Reservation::Control(control) => DispatchRecv::Control(control),
-                    _ => return Err(Error::Reserve),
+                let data = match done.classify() {
+                    recv::Kind::Data(bytes) => match pool.recv().data(bytes, |_, _| ()) {
+                        Reservation::Ready(data) => data.scoped(),
+                        Reservation::Control(control) => DispatchRecv::Control(control),
+                        Reservation::Parked(ParkRecv::Deferred) => break 'receive,
+                        Reservation::Parked(_) => return Err(Error::Reserve("parked")),
+                        Reservation::Stale(_) => return Err(Error::Reserve("stale")),
+                        Reservation::Drop => return Err(Error::Reserve("drop")),
+                    },
+                    recv::Kind::Control(control) => match pool.recv().dispatch(control) {
+                        Dispatch::Settled => break 'receive,
+                        Dispatch::Ready(control) => DispatchRecv::Control(control),
+                        Dispatch::Parked(ParkRecv::Deferred) => break 'receive,
+                        Dispatch::Parked(_) => return Err(Error::RecvEvent("parked")),
+                        Dispatch::Retired(_) => return Err(Error::RecvEvent("retired")),
+                        Dispatch::Observed { .. } => return Err(Error::RecvEvent("observed")),
+                        Dispatch::Stale { .. } => return Err(Error::RecvEvent("stale")),
+                        Dispatch::Rejected { .. } => return Err(Error::RecvEvent("rejected")),
+                    },
                 };
                 let key = match data {
                     DispatchRecv::Chunk(key, mut chunk) => {
@@ -121,6 +132,18 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
             _ => return Err(Error::Handshake),
         }
         pending(pool, scope, |_| {})?;
+        if matches!(mode, Mode::Failed) {
+            let sender = pool.egress_mut(keys[0]).ok_or(Error::Sender)?;
+            match sender
+                .connection
+                .sending()
+                .finish(sender.flights, &mut scope.context())
+            {
+                Finalize::Settled | Finalize::Armed(()) => {}
+                Finalize::Rejected(cause) => return Err(Error::Rejected(cause)),
+                Finalize::Abandoned => return Err(Error::Settlement),
+            }
+        }
         {
             let (_, mut driver, mut control) = scope.split();
             let turn = control.begin();
@@ -143,6 +166,11 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
                 .map_err(|failure| Error::Submit(failure.cause))?;
         }
         if ready == [true; 2]
+            && (!matches!(mode, Mode::Failed)
+                || pool
+                    .inspect()
+                    .get(keys[0])
+                    .is_some_and(|conn| conn.terminal.is_pending() && !conn.terminal.has_send()))
             && keys.into_iter().all(|key| {
                 pool.get_mut(key)
                     .is_some_and(|conn| !conn.send_status().is_inflight())

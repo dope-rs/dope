@@ -357,6 +357,10 @@ impl<'a, 'd, ID: Identity, W: wire::Spec, C, O> Io<'a, 'd, ID, W, C, O> {
         self.id
     }
 
+    pub fn state_mut(&mut self) -> &mut C {
+        self.conn
+    }
+
     pub(super) fn into_parts(
         self,
     ) -> (

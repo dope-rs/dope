@@ -69,7 +69,7 @@ impl<R: roles::Protocol> wire::Spec for Tls<R> {
     where
         Self: 'w,
     {
-        if connection.can_write() {
+        if !connection.native.is_handshaking() {
             std::task::Poll::Ready(connection.native.alpn_protocol())
         } else {
             std::task::Poll::Pending
