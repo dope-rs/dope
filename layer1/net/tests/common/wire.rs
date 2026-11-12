@@ -207,12 +207,7 @@ pub mod contract {
             route::{KeyTag, Tag, table::conn},
             settings::{Config, FileSlots},
         },
-        io::{
-            Reclaimed,
-            event::{self, batch::Flow, net::accept::Failure},
-            socket::option,
-            transfer,
-        },
+        io::{event, socket::option, transfer},
     };
     use dope_net::{
         link::{
@@ -580,14 +575,10 @@ pub mod contract {
                         result.ok().expect("driver output").expect("send fixture")
                     },
                 );
-            for event in reports.events().expect("reclaimed operations") {
-                assert!(
-                    matches!(event, Reclaimed::Accept {
-                        result: Err(Failure::Syscall(error)), flow: Flow::Last, ..
-                    } if error.is_canceled()),
-                    "unexpected reclamation: {event:?}"
-                );
-            }
+            crate::common::discard::assert_reclaimed(
+                reports.events().expect("reclaimed operations"),
+                0,
+            );
             let len = match self {
                 Self::Buffered => 8,
                 Self::Vectored => 6,

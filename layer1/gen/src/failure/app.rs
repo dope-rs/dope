@@ -49,6 +49,7 @@ pub(crate) enum Setting {
     Manifold,
     Runtime,
     Driver,
+    Lending,
 }
 
 impl App {
@@ -92,6 +93,7 @@ impl App {
             Self::Duplicate(Setting::Manifold) => "DopeAppDuplicateManifold",
             Self::Duplicate(Setting::Runtime) => "DopeAppDuplicateRuntime",
             Self::Duplicate(Setting::Driver) => "DopeAppDuplicateDriver",
+            Self::Duplicate(Setting::Lending) => "DopeAppDuplicateLending",
             Self::DuplicateState => "DopeAppDuplicateState",
             Self::StateShape => "DopeAppStateShape",
             Self::StateRole => "DopeAppStateRole",

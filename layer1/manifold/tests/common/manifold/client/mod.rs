@@ -1,12 +1,17 @@
+use std::fmt::Debug;
+
 use dope_core::driver::{
     route::KeyTag,
     settings,
     settings::{claim::Needs, errors},
 };
 use dope_manifold::{
+    app::creation,
     client::session::{Output, policy::output, turns},
     timing,
 };
+use dope_runtime::topology::error::Kind;
+use dope_test::{fibers, reclaim::Reports};
 use o3::base::Call;
 
 use crate::common::contract::Report;
@@ -26,14 +31,42 @@ where
 }
 
 impl Report<error::Error, 16> {
-    pub fn checked(&self, expected: (usize, usize)) {
+    pub fn no_faults(&self) {
         let faults = self.faults.values().expect("fault observations");
         assert!(faults.is_empty(), "{faults:?}");
+    }
+
+    pub fn checked(&self, expected: (usize, usize)) {
+        self.no_faults();
         assert_eq!(
             (self.sent.get(), self.cancelled.get()),
             (Some(expected.0), Some(expected.1))
         );
     }
+}
+
+pub fn assert_reclaimed<const R: usize>(reports: &Reports<R>) {
+    assert!(
+        matches!(reports.events(), Ok(events) if events.is_empty()),
+        "unexpected reclaimed operations: {reports:?}"
+    );
+}
+
+pub fn leased<T: Debug>(
+    result: Result<T, Kind<'_, creation::Error, &T>>,
+    lease: Option<bool>,
+) -> T {
+    let output = result.expect("native lifecycle");
+    assert_eq!(lease, Some(true), "terminal attempt lease: {output:?}");
+    output
+}
+
+pub fn reached(wait: Result<fibers::Wait, fibers::Run>, audit: &Report<error::Error, 16>) {
+    audit.checked((0, 0));
+    assert!(
+        matches!(wait, Ok(fibers::Wait::Reached)),
+        "progress: {wait:?}"
+    );
 }
 
 pub mod backoff;

@@ -162,6 +162,13 @@ pub fn check_reports(reports: &[Reclaimed]) {
     );
 }
 
+pub fn check_reclaimed(reports: &[Reclaimed]) {
+    assert!(
+        matches!(reports, [] | [Reclaimed::Shutdown]),
+        "unexpected reclaimed operations: {reports:?}"
+    );
+}
+
 pub fn terminate() {
     // SAFETY: this single-threaded executable owns its SIGTERM receiver.
     assert_eq!(unsafe { libc::kill(libc::getpid(), libc::SIGTERM) }, 0);

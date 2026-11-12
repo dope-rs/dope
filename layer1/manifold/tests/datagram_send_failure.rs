@@ -40,10 +40,7 @@ use crate::common::{
 fn settles_exact_owner() {
     let mut finish = Completion::new();
     let addr = net::SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], 9));
-    let expected = vec![
-        b"send-correlation-owner-1".to_vec(),
-        vec![2; 2000],
-    ];
+    let expected = vec![b"send-correlation-owner-1".to_vec(), vec![2; 2000]];
     let source = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("shutdown socket");
     let error = source
         .send_to(&expected[0], addr)
@@ -200,13 +197,16 @@ fn check_failingsend<'d>(this: &mut FailingSend<'d>, event: handler::Event<'_, '
                 return;
             };
             let owner = if datagram::GSO_LIMITS.is_some() && this.prior.flight.is_some() {
-                socket
-                    .as_mut()
-                    .queue_gso(payload, NonZero::new(1000).expect("segment size"), this.addr)
+                socket.as_mut().queue_gso(
+                    payload,
+                    NonZero::new(1000).expect("segment size"),
+                    this.addr,
+                )
             } else {
                 socket.as_mut().queue_vec(payload, this.addr)
             }
-            .unwrap_or_else(|_| panic!("empty send queue"));
+            .map_err(|error| error.cause())
+            .expect("empty send queue");
             assert!(this.accepted.replace(now).is_none());
             assert!(this.active.queued.replace(owner).is_none());
             assert!(this.prior.queued.replace(owner) != Some(owner));

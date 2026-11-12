@@ -1,5 +1,7 @@
 pub mod common;
 
+use crate::common::manifold::client::{assert_reclaimed};
+
 use std::{
     cell::Cell,
     net::{Ipv4Addr, Shutdown},
@@ -165,10 +167,7 @@ where
         },
         recovery::Policy::new(|event| reclaim1.push(event), recover),
     );
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 }
 
 #[test]
@@ -244,10 +243,7 @@ fn retained_eof_send_close() {
                         |result| result.expect("native lifecycle"),
                     )
                     .expect("application scenario");
-                assert!(
-                    matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                    "unexpected reclaimed operations: {reclaim1:?}"
-                );
+                assert_reclaimed(&reclaim1);
 
                 assert_eq!(received.take().as_slice(), RESPONSE);
                 audit.checked((usize::from(matches!(action, Action::Send)), 0));
@@ -368,10 +364,7 @@ fn held_eof_timeout_closes() {
                 recovery::Policy::new(|event| reclaim.push(event), recover),
             );
 
-            assert!(
-                matches!(reclaim.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim:?}"
-            );
+            assert_reclaimed(&reclaim);
             assert_eq!([conn.hits(), held.hits(), closed.hits()], [1; 3]);
             assert_eq!(input.take(), b"x");
             audit.checked((0, 0));

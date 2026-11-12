@@ -17,6 +17,7 @@ pub(crate) struct Spec {
     drain: Option<usize>,
     brand: Brand,
     coordinate: bool,
+    lending: bool,
     paths: app::App,
 }
 

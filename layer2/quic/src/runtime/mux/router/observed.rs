@@ -248,7 +248,7 @@ where
         let app = self.mux.as_mut().handler_mut();
         let seen = self.observed_at;
         let result = Q::finish(result, || {
-            ingress::Event::new(app, Ingress::new(from, len, seen))
+            ingress::Event::new((app, Ingress::new(from, len, seen)))
         });
         let app = self.mux.as_mut().handler_mut();
         W::finish(result, |error| packet::Event::new(app, from, error, len))

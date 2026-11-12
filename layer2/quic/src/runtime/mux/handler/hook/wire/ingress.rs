@@ -5,20 +5,8 @@ use crate::conn::id;
 use crate::runtime::mux::handler::{Handler, net};
 use crate::stream;
 
-pub struct Event<'scope, 'driver, H> {
-    handler: pin::Pin<&'scope mut H>,
-    ingress: net::Ingress<'driver>,
-}
-
-impl<'scope, 'driver, H> Event<'scope, 'driver, H> {
-    pub(crate) fn new(handler: pin::Pin<&'scope mut H>, ingress: net::Ingress<'driver>) -> Self {
-        Self { handler, ingress }
-    }
-
-    pub fn into_parts(self) -> (pin::Pin<&'scope mut H>, net::Ingress<'driver>) {
-        (self.handler, self.ingress)
-    }
-}
+pub type Event<'scope, 'driver, H> =
+    crate::runtime::mux::handler::hook::Event<(pin::Pin<&'scope mut H>, net::Ingress<'driver>), 1>;
 
 pub trait Sink<const DOMAIN: u8, B, D, I>: Handler<DOMAIN, B, D, I>
 where

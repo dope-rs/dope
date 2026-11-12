@@ -208,10 +208,7 @@ fn mismatch_rolls_back() {
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(
-        matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reclaimed(&reports);
 
     assert_eq!(drops.count(), 2);
 }
@@ -304,10 +301,7 @@ fn terminal_follows_values() {
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(
-        matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reclaimed(&reports);
 
     assert_eq!(drops.count(), 3);
 }
@@ -409,10 +403,7 @@ fn reuse_waits_for_owner() {
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(
-        matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reclaimed(&reports);
 
     assert_eq!(drops.count(), 2);
 }
@@ -468,8 +459,5 @@ fn releases_stay_distinct() {
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(
-        matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reclaimed(&reports);
 }

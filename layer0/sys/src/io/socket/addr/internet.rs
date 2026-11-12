@@ -105,6 +105,7 @@ impl Internet {
     /// # Safety
     /// `bytes` must retain `actual` immutable native-address bytes, `actual <= CAPACITY`,
     /// with initialized native fields; native ABI padding need not be initialized.
+    #[inline]
     pub(super) unsafe fn decode(bytes: *const u8, actual: usize) -> Result<net::SocketAddr, Error> {
         if actual < FAMILY_BYTES {
             return Err(Error::Header {

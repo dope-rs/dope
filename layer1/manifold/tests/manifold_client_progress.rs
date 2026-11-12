@@ -1,6 +1,11 @@
 pub mod common;
 
-use std::{cell::Cell, fmt::Debug, net, rc::Rc};
+use crate::common::manifold::{
+    client::{assert_reclaimed, leased},
+    native,
+};
+
+use std::{cell::Cell, net, rc::Rc};
 
 use dope_core::{
     driver::{
@@ -86,14 +91,11 @@ fn drain_resumes_next_turn() {
                 leased,
             );
             run.expect("bounded attempt scenario failed");
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
+            assert_reclaimed(&reclaim1);
 
             let finish = server.finish();
             assert!(finish.is_ok(), "finish held peer");
-            checked(&audit);
+            audit.no_faults();
             assert_eq!(done.hits(), 1);
             assert!(matches!(first.get(), Some(1..)));
             assert!(calls.get() >= 2);
@@ -287,7 +289,7 @@ fn exhaustion_waits() {
                     reached(case.try_wait(&closed, 1), &audit);
                     case.try_pause(BACKOFF.saturating_mul(4))
                         .expect("retain the healthy connection");
-                    checked(&audit);
+                    audit.no_faults();
                     assert_eq!((conn.hits(), closed.hits(), notice.hits()), (2, 1, 0));
 
                     drop(held);
@@ -299,11 +301,8 @@ fn exhaustion_waits() {
                 native,
             )
             .expect("identity exhaustion scenario");
-        assert!(
-            matches!(reclaim.events(), Ok(events) if events.is_empty()),
-            "unexpected reclaimed operations: {reclaim:?}"
-        );
-        checked(&audit);
+        assert_reclaimed(&reclaim);
+        audit.no_faults();
         assert_eq!((conn.hits(), closed.hits(), notice.hits()), (2, 2, 1));
         assert_eq!(
             &*events.values().expect("exhaustion observation"),
@@ -375,15 +374,12 @@ fn close_policy_controls_redial() {
                 native,
             )
             .expect("application scenario");
-        assert!(
-            matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-            "unexpected reclaimed operations: {reclaim1:?}"
-        );
+        assert_reclaimed(&reclaim1);
 
         let expected = usize::from(matches!(kind, Mode::Reconnect)) + 1;
         let accepts = held.iter().flatten().count();
         assert!(listener.try_accept().expect("accept check").is_none());
-        checked(&audit);
+        audit.no_faults();
         assert_eq!(
             (audit.sent.get(), audit.cancelled.get()),
             (Some(0), Some(0))
@@ -444,12 +440,9 @@ fn close_yield_resumes() {
             leased,
         )
         .expect("yielding attempt scenario failed");
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 
-    checked(&audit);
+    audit.no_faults();
     assert_eq!(
         (audit.sent.get(), audit.cancelled.get()),
         (Some(0), Some(0))
@@ -464,24 +457,8 @@ fn close_yield_resumes() {
     stream.read_wait(Some(GUARD)).expect("peer read deadline");
     assert_eq!(stream.read(&mut [0]).expect("wait for close"), 0);
 }
-
-fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {
-    result.expect("native lifecycle")
-}
-
-fn leased<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>, lease: Option<bool>) -> T {
-    let output = native(result);
-    assert_eq!(lease, Some(true), "terminal attempt lease: {output:?}");
-    output
-}
-
-fn checked(audit: &Report<error::Error, 16>) {
-    let faults = audit.faults.values().expect("fault observations");
-    assert!(faults.is_empty(), "{faults:?}");
-}
-
 fn reached(wait: Result<fibers::Wait, fibers::Run>, audit: &Report<error::Error, 16>) {
-    checked(audit);
+    audit.no_faults();
     assert!(
         matches!(wait, Ok(fibers::Wait::Reached)),
         "progress: {wait:?}"

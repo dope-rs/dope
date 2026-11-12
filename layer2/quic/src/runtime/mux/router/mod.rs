@@ -196,7 +196,7 @@ impl<
             if let Err(error) = drive::drive_one(&mut turn, now) {
                 let handle = *error.connection();
                 <H::Events as Dispatch<H, DOMAIN, B, A::Send, id::Driver<'d>>>::Socket::call(
-                    || socket::Event::new(turn.handler.as_mut(), net::Event::Transmit(error)),
+                    || socket::Event::new((turn.handler.as_mut(), net::Event::Transmit(error))),
                 );
                 let _ = turn.try_remove(handle, Into::<time::Instant>::into(now));
             }

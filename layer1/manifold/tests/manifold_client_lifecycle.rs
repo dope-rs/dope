@@ -1,8 +1,12 @@
 pub mod common;
 
+use crate::common::manifold::{
+    client::{assert_reclaimed},
+    native,
+};
+
 use std::{
     cell::Cell,
-    fmt::Debug,
     net,
     rc::Rc,
     time::{Duration, Instant},
@@ -22,7 +26,7 @@ use dope_manifold::{
     timing::{Balanced, Throughput},
 };
 use dope_net::{tcp::Tcp, wire::Identity};
-use dope_runtime::{executor::session::Completion, topology::error::Kind};
+use dope_runtime::executor::session::Completion;
 use dope_test::{
     fibers,
     fibers::Wait,
@@ -86,10 +90,7 @@ fn age_timeout_is_typed() {
             native,
         )
         .expect("application scenario");
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 
     audit.checked((0, 0));
     assert_eq!(ready.hits(), 2);
@@ -149,10 +150,7 @@ fn drains_over_turn_limit() {
             native,
         )
         .expect("application scenario");
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 
     assert_eq!(closed.hits(), CONNECTIONS as u32);
     assert_eq!(ready.hits(), CONNECTIONS as u32);
@@ -274,10 +272,7 @@ fn idle_timeout_controls_redial() {
             )
             .expect("liveness scenario")
             .expect("wait for liveness scenario");
-        assert!(
-            matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-            "unexpected reclaimed operations: {reclaim1:?}"
-        );
+        assert_reclaimed(&reclaim1);
 
         audit.checked((0, 0));
         if let Some(timeout) = timeout {
@@ -292,8 +287,4 @@ fn idle_timeout_controls_redial() {
             assert_eq!(redial.get(), None);
         }
     }
-}
-
-fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {
-    result.expect("native lifecycle")
 }

@@ -19,16 +19,12 @@ unsafe impl Limit for NonZero<usize> {
     }
 }
 
-/// Settles a producer's output under its original admission.
-pub trait Settle<'id> {
+impl<'id, T: Limit> batch::Bound<'id, T> {
+    /// Settles a producer's output under its original admission.
     /// # Safety
     /// `used` must be the count proved under this exact bound and at most its limit.
-    unsafe fn take(self, used: usize) -> mem::raw::Unused<'id>;
-}
-
-impl<'id, T: Limit> Settle<'id> for batch::Bound<'id, T> {
-    unsafe fn take(self, used: usize) -> mem::raw::Unused<'id> {
-        let (limit, token) = self.into_parts();
+    pub unsafe fn take(self, used: usize) -> mem::raw::Unused<'id> {
+        let Self { limit, token } = self;
         // SAFETY: the caller supplies the bound on this exact output; the token
         // retains its original reservation and the first item is implicit.
         unsafe { mem::raw::Unused::new(limit.get().get() - used.max(1), token) }

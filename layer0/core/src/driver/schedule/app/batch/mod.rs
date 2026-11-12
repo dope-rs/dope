@@ -64,10 +64,6 @@ impl<'id, T: batch::raw::Limit> Bound<'id, T> {
         // under this bound's original reservation identity.
         unsafe { mem::raw::Unused::new(self.limit.get().get() - 1, self.token) }
     }
-
-    fn into_parts(self) -> (T, region::Token<region::Identity<'id>>) {
-        (self.limit, self.token)
-    }
 }
 
 const _: () = {

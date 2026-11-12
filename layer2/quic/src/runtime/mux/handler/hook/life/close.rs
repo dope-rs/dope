@@ -5,37 +5,15 @@ use crate::conn::id;
 use crate::runtime::mux::handler::{Close, Handler};
 use crate::stream;
 
-pub struct Event<'scope, H, const DOMAIN: u8, B, D, I>
-where
-    H: Handler<DOMAIN, B, D, I>,
-    B: stream::Recv,
-    D: buffer::raw::Segment,
-    I: id::Temporal,
-{
-    handler: pin::Pin<&'scope mut H>,
-    scope: Close<'scope>,
-    conn: H::Connection,
-    handle: id::Handle<I, DOMAIN>,
-}
-
-impl<'scope, H, const DOMAIN: u8, B, D, I> Event<'scope, H, DOMAIN, B, D, I>
-where
-    H: Handler<DOMAIN, B, D, I>,
-    B: stream::Recv,
-    D: buffer::raw::Segment,
-    I: id::Temporal,
-{
-    pub fn into_parts(
-        self,
-    ) -> (
+pub type Event<'scope, H, const DOMAIN: u8, B, D, I> = crate::runtime::mux::handler::hook::Event<
+    (
         pin::Pin<&'scope mut H>,
         Close<'scope>,
-        H::Connection,
+        <H as Handler<DOMAIN, B, D, I>>::Connection,
         id::Handle<I, DOMAIN>,
-    ) {
-        (self.handler, self.scope, self.conn, self.handle)
-    }
-}
+    ),
+    5,
+>;
 
 pub trait Sink<const DOMAIN: u8, B, D, I>: Handler<DOMAIN, B, D, I>
 where
@@ -77,12 +55,7 @@ where
         conn: H::Connection,
         handle: id::Handle<I, DOMAIN>,
     ) {
-        H::close(Event {
-            handler,
-            scope,
-            conn,
-            handle,
-        });
+        H::close(Event::new((handler, scope, conn, handle)));
     }
 }
 

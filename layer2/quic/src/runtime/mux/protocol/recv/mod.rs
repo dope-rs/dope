@@ -172,9 +172,9 @@ where
                                 packet::Event::new(sink.as_mut(), from.addr(), packet::Failure::Diagnostic(detail), wire_len)
                             });
                         }
-                        events::Event::Certificate(failure) => H::certificate(cert::Event::new(
+                        events::Event::Certificate(failure) => H::certificate(cert::Event::new((
                             sink.as_mut(), handle, from.addr(), failure,
-                        )),
+                        ))),
                         events::Event::Release { proof, source, cause } => {
                             ready.update(<<H::Events as set::Dispatch<H, DOMAIN, B, A::Send, A::Identity>>::Release as release::Mode<H, DOMAIN, B, A::Send, A::Identity>>::release(
                                 sink.as_mut(), handle, proof, source, cause,

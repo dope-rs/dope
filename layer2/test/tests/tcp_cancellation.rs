@@ -78,7 +78,8 @@ fn native_is_not_cancelled() {
                 let executor = peer
                     .completion()
                     .try_build(&mut create, settings::Config::default())
-                    .unwrap_or_else(|error| panic!("executor: {:?}", error.kind()));
+                    .map_err(|error| format!("{:?}", error.kind()))
+                    .expect("executor");
                 let mut finish = Completion::new();
                 executor.run(|executor| {
                     executor

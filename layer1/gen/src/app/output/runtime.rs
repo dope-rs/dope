@@ -80,7 +80,7 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
     let mut released = proc_macro2::TokenStream::new();
     let vneeds = app.brand.ident("__needs");
     let mut admit = proc_macro2::TokenStream::new();
-    for owner in &app.owners {
+    for (index, owner) in app.owners.iter().enumerate() {
         let inner = owner.inner();
         let visit = if owner.is_app() {
             Project::new(owner, app).shared(|recv| {
@@ -107,11 +107,25 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
             }
         };
         admit.extend(visit);
-        let [install, stop, end] = lifecycle(app, owner);
+        let [install, stop, mut end] = lifecycle(app, owner);
         setup.extend(quote::quote! { #vinstall = #install; });
-        shutdown.extend(quote::quote! { (#vturn, #vdriver) = #stop; });
-        finish.extend(quote::quote! { (#vinstall, #vfinish) = #end; });
-        if owner.is_app() {
+        if app.lending {
+            if index == 0 {
+                let field = owner.name();
+                end = quote::quote! {{
+                    let _ = <#inner as #exec::executor::raw::App<#life>>::released(
+                        #exec::executor::raw::Released::new(#vapp.as_mut().project().#field),
+                    );
+                    #end
+                }};
+            }
+            shutdown = quote::quote! { (#vturn, #vdriver) = #stop; #shutdown };
+            finish = quote::quote! { (#vinstall, #vfinish) = #end; #finish };
+        } else {
+            shutdown.extend(quote::quote! { (#vturn, #vdriver) = #stop; });
+            finish.extend(quote::quote! { (#vinstall, #vfinish) = #end; });
+        }
+        if owner.is_app() && !(app.lending && index == 0) {
             let field = owner.name();
             let visit = if owner.is_optional() {
                 quote::quote! {
@@ -144,19 +158,7 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
         }
     };
 
-    // The live helper shields generated bindings from unseen outer const names.
     quote::quote! {
-        const fn #vapp<const N: ::core::primitive::usize>(
-            #vapp: [#core::driver::settings::Routes; N],
-        ) -> #core::driver::settings::Routes {
-            let mut #vapp = (#vapp, #core::driver::settings::Routes::EMPTY, 0);
-            while #vapp.2 < N {
-                #vapp.1 = #vapp.1.join(#vapp.0[#vapp.2]);
-                #vapp.2 += 1;
-            }
-            #vapp.1
-        }
-
         impl #layout_head #exec::executor::raw::Layout<#life>
             for #name #args #layout_clause
         {
@@ -164,12 +166,12 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
         }
 
         /// SAFETY: each lifecycle operation visits all declared owners once,
-        /// in declaration order, through the same pinned projections and presence.
+        /// through the same pinned projections and presence in the declared lifecycle order.
         /// The root stays pinned through finish and retains each operation's authority.
         unsafe impl #head #exec::executor::raw::App<#life>
             for #name #args #clause
         {
-            const ROUTES: #core::driver::settings::Routes = #vapp(#set);
+            const ROUTES: #core::driver::settings::Routes = #set;
             const WAKE_ROUTES: #core::driver::settings::Routes = #wake_set;
 
             #admit

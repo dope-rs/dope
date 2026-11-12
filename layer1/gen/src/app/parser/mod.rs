@@ -18,7 +18,7 @@ pub(super) fn parse(mut input: syn::DeriveInput) -> Result<Spec, Failure> {
     let source = quote::ToTokens::to_token_stream(&input);
     crate::receiver::Receiver::apply(&mut input);
     attr::check(&input.attrs)?;
-    let (paths, driver, coord) = options::parse(&input.attrs)?;
+    let (paths, driver, coord, lending) = options::parse(&input.attrs)?;
     let data = match &input.data {
         Data::Struct(data) => data,
         Data::Enum(data) => {
@@ -90,6 +90,15 @@ pub(super) fn parse(mut input: syn::DeriveInput) -> Result<Spec, Failure> {
     if !coord && control {
         return Err(Failure::new(&input.ident, App::ControlCoordinate));
     }
+    if lending
+        && (owners.len() != 2
+            || owners
+                .iter()
+                .any(|owner| !owner.is_app() || owner.is_optional())
+            || drain != Some(1))
+    {
+        return Err(Failure::new(&input.ident, App::Lifecycle));
+    }
 
     Ok(Spec {
         name: input.ident,
@@ -99,6 +108,7 @@ pub(super) fn parse(mut input: syn::DeriveInput) -> Result<Spec, Failure> {
         drain,
         brand,
         coordinate: coord,
+        lending,
         paths,
     })
 }

@@ -1,6 +1,6 @@
 pub mod common;
 
-use common::manifold::listener::{native, reached};
+use common::manifold::{listener::reached, native};
 
 use dope_core::driver::life::recovery;
 

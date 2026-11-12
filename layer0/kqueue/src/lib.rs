@@ -232,6 +232,8 @@ impl pipe::Pipe for Kqueue {
     }
 }
 
+pub mod watch;
+
 impl File for Kqueue {
     type Options = Options;
     type Metadata = raw::Metadata;

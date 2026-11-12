@@ -1,8 +1,11 @@
-use crate::common::manifold::client::error;
-
 pub mod common;
 
-use std::{cell::Cell, fmt::Debug, net::Ipv4Addr, rc::Rc, time::Duration};
+use crate::common::manifold::{
+    client::{assert_reclaimed},
+    native,
+};
+
+use std::{cell::Cell, net::Ipv4Addr, rc::Rc, time::Duration};
 
 use dope_core::driver::{
     life::recovery,
@@ -17,7 +20,6 @@ use dope_manifold::{
 use dope_net::{link::egress, tcp::Tcp, wire::domain::Local};
 use dope_runtime::{
     executor::session::{Completion, Scope},
-    topology::error::Kind,
 };
 use dope_test::{
     fibers,
@@ -111,11 +113,8 @@ fn release_wakes_request() {
             native,
         )
         .expect("application scenario");
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
-    checked(&audit);
+    assert_reclaimed(&reclaim1);
+    audit.no_faults();
     assert_eq!(signals.moved.hits(), 2);
     assert_eq!(signals.sent.hits(), 2);
 }
@@ -200,11 +199,8 @@ fn close_relays_capacity() {
             native,
         )
         .expect("application scenario");
-    assert!(
-        matches!(reclaim2.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim2:?}"
-    );
-    checked(&audit);
+    assert_reclaimed(&reclaim2);
+    audit.no_faults();
     assert_eq!(signals.moved.hits(), 2);
     assert_eq!(signals.sent.hits(), 2);
 }
@@ -378,23 +374,11 @@ fn credit_grants_source() {
         },
         recovery::Policy::new(|event| reclaim1.push(event), recover),
     );
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
-    checked(&audit);
+    assert_reclaimed(&reclaim1);
+    audit.no_faults();
     assert_eq!(audit.cancelled.get(), Some(0));
     assert_eq!(next.get(), 4);
     assert_eq!(moved.hits(), 4);
     assert_eq!(sent.hits(), 4);
     assert_eq!(admitted.values().expect("admitted requests").len(), 4);
-}
-
-fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {
-    result.expect("native lifecycle")
-}
-
-fn checked(audit: &Report<error::Error, 16>) {
-    let faults = audit.faults.values().expect("fault observations");
-    assert!(faults.is_empty(), "{faults:?}");
 }

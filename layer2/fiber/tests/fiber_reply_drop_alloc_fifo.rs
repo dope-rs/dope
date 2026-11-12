@@ -7,7 +7,6 @@ pub mod common;
 use common::recover;
 
 use dope::runtime::executor::drive;
-use dope_core::io::Reclaimed;
 use dope_fiber::reply::{recv, recv::attach::Attach as _};
 use dope_test::alloc::Tracker;
 
@@ -146,7 +145,7 @@ fn wakes_after_same_reply_consumption() {
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
+    runtime::check_reports(&reports);
     assert_eq!(drops.count(), 3);
 }
 
@@ -311,7 +310,7 @@ fn wakes_each_waiter() {
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(reports.is_empty(), "unexpected reclamations: {reports:?}");
+    runtime::check_reports(&reports);
 }
 
 #[test]
@@ -526,10 +525,7 @@ fn keeps_release_order() {
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(
-        matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reclaimed(&reports);
 
     assert_eq!(drops.count(), 2);
 }

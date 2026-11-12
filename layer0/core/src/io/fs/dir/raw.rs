@@ -2,6 +2,17 @@ use std::{os::fd::OwnedFd, ptr};
 
 use o3::{alloc, mem};
 
+use crate::io::fs::{Dir, File, OpenRequest};
+
+impl OpenRequest<Dir> {
+    /// # Safety
+    /// `file` is the successful original native completion of this request.
+    #[inline]
+    pub unsafe fn try_complete(&self, file: File) -> Result<Dir, alloc::Exhausted> {
+        Dir::try_new(file.into())
+    }
+}
+
 pub(super) struct Header {
     count: mem::raw::Count,
     pub(super) file: OwnedFd,

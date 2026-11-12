@@ -6,7 +6,6 @@ use crate::common::runtime::{self, Setup};
 pub mod common;
 use common::recover;
 
-use dope_core::io::Reclaimed;
 use dope_fiber::{
     reply::{recv, recv::attach::Attach as _},
     task::done::Once,
@@ -207,10 +206,7 @@ fn build_failure_rolls_back() {
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(
-        matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reclaimed(&reports);
 
     assert_eq!(drops.count(), 4);
 }

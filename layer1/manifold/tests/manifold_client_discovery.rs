@@ -1,5 +1,7 @@
 pub mod common;
 
+use crate::common::manifold::client::{assert_reclaimed};
+
 use std::{
     cell::Cell,
     io::Write as _,
@@ -881,10 +883,7 @@ fn retired_retries() {
         },
         recovery::Policy::new(|event| reclaim2.push(event), recover),
     );
-    assert!(
-        matches!(reclaim2.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim2:?}"
-    );
+    assert_reclaimed(&reclaim2);
 
     let changes = changes.values().expect("discovery observations");
     assert_eq!(changes.len(), 14);

@@ -1,5 +1,7 @@
 pub mod common;
 
+use crate::common::manifold::client::{assert_reclaimed};
+
 use std::{net::SocketAddr, rc::Rc, time::Duration};
 
 use dope_core::driver::{
@@ -143,10 +145,7 @@ fn startup_hides_target() {
     );
     audit.checked((0, 0));
     assert!(events.values().expect("startup observations").is_empty());
-    assert!(
-        matches!(reports.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    assert_reclaimed(&reports);
 }
 
 #[test]
@@ -503,10 +502,7 @@ fn run(addr: SocketAddr, eager: bool, events: &Trace<Result<(), Error>, 4>) {
             );
         },
     );
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 
     audit.checked((0, 0));
     assert_eq!((conn.hits(), done.hits(), closed.hits()), (1, 1, 1));

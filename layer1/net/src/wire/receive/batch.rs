@@ -133,8 +133,6 @@ impl<'id, 'd, W: wire::Spec> Grant<'id, 'd, W> {
         W: 'input,
         P: receive::raw::Producer<'input, W>,
     {
-        use batch::raw::Settle as _;
-
         let output = producer.produce(self.bound.get());
         let used = <<W::Receive as receive::Policy<W>>::Batch<'input> as receive::raw::Batch<
             'input,

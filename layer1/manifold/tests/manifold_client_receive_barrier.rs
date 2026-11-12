@@ -1,5 +1,7 @@
 pub mod common;
 
+use crate::common::manifold::client::{assert_reclaimed, reached};
+
 use std::{
     cell::Cell,
     net::{Ipv4Addr, Shutdown},
@@ -50,7 +52,7 @@ use dope_test::{
 use crate::common::{
     contract::Report,
     manifold::client::{
-        Configure as _, error,
+        Configure as _,
         finish::close::members::Until,
         switch::{
             barrier::{Barrier, Bytes, Gates, Mode},
@@ -208,10 +210,7 @@ fn owner_survives_barrier() {
                 );
                 assert!(result.is_ok(), "create transition connector");
             }, recovery::Policy::new(|event| reclaim1.push(event), recover));
-        assert!(
-            matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-            "unexpected reclaimed operations: {reclaim1:?}"
-        );
+        assert_reclaimed(&reclaim1);
 
         assert_eq!(
             stream
@@ -503,10 +502,7 @@ fn run<W>(
         },
         recovery::Policy::new(|event| reclaim1.push(event), recover),
     );
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 
     assert_eq!(
         stream
@@ -514,13 +510,5 @@ fn run<W>(
             .read(&mut [0])
             .expect("causal EOF"),
         0
-    );
-}
-
-fn reached(wait: Result<fibers::Wait, fibers::Run>, audit: &Report<error::Error, 16>) {
-    audit.checked((0, 0));
-    assert!(
-        matches!(wait, Ok(fibers::Wait::Reached)),
-        "progress: {wait:?}"
     );
 }

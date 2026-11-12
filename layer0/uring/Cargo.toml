@@ -16,3 +16,8 @@ platform-owner = "../core"
 dope-sys.workspace = true
 libc.workspace = true
 o3.workspace = true
+
+[dev-dependencies]
+dope = { path = "../../layer1/dope" }
+dope-fiber = { path = "../../layer2/fiber" }
+dope-test = { path = "../../layer2/test" }

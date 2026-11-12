@@ -12,7 +12,8 @@ where
 {
     unsafe fn try_connect(self) -> Result<H::Output, H::Error> {
         use device::{Failure, Reserve as _};
-        self.host.direct(|backend, fd, options, reserve, last| {
+        self.host.with(|backend, fd, options, reserve, last| {
+            let options = options.map(|options| (H::slot(&fd), options));
             let vacant = match reserve.try_vacancy() {
                 Ok(vacant) => vacant,
                 Err(error) => return Err(Failure::Reserve(tuning::Error::Reserve(fd, error))),

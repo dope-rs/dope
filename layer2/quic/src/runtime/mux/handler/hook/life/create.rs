@@ -17,47 +17,14 @@ pub enum Decision<C> {
     Reject,
 }
 
-pub struct Event<
-    'scope,
-    H,
-    const DOMAIN: u8,
-    B: stream::Recv,
-    D: buffer::raw::Segment,
-    I: id::Temporal,
-> {
-    handler: pin::Pin<&'scope mut H>,
-    conn: scope::Access<'scope, DOMAIN, B, true, D>,
-    handle: id::Handle<I, DOMAIN>,
-}
-
-impl<'scope, H, const DOMAIN: u8, B, D, I> Event<'scope, H, DOMAIN, B, D, I>
-where
-    B: stream::Recv,
-    D: buffer::raw::Segment,
-    I: id::Temporal,
-{
-    pub(crate) fn new(
-        handler: pin::Pin<&'scope mut H>,
-        conn: scope::Access<'scope, DOMAIN, B, true, D>,
-        handle: id::Handle<I, DOMAIN>,
-    ) -> Self {
-        Self {
-            handler,
-            conn,
-            handle,
-        }
-    }
-
-    pub fn into_parts(
-        self,
-    ) -> (
+pub type Event<'scope, H, const DOMAIN: u8, B, D, I> = crate::runtime::mux::handler::hook::Event<
+    (
         pin::Pin<&'scope mut H>,
         scope::Access<'scope, DOMAIN, B, true, D>,
         id::Handle<I, DOMAIN>,
-    ) {
-        (self.handler, self.conn, self.handle)
-    }
-}
+    ),
+    3,
+>;
 
 pub trait Mode<H, const DOMAIN: u8, B, D, I>
 where

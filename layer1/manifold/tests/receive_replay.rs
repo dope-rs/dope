@@ -1,6 +1,6 @@
 pub mod common;
 
-use common::manifold::listener::{native, reached};
+use common::manifold::{listener::reached, native};
 
 use std::{io::Write as _, net::TcpStream, rc::Rc, time::Duration};
 

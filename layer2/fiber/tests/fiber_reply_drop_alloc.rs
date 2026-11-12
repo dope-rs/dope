@@ -8,7 +8,6 @@ use common::recover;
 
 use std::mem;
 
-use dope_core::io::Reclaimed;
 use dope_fiber::{reply::recv, task::done::Once};
 use dope_test::alloc::Tracker;
 use o3::base::cell::region;
@@ -201,10 +200,7 @@ fn mixed_lanes_release() {
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(
-        matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reclaimed(&reports);
 
     assert_eq!(drops.count(), 12);
 }
@@ -355,10 +351,7 @@ fn owner_holds_credits() {
             recovery::Policy::new(|event| reports.push(event), recover),
             runtime::check_scope,
         );
-        assert!(
-            matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-            "unexpected reclaimed operations: {reports:?}"
-        );
+        runtime::check_reclaimed(&reports);
 
         assert_eq!(drops.count(), if forget { 2 } else { 3 });
     }

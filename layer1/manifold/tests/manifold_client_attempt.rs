@@ -1,5 +1,7 @@
 pub mod common;
 
+use crate::common::manifold::client::{assert_reclaimed};
+
 use std::{cell::Cell, ptr, rc::Rc, time::Duration};
 
 use dope_core::driver::{
@@ -239,10 +241,7 @@ fn cancel_before_reuse() {
             .expect("attempt source generation and finalization"));
         });
 
-    assert!(
-        matches!(reports.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    assert_reclaimed(&reports);
     checked(&audit, &trace);
 }
 

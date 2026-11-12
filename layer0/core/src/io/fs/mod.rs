@@ -1,4 +1,4 @@
-use std::{fs, mem, os::fd};
+use std::{fs, marker, mem, os::fd};
 
 use dope_sys::io::{fd::Fd as _, file, request::Request};
 use file::File as _;
@@ -22,6 +22,7 @@ mod len;
 pub mod metadata;
 pub mod open;
 pub mod path;
+pub mod watch;
 
 pub use dir::Dir;
 pub use file::Kind;
@@ -124,9 +125,10 @@ where
     target: route::Operation<'d, Tag, C>,
 }
 
-pub struct OpenRequest {
+pub struct OpenRequest<T = File> {
     path: path::Confined,
     beneath: <Backend as file::File>::Options,
+    output: marker::PhantomData<fn() -> T>,
 }
 
 impl<'a, 'd, Tag, C> Submission<'a, 'd, Tag, C>
@@ -280,10 +282,21 @@ where
 impl OpenRequest {
     /// Keeps the confined path non-following and close-on-exec for every opening policy.
     pub fn new(path: path::Confined, options: open::Options) -> Self {
+        Self::with_options(path, options)
+    }
+
+    pub fn directory(path: path::Confined) -> OpenRequest<Dir> {
+        OpenRequest::with_options(path, open::Options::new(open::Access::Directory))
+    }
+}
+
+impl<T> OpenRequest<T> {
+    fn with_options(path: path::Confined, options: open::Options) -> Self {
         let (flags, mode) = options.nofollow().lower();
         Self {
             path,
             beneath: <<Backend as file::File>::Request<'_> as Request>::options(flags, mode),
+            output: marker::PhantomData,
         }
     }
 

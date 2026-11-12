@@ -307,7 +307,10 @@ dependencies = [
 name = "dope-uring"
 version = "0.70.0"
 dependencies = [
+ "dope",
+ "dope-fiber",
  "dope-sys",
+ "dope-test",
  "libc",
  "o3",
 ]

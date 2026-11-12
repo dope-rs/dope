@@ -1,6 +1,11 @@
 pub mod common;
 
-use std::{cell::Cell, fmt::Debug, net::Shutdown, rc::Rc, time::Duration};
+use crate::common::manifold::{
+    client::{assert_reclaimed, reached},
+    native,
+};
+
+use std::{cell::Cell, net::Shutdown, rc::Rc, time::Duration};
 
 use dope_core::driver::{
     life::recovery,
@@ -15,9 +20,8 @@ use dope_manifold::{
     timing::Balanced,
 };
 use dope_net::{tcp::Tcp, wire};
-use dope_runtime::{executor::session::Completion, topology::error::Kind};
+use dope_runtime::executor::session::Completion;
 use dope_test::{
-    fibers,
     harness::{
         GUARD, peer,
         signals::{self, Progress as _},
@@ -29,7 +33,6 @@ use o3::base::time::Positive;
 use crate::common::{
     contract::Report,
     manifold::client::{
-        error,
         switch::{
             eof::{self, Stages, decode},
             terminal::eof::{Decode, Eof},
@@ -95,10 +98,7 @@ fn eof_retries_finish() {
                     native,
                 )
                 .expect("application scenario");
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
+            assert_reclaimed(&reclaim1);
 
             audit.checked((0, 0));
             assert_eq!(
@@ -282,10 +282,7 @@ fn eof_commits_then_settles() {
                 native,
             )
             .expect("application scenario");
-        assert!(
-            matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-            "unexpected reclaimed operations: {reclaim1:?}"
-        );
+        assert_reclaimed(&reclaim1);
 
         audit.checked((0, 0));
         let accepted = u32::from(!excess);
@@ -299,16 +296,4 @@ fn eof_commits_then_settles() {
             .read_to_end(&mut Vec::new())
             .expect("wait for terminal connection close");
     }
-}
-
-fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {
-    result.expect("native lifecycle")
-}
-
-fn reached(wait: Result<fibers::Wait, fibers::Run>, audit: &Report<error::Error, 16>) {
-    audit.checked((0, 0));
-    assert!(
-        matches!(wait, Ok(fibers::Wait::Reached)),
-        "progress: {wait:?}"
-    );
 }

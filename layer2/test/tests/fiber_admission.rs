@@ -135,7 +135,8 @@ fn reports_timer_errors() {
         let schedule = settings::Schedule::fixed::<0, 0>()
             .resolve(demands::Schedule::new(config.schedule().ready(), timers));
         let executor = Executor::new(&mut attempt, config.set_schedule(schedule))
-            .unwrap_or_else(|error| panic!("executor: {:?}", error.kind()));
+            .map_err(|error| format!("{:?}", error.kind()))
+            .expect("executor");
         executor.run(|executor| {
             let result = executor.enter_with(
                 |mut scope| {

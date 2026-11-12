@@ -8,7 +8,7 @@ use std::{mem, net, os::fd};
 
 use dope_sys::{
     Errno, engine,
-    io::socket::{Domain, Kind, Origin, Prepare, Socket as _},
+    io::socket::{Domain, Kind, Origin, Prepare, Socket as _, addr},
     kernel,
 };
 pub use error::Error;
@@ -97,52 +97,39 @@ impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
         self.finish(handle)
     }
 
-    fn adopt(
-        self,
-        file: fd::OwnedFd,
-        kind: Kind,
-    ) -> Result<(Descriptor<'d>, net::SocketAddr), Error> {
+    fn adopt(file: fd::OwnedFd, kind: Kind) -> Result<socket::Handle, Error> {
         let handle = socket::Handle::new(crate::Backend::adopt(file).map_err(Error::setup)?);
-        let fault = |errno| Error::syscall(Operation::Validate, errno);
-        let actual = crate::Backend::kind::<Errno>(handle.owned().as_fd()).map_err(fault)?;
+        let actual =
+            crate::Backend::kind::<Errno>(handle.owned().as_fd()).map_err(Error::validate)?;
         match kind {
-            Kind::Stream => {
-                if !actual.is_stream() {
-                    return Err(Error::Adopt(adopt::Error::ListenerKind {
-                        actual: actual.raw(),
-                    }));
-                }
-                if !crate::Backend::is_listening::<Errno>(handle.owned().as_fd()).map_err(fault)? {
-                    return Err(Error::Adopt(adopt::Error::ListenerState { actual: 0 }));
-                }
+            Kind::Stream if !actual.is_stream() => {
+                return Err(Error::Adopt(adopt::Error::StreamKind {
+                    actual: actual.raw(),
+                }));
             }
             Kind::Dgram if !actual.is_datagram() => {
                 return Err(Error::Adopt(adopt::Error::DatagramKind {
                     actual: actual.raw(),
                 }));
             }
-            Kind::Dgram => {}
+            Kind::Stream | Kind::Dgram => {}
         }
-        self.finish(handle)
+        Ok(handle)
     }
 
     fn finish(self, handle: socket::Handle) -> Result<(Descriptor<'d>, net::SocketAddr), Error> {
         let local = handle.local_addr().map_err(Error::LocalAddress)?;
         let local = local.into_std().map_err(Error::Address)?;
-        self.finish_at(handle.into_inner(), local)
+        Ok((self.install(handle.into_inner())?, local))
     }
 
-    fn finish_at<H, E>(
-        self,
-        handle: H,
-        local: net::SocketAddr,
-    ) -> Result<(Descriptor<'d>, net::SocketAddr), Error>
+    fn install<H, E>(self, handle: H) -> Result<Descriptor<'d>, Error>
     where
         crate::Engine: engine::Install<OwnedSlot, H, Error = E>,
         E: Into<<crate::Backend as kernel::Source>::Failure<driver::route::indices::SlotIndex>>,
     {
         match self.driver.native().install(self.reservation, handle) {
-            Ok(fd) => Ok((fd, local)),
+            Ok(fd) => Ok(fd),
             Err(cause) => Err(Error::kernel(Operation::FixedFile, cause)),
         }
     }
@@ -170,7 +157,30 @@ impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
         mut driver: driver::Context<'context, 'd>,
         fd: fd::OwnedFd,
     ) -> Result<(Descriptor<'d>, net::SocketAddr), Error> {
-        reserve(&mut driver)?.adopt(fd, Kind::Stream)
+        let entry = reserve(&mut driver)?;
+        let handle = Self::adopt(fd, Kind::Stream)?;
+        if !crate::Backend::is_listening::<Errno>(handle.owned().as_fd())
+            .map_err(Error::validate)?
+        {
+            return Err(Error::Adopt(adopt::Error::ListenerState { actual: 0 }));
+        }
+        entry.finish(handle)
+    }
+
+    /// Installs an owned connected Internet stream.
+    pub fn adopt_connected(
+        mut driver: driver::Context<'context, 'd>,
+        fd: fd::OwnedFd,
+    ) -> Result<Descriptor<'d>, Error> {
+        let entry = reserve(&mut driver)?;
+        let handle = Self::adopt(fd, Kind::Stream)?;
+        let mut peer = addr::Storage::empty();
+        crate::Backend::peer_addr::<Errno>(handle.owned().as_fd(), &mut peer)
+            .map_err(Error::validate)?;
+        peer.to_std()
+            .map_err(socket::Error::from)
+            .map_err(Error::Address)?;
+        entry.install(handle.into_inner())
     }
 
     /// Installs an owned listener without rechecking its established socket role.
@@ -181,7 +191,7 @@ impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
         let entry = reserve(&mut driver)?;
         let (fd, local) = listener.into_parts();
         let handle = socket::Handle::new(crate::Backend::adopt(fd).map_err(Error::setup)?);
-        entry.finish_at(handle.into_inner(), local)
+        Ok((entry.install(handle.into_inner())?, local))
     }
 
     pub fn adopt_udp(
@@ -189,7 +199,8 @@ impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
         fd: fd::OwnedFd,
     ) -> Result<(Datagram<'d>, net::SocketAddr), Error> {
         let (entry, capacity) = reserve_datagram(&mut driver)?;
-        let (fd, addr) = entry.adopt(fd, Kind::Dgram)?;
+        let handle = Self::adopt(fd, Kind::Dgram)?;
+        let (fd, addr) = entry.finish(handle)?;
         Ok((Datagram::new(fd, capacity), addr))
     }
 
@@ -200,8 +211,8 @@ impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
     ) -> Result<(Datagram<'d>, net::SocketAddr), Error> {
         let (entry, capacity) = reserve_datagram(&mut driver)?;
         let (handle, local) = socket.into_parts();
-        let (fd, addr) = entry.finish_at(handle, local)?;
-        Ok((Datagram::new(fd, capacity), addr))
+        let fd = entry.install(handle)?;
+        Ok((Datagram::new(fd, capacity), local))
     }
 
     pub fn bind_udp(

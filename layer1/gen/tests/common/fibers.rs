@@ -32,11 +32,8 @@ pub struct Scoped<'app, 'd: 'app> {
 }
 
 impl<'app, 'd: 'app> Scoped<'app, 'd> {
-    #[deny(unused_variables)]
     #[fibers::fiber_fn('d, crate = ::fibers)]
     pub async fn ready<'a>(&'a self) -> &'a str {
-        #![allow(unused_variables)]
-        let unused = ();
         Ready::new(self.value).await
     }
 }

@@ -234,7 +234,7 @@ where
                 let endpoint = this.mux.as_ref().get_ref().domain();
                 let handler = this.mux.as_mut().handler_mut();
                 <H::Events as Dispatch<H, ID, B, Shared<'d>, id::Driver<'d>>>::Socket::call(|| {
-                    socket::Event::new(handler, net::Event::Receive { endpoint, error })
+                    socket::Event::new((handler, net::Event::Receive { endpoint, error }))
                 });
                 if matches!(error, ReceiveError::Submit(error)
                     if error.cause() == SubmitCause::IdentityExhausted)
@@ -274,10 +274,10 @@ where
         let domain = this.mux.as_ref().get_ref().domain();
         let handler = this.mux.as_mut().handler_mut();
         <H::Events as Dispatch<H, ID, B, Shared<'d>, id::Driver<'d>>>::Socket::call(|| {
-            socket::Event::new(
+            socket::Event::new((
                 handler,
                 net::Event::Settled(net::Settlement::from_driver(domain, &done)),
-            )
+            ))
         });
         let (_, _, _, data, _) = done.into_parts();
         this.mux.as_mut().output().reclaim(data, gso_failed);
@@ -459,10 +459,10 @@ where
         let domain = this.mux.as_ref().get_ref().domain();
         let handler = this.mux.as_mut().handler_mut();
         <H::Events as Dispatch<H, ID, B, Shared<'d>, id::Driver<'d>>>::Socket::call(|| {
-            socket::Event::new(
+            socket::Event::new((
                 handler,
                 net::Event::Transferred(net::Transfer::from_driver(domain, sent)),
-            )
+            ))
         });
     }
 }

@@ -117,7 +117,7 @@ where
         let endpoint = self.mux.as_ref().get_ref().domain();
         let handler = self.mux.as_mut().handler_mut();
         <H::Events as Dispatch<H, ID, B, M::Send, M::Identity>>::Socket::call(|| {
-            socket::Event::new(handler, net::Event::Rejected { endpoint, error })
+            socket::Event::new((handler, net::Event::Rejected { endpoint, error }))
         });
         ControlFlow::Break(())
     }
@@ -163,7 +163,7 @@ where
     ) {
         let handler = mux.as_mut().handler_mut();
         <H::Events as Dispatch<H, ID, B, M::Send, M::Identity>>::Socket::call(|| {
-            socket::Event::new(handler, net::Event::Accepted(accepted))
+            socket::Event::new((handler, net::Event::Accepted(accepted)))
         });
     }
 }

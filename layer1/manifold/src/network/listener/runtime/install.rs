@@ -121,7 +121,10 @@ where
         R: change::Prepare<'w, 'd, ID, E::Wire>,
     {
         let hash = stage.hash_state(listener::Domain::for_listener(ID::ID.raw()));
-        self.build(hash, stage, lending::Stage::driver, make, build)
+        let binding = self.binding(lending::Stage::driver(stage).driver_ref());
+        let app = make(binding).map_err(crate::BuildError::Factory)?;
+        self.with_driver(app, hash, stage, lending::Stage::driver, build)
+            .map_err(crate::BuildError::Create)
     }
 
     /// Reserves this listener's route and storage in the matching driver domain.
@@ -223,29 +226,5 @@ where
             .map_err(creation::Error::from)
         })
         .map_err(creation::Error::Allocation)?
-    }
-
-    pub(crate) fn build<'d: 'w, A, FactoryError, C, O>(
-        self,
-        hash: random::HashState<'d>,
-        owner: &mut C,
-        context: impl for<'a> Fn(&'a mut C) -> driver::Context<'a, 'd>,
-        make: impl FnOnce(driver::Binding<'d>) -> Result<A, FactoryError>,
-        build: impl for<'n, 'p, 's> FnOnce(
-            listener::Listener<'n, 'p, 's, 'w, 'd, ID, A, E>,
-            listener::Wait<'p, 'd>,
-            &mut C,
-        ) -> O,
-    ) -> Result<O, crate::BuildError<FactoryError>>
-    where
-        ID: 'd,
-        A: handler::Application<'d, ID, Wire = E::Wire> + handler::Runtime<'w, 'd, ID>,
-        E::Wire: 'd,
-        R: change::Prepare<'w, 'd, ID, E::Wire>,
-    {
-        let binding = self.binding(context(owner).driver_ref());
-        let app = make(binding).map_err(crate::BuildError::Factory)?;
-        self.with_driver(app, hash, owner, context, build)
-            .map_err(crate::BuildError::Create)
     }
 }

@@ -4,17 +4,10 @@ use std::{convert::Infallible, net::Shutdown, ops::ControlFlow, time::Duration};
 
 use common::{discard::eof, wire::Input};
 use dope_core::{
-    Errno,
     driver::{result::poll, schedule::ready},
-    io::{
-        Reclaimed,
-        event::{
-            batch::Flow,
-            net::{
-                accept::Failure,
-                recv::{Kind, Outcome, Status},
-            },
-        },
+    io::event::{
+        batch::Flow,
+        net::recv::{Kind, Outcome, Status},
     },
 };
 use dope_net::link::{
@@ -298,23 +291,7 @@ fn grant_before_probe() {
                 assert!(!pool.inspect().has_rearm());
             });
             assert_eq!(input, Input::Empty);
-            let mut errors = 0;
-            for report in reports {
-                if matches!(report, Reclaimed::RecvRoute {
-                    result: Err(error), flow: Flow::Last, ..
-                } if error == Errno::NO_BUFFER_SPACE)
-                {
-                    errors += 1;
-                } else {
-                    assert!(
-                        matches!(report, Reclaimed::Accept {
-                            result: Err(Failure::Syscall(error)), flow: Flow::Last, ..
-                        } if error.is_canceled()),
-                        "unsettled native operation: {report:?}"
-                    );
-                }
-            }
-            assert_eq!(errors, usize::from(tail));
+            common::discard::assert_reclaimed(&reports, usize::from(tail));
         }
     })
     .expect("test deadline");

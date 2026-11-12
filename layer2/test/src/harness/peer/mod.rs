@@ -350,7 +350,7 @@ fn adopt(file: fd::OwnedFd, kind: socket::Kind) -> Result<fd::OwnedFd, Error> {
     match kind {
         socket::Kind::Stream => {
             if !actual.is_stream() {
-                return Err(Error::Adopt(adopt::Error::ListenerKind {
+                return Err(Error::Adopt(adopt::Error::StreamKind {
                     actual: actual.raw(),
                 }));
             }

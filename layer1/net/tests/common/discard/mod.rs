@@ -14,7 +14,7 @@ use dope_core::{
         settings::Config,
     },
     io::{
-        Event,
+        Event, Reclaimed,
         event::{
             self,
             batch::Flow,
@@ -51,6 +51,26 @@ use o3::alloc;
 use crate::common::segments::Wire;
 
 pub mod eof;
+
+pub fn assert_reclaimed(reports: &[Reclaimed], exhausted: usize) {
+    let mut found = 0;
+    for event in reports {
+        if matches!(event, Reclaimed::RecvRoute {
+            result: Err(error), flow: Flow::Last, ..
+        } if *error == dope_core::Errno::NO_BUFFER_SPACE)
+        {
+            found += 1;
+        } else {
+            assert!(
+                matches!(event, Reclaimed::Accept {
+                    result: Err(Failure::Syscall(error)), flow: Flow::Last, ..
+                } if error.is_canceled()),
+                "unsettled native operation: {event:?}"
+            );
+        }
+    }
+    assert_eq!(found, exhausted);
+}
 
 #[derive(Debug)]
 pub enum Error {

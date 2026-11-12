@@ -22,7 +22,7 @@ use dope_core::driver::{
     result::poll::Dispatch,
     route::{Epoch, FrameworkTag, KeyTag, Tag, indices::SlotIndex, kind},
     schedule,
-    schedule::app::batch::{Reserved, raw::Settle as _},
+    schedule::app::batch::Reserved,
     settings,
 };
 use dope_test::reclaim::Reports;

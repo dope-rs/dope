@@ -1,7 +1,12 @@
 use crate::common::manifold::client::error;
 pub mod common;
 
-use std::{cell::Cell, convert::Infallible, fmt::Debug, mem, net, rc::Rc, time::Duration};
+use crate::common::manifold::{
+    client::{assert_reclaimed},
+    native,
+};
+
+use std::{cell::Cell, convert::Infallible, mem, net, rc::Rc, time::Duration};
 
 use dope_core::{
     Errno,
@@ -15,7 +20,7 @@ use dope_manifold::{
     client::{close::Reason, deadline, session::policy::output::Cancel},
 };
 use dope_net::{link::egress, tcp::Tcp, wire::Identity};
-use dope_runtime::{executor::session::Completion, topology::error::Kind};
+use dope_runtime::executor::session::Completion;
 use dope_test::{
     fibers,
     harness::{
@@ -94,12 +99,9 @@ fn impossible_send() {
             native,
         )
         .expect("application scenario");
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 
-    checked(&audit);
+    audit.no_faults();
     assert_eq!(closed.hits(), 1);
     assert_eq!(
         (audit.sent.get(), audit.cancelled.get()),
@@ -172,12 +174,9 @@ fn flushes_input_during_kernel_flight() {
                     native,
                 )
                 .expect("application scenario");
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
+            assert_reclaimed(&reclaim1);
 
-            checked(&audit);
+            audit.no_faults();
             assert_eq!(canceled.hits(), 1);
             assert_eq!(closed.hits(), 1);
             assert!((reason.get()) == (Some(Reason::Timeout(deadline::Kind::Send))));
@@ -227,12 +226,9 @@ fn starts_before_flight() {
             native,
         )
         .expect("application scenario");
-    assert!(
-        matches!(reclaim2.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim2:?}"
-    );
+    assert_reclaimed(&reclaim2);
 
-    checked(&audit);
+    audit.no_faults();
     assert_eq!(canceled.hits(), 1);
     assert_eq!(closed.hits(), 1);
     assert!((reason.get()) == (Some(Reason::Timeout(deadline::Kind::Send))));
@@ -297,12 +293,9 @@ fn starts_on_capacity_wait() {
             native,
         )
         .expect("application scenario");
-    assert!(
-        matches!(reclaim3.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim3:?}"
-    );
+    assert_reclaimed(&reclaim3);
 
-    checked(&audit);
+    audit.no_faults();
     let reasons = reasons.values().expect("disconnect reasons");
     assert!((1..=2).contains(&reasons.len()));
     let waiting = (index.get()).expect("one waiting source");
@@ -470,16 +463,7 @@ fn check_retirement(shutdown: bool, fault: Option<Errno>) {
         );
     } else {
         assert_ne!(entered.hits(), 0, "retirement reaches the held wire");
-        checked(&audit);
+        audit.no_faults();
     }
     assert!(reports.events().expect("reclaimed events").is_empty());
-}
-
-fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {
-    result.expect("native lifecycle")
-}
-
-fn checked(audit: &Report<error::Error, 16>) {
-    let faults = audit.faults.values().expect("fault observations");
-    assert!(faults.is_empty(), "{faults:?}");
 }

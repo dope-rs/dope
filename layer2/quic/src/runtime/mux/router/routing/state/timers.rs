@@ -46,7 +46,7 @@ where
                 let Some(app) = this.slot.connection.as_mut() else {
                     unreachable!("application")
                 };
-                early::Event::new(this.sink.as_mut(), app, this.handle)
+                early::Event::new((this.sink.as_mut(), app, this.handle))
             })
         })
     }
@@ -89,13 +89,13 @@ where
                 let Some(app) = self.slot.connection.as_mut() else {
                     unreachable!("application")
                 };
-                datagram::Event::new(
+                datagram::Event::new((
                     self.sink.as_mut(),
                     handler::Slot::new(app, self.slot.conn.reborrow::<true>()),
                     self.handle,
                     data,
                     self.at,
-                )
+                ))
             })
         })
     }
@@ -120,13 +120,13 @@ where
             let Some(app) = this.slot.connection.as_mut() else {
                 unreachable!("application")
             };
-            stream::Event::new(
+            stream::Event::new((
                 this.sink.as_mut(),
                 handler::Slot::new(app, this.slot.conn.reborrow::<true>()),
                 this.handle,
                 bound.bound_event(),
                 this.at,
-            )
+            ))
         };
         let action = if ready {
             <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Stream::call(event)

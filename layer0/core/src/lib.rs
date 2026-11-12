@@ -39,11 +39,13 @@ pub enum BranchError<A, B> {
 cfg_select! {
     target_os = "linux" => {
         pub type Backend = dope_uring::Uring;
+        use dope_uring::watch;
         mod ring;
         use ring as completion;
     }
     target_os = "macos" => {
         pub type Backend = dope_kqueue::Kqueue;
+        use dope_kqueue::watch;
         mod poll;
         use poll as completion;
     }

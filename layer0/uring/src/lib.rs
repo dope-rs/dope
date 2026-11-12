@@ -68,6 +68,7 @@ mod error;
 mod system;
 
 mod sockets;
+pub mod watch;
 
 pub(crate) type Observed<T> = complete::Parts<T, cq::Outcome, cq::Flags>;
 

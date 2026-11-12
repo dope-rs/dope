@@ -69,11 +69,13 @@ where
         mut conn: scope::Access<'_, DOMAIN, B, false, D>,
         handle: id::Handle<I, DOMAIN>,
     ) {
-        conn.release(
-            &mut |release| match H::release(Event::new(handler.as_mut(), handle, release)) {
-                app::Readiness::Preserve | app::Readiness::Idle | app::Readiness::Ready => (),
-            },
-        );
+        conn.release(&mut |release| match H::release(Event::new((
+            handler.as_mut(),
+            handle,
+            release,
+        ))) {
+            app::Readiness::Preserve | app::Readiness::Idle | app::Readiness::Ready => (),
+        });
     }
 
     fn release(
@@ -83,7 +85,7 @@ where
         source: admit::Source,
         cause: release::Cause,
     ) -> app::Readiness {
-        H::release(Event::new(
+        H::release(Event::new((
             handler,
             handle,
             release::Event {
@@ -91,39 +93,18 @@ where
                 charge: proof,
                 cause,
             },
-        ))
+        )))
     }
 }
 
-pub struct Event<'scope, H, const DOMAIN: u8, I: id::Temporal> {
-    handler: pin::Pin<&'scope mut H>,
-    handle: id::Handle<I, DOMAIN>,
-    release: release::Event,
-}
-
-impl<'scope, H, const DOMAIN: u8, I: id::Temporal> Event<'scope, H, DOMAIN, I> {
-    pub(crate) fn new(
-        sink: pin::Pin<&'scope mut H>,
-        handle: id::Handle<I, DOMAIN>,
-        event: release::Event,
-    ) -> Self {
-        Self {
-            handler: sink,
-            handle,
-            release: event,
-        }
-    }
-
-    pub fn into_parts(
-        self,
-    ) -> (
+pub type Event<'scope, H, const DOMAIN: u8, I> = crate::runtime::mux::handler::hook::Event<
+    (
         pin::Pin<&'scope mut H>,
         id::Handle<I, DOMAIN>,
         release::Event,
-    ) {
-        (self.handler, self.handle, self.release)
-    }
-}
+    ),
+    8,
+>;
 
 pub trait Sink<const DOMAIN: u8, B, D, I>: Handler<DOMAIN, B, D, I>
 where

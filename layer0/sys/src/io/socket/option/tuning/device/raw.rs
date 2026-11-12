@@ -99,26 +99,6 @@ pub unsafe trait Connect<B, R, const N: usize>: Sized {
         >,
     ) -> Result<Self::Output, Self::Error>;
 
-    /// Synchronous options need a native slot only when an option is present.
-    fn direct(
-        self,
-        run: impl for<'o> FnOnce(
-            &mut B,
-            Self::File,
-            Option<(Self::Slot, Self::Options<'o>)>,
-            Self::Reserve,
-            R,
-        ) -> Result<
-            (Self::File, <Self::Reserve as Reserve>::Reservation),
-            Failure<Self::File, <Self::Reserve as Reserve>::Error>,
-        >,
-    ) -> Result<Self::Output, Self::Error> {
-        self.with(|backend, file, options, reserve, last| {
-            let options = options.map(|options| (Self::slot(&file), options));
-            run(backend, file, options, reserve, last)
-        })
-    }
-
     /// Admit a pinned option chain only after selecting a nonempty option set.
     fn connect(
         self,

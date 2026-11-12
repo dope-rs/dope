@@ -14,6 +14,13 @@ use crate::reactor::{op::files, sq, types};
 pub struct Borrowed<'a>(pub(super) sq::Entry, marker::PhantomData<&'a mut ()>);
 
 impl<'a> Borrowed<'a> {
+    pub fn watch(
+        watch: &'a crate::watch::Watch,
+        output: bytes::bounded::Value<&'a mut [mem::MaybeUninit<u8>]>,
+    ) -> Self {
+        Self::file_read(fd::AsFd::as_fd(watch), output, 0)
+    }
+
     pub(crate) const fn new(entry: sq::Entry) -> Self {
         Self(entry, marker::PhantomData)
     }
@@ -35,6 +42,21 @@ impl<'a> Borrowed<'a> {
         fields.length = input.len() as u32;
         fields.offset = offset.to_ne_bytes();
         Self::new(entry.flags(sq::Flags::ASYNC))
+    }
+
+    fn file_read(
+        file: fd::BorrowedFd<'a>,
+        output: bytes::bounded::Value<&'a mut [mem::MaybeUninit<u8>]>,
+        offset: u64,
+    ) -> Self {
+        let output = output.into_inner();
+        let raw = fd::AsRawFd::as_raw_fd(&file);
+        let mut entry = sq::Entry::new(files::READ, sq::Descriptor::File(raw));
+        let fields = entry.fields();
+        fields.address = output.as_mut_ptr() as u64;
+        fields.length = output.len() as u32;
+        fields.offset = offset.to_ne_bytes();
+        Self::new(entry)
     }
 }
 
@@ -81,14 +103,11 @@ impl<'a> request::Request<'a> for Borrowed<'a> {
         output: bytes::bounded::Value<&'a mut [mem::MaybeUninit<u8>]>,
         offset: Offset,
     ) -> Self {
-        let output = output.into_inner();
-        let raw = fd::AsRawFd::as_raw_fd(&file);
-        let mut entry = sq::Entry::new(files::READ, sq::Descriptor::File(raw));
-        let fields = entry.fields();
-        fields.address = output.as_mut_ptr() as u64;
-        fields.length = output.len() as u32;
-        fields.offset = offset.get().to_ne_bytes();
-        Self::new(entry.flags(sq::Flags::ASYNC))
+        Self::new(
+            Self::file_read(file, output, offset.get())
+                .0
+                .flags(sq::Flags::ASYNC),
+        )
     }
 
     fn write_current(file: fd::BorrowedFd<'a>, input: Self::Buffer) -> Self {

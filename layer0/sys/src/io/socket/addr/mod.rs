@@ -228,6 +228,7 @@ impl Storage<Socklen> {
 }
 
 impl Storage<Length> {
+    #[inline]
     pub fn to_std(&self) -> Result<net::SocketAddr, Error> {
         let actual = self.len.0 as usize;
         if actual > CAPACITY {

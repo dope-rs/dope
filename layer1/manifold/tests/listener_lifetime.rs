@@ -2,7 +2,7 @@ pub mod common;
 
 use std::{num::NonZero, rc::Rc, time::Duration};
 
-use common::manifold::listener::{native, reached};
+use common::manifold::{listener::reached, native};
 use common::{
     manifold::listener::finish::lifetime::{Event, Expiry, Lifetime},
     recover,

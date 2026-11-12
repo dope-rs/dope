@@ -16,6 +16,15 @@ use crate::{Kqueue, file::Options, raw};
 #[repr(transparent)]
 pub struct Request<'a>(State<'a>, ThreadBound);
 
+impl<'a> Request<'a> {
+    pub fn watch(
+        watch: &'a crate::watch::Watch,
+        _: bytes::bounded::Value<&'a mut [mem::MaybeUninit<u8>]>,
+    ) -> Self {
+        match *watch {}
+    }
+}
+
 enum State<'a> {
     Open {
         dir: fd::BorrowedFd<'a>,

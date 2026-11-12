@@ -25,7 +25,8 @@ fn finishes_interrupted_app() {
     assert!(trigger.fire().is_ok(), "fire shutdown");
     let executor = Setup::for_profile::<Tasks>()
         .try_executor(&mut create)
-        .unwrap_or_else(|error| panic!("shutdown test executor: {:?}", error.kind()));
+        .map_err(|error| format!("{:?}", error.kind()))
+        .expect("shutdown test executor");
     let executor = executor
         .shutdown(source)
         .expect("shutdown source registration");
@@ -49,6 +50,9 @@ fn finishes_interrupted_app() {
             "unexpected reclaimed operations: {reports:?}"
         );
 
-        entered.unwrap_or_else(|error| panic!("shutdown driver domain: {:?}", error.cause()));
+        entered
+            .as_ref()
+            .map_err(|error| error.cause())
+            .expect("shutdown driver domain");
     });
 }

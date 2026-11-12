@@ -23,7 +23,7 @@ use dope::{
 };
 use dope_fiber::{abi::Task, file::Operation};
 use dope_test::{fibers, harness::scenario};
-use o3::mem::Lease;
+use o3::mem::{Lease, Rejected};
 
 use common::{
     file::{Capture, Coordinate, Observed, Profile, buffer, fixture, open},
@@ -34,8 +34,13 @@ use common::{
 #[test]
 fn opens_reads_and_returns_the_original_charged_owner() {
     let dir = fixture("fiber_file_read");
+    let bundle = dir.path().join("bundle");
+    let retired = dir.path().join("retired");
+    fs::create_dir(&bundle).expect("bundle directory");
+    fs::rename(dir.path().join("data"), bundle.join("data")).expect("bundle contents");
     let directory = file::Dir::open(dir.path()).expect("directory owner");
-    let request = open(&directory, "data");
+    let name = file::path::Component::parse_os("bundle".as_ref()).expect("bundle name");
+    let request = file::OpenRequest::directory(directory.confine_name(name).expect("bundle path"));
     let layout =
         read::Layout::<KeyTag<41>>::try_new(NonZero::<u32>::MIN).expect("request capacity");
     let mut finish = session::Completion::new();
@@ -68,12 +73,35 @@ fn opens_reads_and_returns_the_original_charged_owner() {
                     },
                     scenario::TIMEOUT,
                     |mut app| {
-                        let (port, directory, input, completed, waker) =
-                            (&port, directory, &input, &completed, &waker);
+                        let (port, input, completed, waker) =
+                            (&port, &input, &completed, &waker);
                         fibers::TEST.try_run(&mut app, dope_fiber::fiber!('_ => async move {
+                            let read::Completion::Directory { path, result } =
+                                Operation::new(&port, read::Request::Directory(request))
+                                    .await.map_err(Rejected::discard).expect("directory admission")
+                            else {
+                                panic!("directory completion")
+                            };
+                            drop(path);
+                            let directory = result.expect("opened directory");
+                            fs::rename(&bundle, &retired).expect("retire directory name");
+                            fs::create_dir(&bundle).expect("replacement directory");
+                            fs::write(bundle.join("data"), b"wrong").expect("replacement contents");
+                            let name = file::path::Component::parse_os("data".as_ref())
+                                .expect("file name");
+                            let request = file::OpenRequest::directory(
+                                directory.confine_name(name).expect("confined file"),
+                            );
+                            let read::Completion::Directory { result, .. } =
+                                Operation::new(&port, read::Request::Directory(request))
+                                    .await.map_err(Rejected::discard).expect("directory error admission")
+                            else {
+                                panic!("directory error completion")
+                            };
+                            assert!(matches!(result, Err(read::Error::System(Errno::NOT_DIRECTORY))));
                             let read::Completion::Open { request, result } =
-                                Operation::new(&port, read::Request::Open(request))
-                                    .await.ok().expect("open admission")
+                                Operation::new(&port, read::Request::Open(open(&directory, "data")))
+                                    .await.map_err(Rejected::discard).expect("open admission")
                             else {
                                 panic!("open completion")
                             };

@@ -59,11 +59,11 @@ where
         .map(|entry| {
             let handle = entry.handle();
             conn.mark(conn::Effects::ROUTING);
-            let app = match H::Create::create(create::Event::new(
+            let app = match H::Create::create(create::Event::new((
                 handler.as_mut(),
                 scope::Access::new(conn.machine_mut(), scope.reborrow()),
                 handle,
-            )) {
+            ))) {
                 create::Decision::Install(app) => app,
                 create::Decision::Reject => {
                     entry.reject();

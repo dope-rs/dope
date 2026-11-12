@@ -1,6 +1,11 @@
 pub mod common;
 
-use std::{fmt::Debug, net::Shutdown, rc::Rc, time::Duration};
+use crate::common::manifold::{
+    client::{assert_reclaimed},
+    native,
+};
+
+use std::{net::Shutdown, rc::Rc, time::Duration};
 
 use dope_core::driver::{
     life::recovery,
@@ -8,7 +13,7 @@ use dope_core::driver::{
 };
 use dope_manifold::{app::env::Bundle, client::close, timing::Balanced};
 use dope_net::{tcp::Tcp, wire::Identity};
-use dope_runtime::{executor::session::Completion, topology::error::Kind};
+use dope_runtime::executor::session::Completion;
 use dope_test::{
     fibers::Wait,
     harness::{GUARD, observe::Trace, peer, signals::Gate},
@@ -84,10 +89,7 @@ fn plaintext_precedes_failure() {
             native,
         );
         assert!(result.is_ok(), "{mode:?}: {result:?}");
-        assert!(
-            matches!(reclaimed.events(), Ok(events) if events.is_empty()),
-            "unexpected reclaimed operations: {reclaimed:?}"
-        );
+        assert_reclaimed(&reclaimed);
         let events = events.values().expect("terminal events");
         let ordered = match mode {
             Mode::Ready => matches!(
@@ -205,8 +207,4 @@ fn plain_parse_preserves_partial_and_retry() {
         "plain parse order: {events:?}"
     );
     assert_eq!(stream.read(&mut [0]).expect("wait for close"), 0);
-}
-
-fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {
-    result.expect("native lifecycle")
 }

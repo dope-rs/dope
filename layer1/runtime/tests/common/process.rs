@@ -39,14 +39,17 @@ pub fn repeated_install() {
                             .with_app(&mut finish, Empty {}, |_| ())
                             .expect("repeated installation");
                     }
-                    scope
-                        .with_app(&mut finish, Empty {}, |app| {
-                            let drain = gate.open().expect("worker gate");
-                            let request = app.run().expect("worker shutdown");
-                            drain.finish().expect("worker drain");
-                            request
-                        })
-                        .unwrap_or_else(|error| panic!("worker session: {:?}", error.cause()))
+                    let result = scope.with_app(&mut finish, Empty {}, |app| {
+                        let drain = gate.open().expect("worker gate");
+                        let request = app.run().expect("worker shutdown");
+                        drain.finish().expect("worker drain");
+                        request
+                    });
+                    result
+                        .as_ref()
+                        .map_err(|error| error.cause())
+                        .expect("worker session");
+                    result.ok().expect("validated session")
                 }))
             },
             Watch::new(heartbeat),
@@ -69,14 +72,17 @@ pub fn workers_shutdown() {
         |(), context, gate| {
             Ok::<_, Infallible>(worker(context, |mut scope| {
                 let mut finish = Completion::new();
-                scope
-                    .with_app(&mut finish, Empty {}, |app| {
-                        let drain = gate.open().expect("worker gate");
-                        let request = app.run().expect("worker shutdown");
-                        drain.finish().expect("worker drain");
-                        request
-                    })
-                    .unwrap_or_else(|error| panic!("worker session: {:?}", error.cause()))
+                let result = scope.with_app(&mut finish, Empty {}, |app| {
+                    let drain = gate.open().expect("worker gate");
+                    let request = app.run().expect("worker shutdown");
+                    drain.finish().expect("worker drain");
+                    request
+                });
+                result
+                    .as_ref()
+                    .map_err(|error| error.cause())
+                    .expect("worker session");
+                result.ok().expect("validated session")
             }))
         },
         Watch::new(false),
@@ -93,20 +99,24 @@ fn worker<'run, R>(
     let mut create = Attempt::new();
     let executor = Configured::quic::<2, 8>()
         .try_source(&mut create, context)
-        .unwrap_or_else(|error| panic!("worker executor: {:?}", error.kind()));
+        .map_err(|error| format!("{:?}", error.kind()))
+        .expect("worker executor");
     let mut reported = None;
     let request = executor.run(|executor| {
-        executor
-            .enter_with(
-                run,
-                recovery::Policy::new(
-                    |event| {
-                        reported.get_or_insert(event);
-                    },
-                    crate::common::recover,
-                ),
-            )
-            .unwrap_or_else(|error| panic!("worker teardown: {:?}", error.cause()))
+        let result = executor.enter_with(
+            run,
+            recovery::Policy::new(
+                |event| {
+                    reported.get_or_insert(event);
+                },
+                crate::common::recover,
+            ),
+        );
+        result
+            .as_ref()
+            .map_err(|error| error.cause())
+            .expect("worker teardown");
+        result.ok().expect("validated teardown")
     });
     assert!(reported.is_none(), "native reclamation: {reported:?}");
     request
@@ -176,22 +186,25 @@ pub fn terminal_failure() {
                 }
                 worker(context, |mut scope| {
                     let mut finish = Completion::new();
-                    scope
-                        .with_app(&mut finish, Empty {}, |app| {
-                            if cpu == failed {
-                                let error = terminal.fail();
-                                let request = app.run().expect("worker shutdown");
-                                if signal {
-                                    assert!(matches!(error, Ok(bus::Event::Failed)));
-                                    Ok(request)
-                                } else {
-                                    Err(error)
-                                }
+                    let result = scope.with_app(&mut finish, Empty {}, |app| {
+                        if cpu == failed {
+                            let error = terminal.fail();
+                            let request = app.run().expect("worker shutdown");
+                            if signal {
+                                assert!(matches!(error, Ok(bus::Event::Failed)));
+                                Ok(request)
                             } else {
-                                Ok(app.run().expect("companion shutdown"))
+                                Err(error)
                             }
-                        })
-                        .unwrap_or_else(|error| panic!("worker session: {:?}", error.cause()))
+                        } else {
+                            Ok(app.run().expect("companion shutdown"))
+                        }
+                    });
+                    result
+                        .as_ref()
+                        .map_err(|error| error.cause())
+                        .expect("worker session");
+                    result.ok().expect("validated session")
                 })
             })
             .expect_err("reported entry failure");

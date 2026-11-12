@@ -1,6 +1,6 @@
 pub mod common;
 
-use common::manifold::listener::{native, reached};
+use common::manifold::{listener::reached, native};
 
 use std::{cell::Cell, rc::Rc, time::Duration};
 

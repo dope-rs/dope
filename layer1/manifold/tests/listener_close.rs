@@ -2,7 +2,7 @@ pub mod common;
 
 use std::{net::Shutdown, rc::Rc};
 
-use common::manifold::listener::{native, reached};
+use common::manifold::{listener::reached, native};
 use common::{
     manifold::{
         Pattern,

@@ -45,5 +45,5 @@ pub(crate) fn sets(app: &Spec) -> proc_macro2::TokenStream {
             }
         }
     });
-    quote::quote! { [#(#routes),*] }
+    quote::quote! { #core::driver::settings::Routes::EMPTY #(.join(#routes))* }
 }

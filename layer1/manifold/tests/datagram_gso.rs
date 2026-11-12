@@ -19,10 +19,7 @@ use common::{
 };
 use dope_core::{
     dope_sys::io::socket::msg::source,
-    driver::{
-        life::recovery,
-        route::KeyTag,
-    },
+    driver::{life::recovery, route::KeyTag},
     io::datagram::{Gso, GsoPayload},
 };
 use dope_manifold::{
@@ -189,7 +186,8 @@ fn check_gso<'d, M: send::Segmented>(
                 _ => (payload, size),
             };
             State::<M>::queue(socket.as_mut(), (payload, size, address))
-                .unwrap_or_else(|_| panic!("empty send queue"));
+                .map_err(|error| error.cause())
+                .expect("empty send queue");
             let rejected = State::<M>::queue(socket.as_mut(), (retry, size, address))
                 .err()
                 .expect("one pending send fills the queue");
@@ -198,7 +196,8 @@ fn check_gso<'d, M: send::Segmented>(
             assert_eq!(retry.as_ptr(), original, "rejection preserves its owner");
             if let Some(size) = size {
                 let retry = GsoPayload::try_new(retry, size)
-                    .unwrap_or_else(|_| panic!("admitted GSO shape"));
+                    .map_err(o3::mem::Rejected::discard)
+                    .expect("admitted GSO shape");
                 let count = retry.packet_count();
                 let rejected = socket
                     .as_mut()

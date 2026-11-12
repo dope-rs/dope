@@ -1,18 +1,9 @@
 pub mod common;
 
 use common::{discard::eof, wire::Input};
-use dope_core::{
-    Errno,
-    io::{
-        Reclaimed,
-        event::{
-            batch::Flow,
-            net::{
-                accept::Failure,
-                recv::{Kind, Status},
-            },
-        },
-    },
+use dope_core::io::event::{
+    batch::Flow,
+    net::recv::{Kind, Status},
 };
 use dope_net::link::{
     event::{self, Dispatch, ParkError, ParkRecv, Reservation},
@@ -21,7 +12,7 @@ use dope_net::link::{
 
 #[test]
 fn full_returns_exhausted() {
-    let (mut reports, input) = eof::run::<input::Scoped>(|pool, key, scope, peer| {
+    let (reports, input) = eof::run::<input::Scoped>(|pool, key, scope, peer| {
         eof::arm(pool, key, scope).expect("receive admission");
         pool.suspend(key);
         for _ in 0..2 {
@@ -121,20 +112,9 @@ fn full_returns_exhausted() {
         assert!(!pool.inspect().has_rearm());
     });
     assert_eq!(input, Input::Empty);
-    let index = reports.iter().position(|event| matches!(event,
-        Reclaimed::RecvRoute { result: Err(error), flow: Flow::Last, .. } if *error == Errno::NO_BUFFER_SPACE
-    )).expect("rejected exhaustion reclaimed");
-    reports.remove(index);
     assert!(
-        reports.len() <= 1,
+        reports.len() <= 2,
         "only the retained accept may need quiescence"
     );
-    for event in reports {
-        assert!(
-            matches!(event, Reclaimed::Accept {
-                result: Err(Failure::Syscall(error)), flow: Flow::Last, ..
-            } if error.is_canceled()),
-            "unsettled native operation: {event:?}"
-        );
-    }
+    common::discard::assert_reclaimed(&reports, 1);
 }

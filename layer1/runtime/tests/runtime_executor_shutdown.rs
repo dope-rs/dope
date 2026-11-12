@@ -192,7 +192,8 @@ fn readiness_is_not_shutdown() {
     let mut create = Attempt::new();
     let executor = Configured::quic::<2, 8>()
         .try_source(&mut create, &main)
-        .unwrap_or_else(|error| panic!("observer creation: {:?}", error.kind()));
+        .map_err(|error| format!("{:?}", error.kind()))
+        .expect("observer creation");
     executor.run(|executor| {
         executor
             .enter_with(

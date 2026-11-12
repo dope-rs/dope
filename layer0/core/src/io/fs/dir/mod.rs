@@ -30,9 +30,12 @@ impl Dir {
             Mode::new(0),
         )
         .map_err(Error::Directory)?;
+        Self::try_new(file).map_err(|error| Error::Allocation(alloc::Error::from(error)))
+    }
+
+    fn try_new(file: fd::OwnedFd) -> Result<Self, alloc::Exhausted> {
         Ok(Self {
-            inner: raw::Header::try_new(file)
-                .map_err(|error| Error::Allocation(alloc::Error::from(error)))?,
+            inner: raw::Header::try_new(file)?,
         })
     }
 

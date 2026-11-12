@@ -1,6 +1,8 @@
 pub mod common;
 
-use std::{cell::Cell, fmt::Debug, net::SocketAddr, rc::Rc, time::Duration};
+use crate::common::manifold::client::{assert_reclaimed, leased, reached};
+
+use std::{cell::Cell, net::SocketAddr, rc::Rc, time::Duration};
 
 use dope_core::{
     driver::{
@@ -97,10 +99,7 @@ fn reject_skips_callbacks() {
         leased,
     );
     run.expect("rejected attempt scenario failed");
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 
     assert_eq!(scoped.get(), 0);
     audit.checked((0, 0));
@@ -131,10 +130,7 @@ fn reports_state_failure() {
             leased,
         )
         .expect("connection state rejection must retire its transport");
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
     assert!(matches!(
         trace.failed.values().as_deref(),
         Ok([ConnectFault::Transport(
@@ -473,10 +469,7 @@ fn deferred_open_retries() {
             leased,
         )
         .expect("deferred attempt scenario failed");
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 
     assert_eq!(gate.hits(), 1);
     audit.checked((0, 0));
@@ -518,10 +511,7 @@ fn rejected_credit_closes() {
                     leased,
                 )
                 .expect("parked attempt scenario failed");
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
+            assert_reclaimed(&reclaim1);
 
             let finish = server.finish();
             assert!(finish.is_ok(), "finish receive peer");
@@ -599,10 +589,7 @@ fn owned_plan_reused() {
         recovery::Policy::new(|event| reclaim1.push(event), recover),
         |entered| assert!(entered.is_ok(), "enter prepared service connector topology"),
     );
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 
     audit.checked((0, 0));
     assert_eq!(ready.hits(), 1);
@@ -616,19 +603,5 @@ fn owned_plan_reused() {
             .copied()
             .map(|peer| peer.into_std().expect("TCP peer address"))
             .eq([address])
-    );
-}
-
-fn leased<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>, lease: Option<bool>) -> T {
-    let output = result.expect("native lifecycle");
-    assert_eq!(lease, Some(true), "terminal attempt lease: {output:?}");
-    output
-}
-
-fn reached(wait: Result<fibers::Wait, fibers::Run>, audit: &Report<error::Error, 16>) {
-    audit.checked((0, 0));
-    assert!(
-        matches!(wait, Ok(fibers::Wait::Reached)),
-        "progress: {wait:?}"
     );
 }

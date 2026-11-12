@@ -8,7 +8,7 @@ use dope_core::{
         result::{SubmitCause, SubmitError},
         retained::flight,
         route::{self, Identity, indices, lease, table},
-        schedule::{self, ready::wake},
+        schedule,
         settings::{self, claim, errors},
     },
     io::{fs, transfer},
@@ -44,14 +44,13 @@ impl<'d> Return for Release<'d> {
 }
 
 /// A read whose nonempty buffer capacity was admitted exactly once.
-pub struct Read<R: Return> {
-    file: fs::File,
-    output: mem::Lease<R, Open>,
-    offset: fs::Offset,
-    length: transfer::NonZero,
-}
+pub type Read<R> = raw::Read<R, fs::File, fs::Offset>;
 
 pub type Parts<R> = (fs::File, mem::Lease<R, Open>, fs::Offset);
+
+pub type Watch<R> = raw::Read<R, fs::watch::Watch, ()>;
+
+pub struct Batch<R: Return>(Watch<R>);
 
 pub struct Metadata {
     file: fs::File,
@@ -85,12 +84,14 @@ impl Metadata {
 /// One request owns every descriptor, path, option, and output it submits.
 pub enum Request<R: Return> {
     Open(fs::OpenRequest),
+    Directory(fs::OpenRequest<fs::Dir>),
     Rename {
         directory: fs::Dir,
         old: fs::path::Owned,
         new: fs::path::Owned,
     },
     Read(Read<R>),
+    Watch(Watch<R>),
     Metadata(Metadata),
 }
 
@@ -99,6 +100,10 @@ pub enum Completion<R: Return> {
     Open {
         request: fs::OpenRequest,
         result: Result<fs::File, Error>,
+    },
+    Directory {
+        path: fs::path::Confined,
+        result: Result<fs::Dir, Error>,
     },
     Rename {
         directory: fs::Dir,
@@ -110,6 +115,7 @@ pub enum Completion<R: Return> {
         request: Read<R>,
         result: Result<transfer::Len, Error>,
     },
+    Watch(Result<Batch<R>, Rejected<Watch<R>, Error>>),
     Metadata {
         file: fs::File,
         result: Result<fs::metadata::Value, MetadataError>,
@@ -173,43 +179,6 @@ impl<ID: Identity> Layout<ID> {
 impl<ID: Identity> settings::Resource for Layout<ID> {
     fn include_in(&self, needs: claim::Needs) -> Result<claim::Needs, errors::Claim> {
         needs.include(claim::Claim::new(settings::Routes::singleton::<ID>()))
-    }
-}
-
-impl<'d, R: Return<Item = Buffer<'d>>> Read<R> {
-    pub fn try_new(
-        file: fs::File,
-        output: mem::Lease<R, Open>,
-        offset: fs::Offset,
-    ) -> Result<Self, Rejected<Parts<R>, SizeError>> {
-        let length = transfer::Len::try_new(output.item().capacity())
-            .map_err(SizeError::Overflow)
-            .and_then(|length| length.nonzero().ok_or(SizeError::Empty));
-        let length = match length {
-            Ok(length) => length,
-            Err(cause) => return Err(Rejected::new((file, output, offset), cause)),
-        };
-        Ok(Self {
-            file,
-            output,
-            offset,
-            length,
-        })
-    }
-
-    /// Reuses the admitted allocation without filling or copying it.
-    pub fn at(mut self, offset: fs::Offset) -> Self {
-        self.offset = offset;
-        self
-    }
-
-    pub const fn offset(&self) -> fs::Offset {
-        self.offset
-    }
-
-    /// A completed request exposes only its successfully read prefix.
-    pub fn into_parts(self) -> Parts<R> {
-        (self.file, self.output, self.offset)
     }
 }
 
@@ -305,8 +274,10 @@ impl<'d, R: Return<Item = Buffer<'d>>> Port<'d, R> {
         let Some((slot, ())) = self.slots.next::<FREE>() else {
             return Err(Rejected::new(request, Admission::Full));
         };
-        if let Request::Read(read) = &mut request {
-            read.prepare();
+        match &mut request {
+            Request::Read(read) => read.prepare(),
+            Request::Watch(read) => read.prepare(),
+            _ => (),
         }
         let entry = slot.state();
         entry.insert(request);
@@ -334,55 +305,6 @@ impl<'d, R: Return<Item = Buffer<'d>>> Port<'d, R> {
             } else {
                 true
             }
-        }
-    }
-}
-
-impl<'p, 'd, R: Return> Ticket<'p, 'd, R> {
-    pub fn poll(self, waiter: Option<wake::Waker<'d>>) -> Poll<'p, 'd, R> {
-        let slot = &self.slot;
-        let entry = slot.state();
-        match entry.phase.take() {
-            Some(Phase::Done(outcome)) => {
-                let request = entry.take();
-                slot.push::<FREE>(());
-                std::mem::forget(self);
-                Poll::Ready(match (request, outcome) {
-                    (Request::Open(request), Outcome::Open(result)) => {
-                        Completion::Open { request, result }
-                    }
-                    (
-                        Request::Rename {
-                            directory,
-                            old,
-                            new,
-                        },
-                        Outcome::Rename(result),
-                    ) => Completion::Rename {
-                        directory,
-                        old,
-                        new,
-                        result,
-                    },
-                    (Request::Read(request), Outcome::Read(result)) => {
-                        Completion::Read { request, result }
-                    }
-                    (
-                        Request::Metadata(Metadata {
-                            file,
-                            state: MetadataState::Done(result),
-                        }),
-                        Outcome::Metadata,
-                    ) => Completion::Metadata { file, result },
-                    _ => unreachable!("operation"),
-                })
-            }
-            phase @ Some(Phase::Queued | Phase::Active { .. }) => {
-                entry.waiter.set(waiter);
-                entry.restore(phase);
-                Poll::Pending(self)
-            }
-            None => unreachable!("ticket"),
         }
     }
 }
@@ -438,9 +360,10 @@ impl<'p, 'd, ID: Identity, R: Return<Item = Buffer<'d>>> Reader<'p, 'd, ID, R> {
 
     fn fail(&mut self, slot: &Slot<'_, 'd, R>, cause: Error) -> bool {
         let outcome = slot.state().with_request(|request| match request {
-            Request::Open(_) => Outcome::Open(Err(cause)),
+            Request::Open(_) | Request::Directory(_) => Outcome::Open(Err(cause)),
             Request::Rename { .. } => Outcome::Rename(Err(cause)),
             Request::Read(_) => Outcome::Read(Err(cause)),
+            Request::Watch(_) => Outcome::Read(Err(cause)),
             Request::Metadata(request) => {
                 request.release(&mut self.free);
                 request.state = MetadataState::Done(Err(MetadataError::Operation(cause)));

@@ -9,13 +9,13 @@ use crate::{
 
 pub(super) fn parse(
     attrs: &[syn::Attribute],
-) -> Result<(app::App, Option<syn::Ident>, bool), Failure> {
+) -> Result<(app::App, Option<syn::Ident>, bool, bool), Failure> {
     let coord = coordinate(attrs)?;
     let mut attrs = attrs
         .iter()
         .filter(|attr| attr.path().is_ident("dispatcher"));
     let Some(attr) = attrs.next() else {
-        return Ok((app::App::discover(), None, coord));
+        return Ok((app::App::discover(), None, coord, false));
     };
     if let Some(extra) = attrs.next() {
         return Err(Failure::new(extra, App::Dispatcher));
@@ -32,6 +32,7 @@ pub(super) fn parse(
     let mut manifold = None;
     let mut runtime = None;
     let mut driver = None;
+    let mut lending = None;
     for value in tokens::values(list, |span| Failure::at(span, App::DispatcherOptions))? {
         if value.name == "crate" {
             set(&mut facade, value.value, &value.name, Setting::Crate)?;
@@ -44,6 +45,10 @@ pub(super) fn parse(
         } else if value.name == "driver" {
             let selected = lifetime(&value)?;
             set(&mut driver, selected, &value.name, Setting::Driver)?;
+        } else if value.name == "lending" {
+            let selected = syn::parse2::<syn::LitBool>(value.value.tokens)
+                .map_err(|_| Failure::new(&value.name, App::DispatcherOptions))?;
+            set(&mut lending, selected.value, &value.name, Setting::Lending)?;
         } else {
             return Err(Failure::new(&value.name, App::UnknownDispatcher));
         }
@@ -68,7 +73,7 @@ pub(super) fn parse(
         };
         app::App::from_parts(core.tokens, manifold.tokens, runtime.tokens)
     };
-    Ok((paths, driver, coord))
+    Ok((paths, driver, coord, lending.unwrap_or(false)))
 }
 
 fn coordinate(attrs: &[syn::Attribute]) -> Result<bool, Failure> {

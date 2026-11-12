@@ -1,6 +1,6 @@
 pub mod common;
 
-use common::manifold::listener::{native, reached};
+use common::manifold::{listener::reached, native};
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();

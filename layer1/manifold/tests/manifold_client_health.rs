@@ -1,5 +1,7 @@
 pub mod common;
 
+use crate::common::manifold::client::{assert_reclaimed};
+
 use std::{
     cell::Cell,
     net::TcpListener,
@@ -245,10 +247,7 @@ fn stale_epoch_is_ignored() {
         recovery::Policy::new(|event| reclaim1.push(event), recover),
         |result| result.expect("native lifecycle"),
     );
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 
     let (_probe, _next) = peers.expect("health epoch scenario");
     audit.checked((0, 0));
@@ -342,10 +341,7 @@ fn next_endpoint_connects() {
         },
         recovery::Policy::new(|event| reclaim1.push(event), recover),
     );
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 }
 
 /// Successful connections and neutral lifetime rotations preserve endpoint selection order.
@@ -440,10 +436,7 @@ fn recovery_keeps_turn() {
         },
         recovery::Policy::new(|event| reclaim1.push(event), recover),
     );
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
 
     for server in servers {
         for _ in 0..2 {

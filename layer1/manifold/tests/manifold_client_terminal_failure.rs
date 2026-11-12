@@ -1,6 +1,11 @@
 pub mod common;
 
-use std::{cell::Cell, fmt::Debug, rc::Rc, time::Duration};
+use crate::common::manifold::{
+    client::{assert_reclaimed},
+    native,
+};
+
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use dope_core::driver::{
     life::recovery,
@@ -30,7 +35,7 @@ use dope_net::{
         },
     },
 };
-use dope_runtime::{executor::session::Completion, topology::error::Kind};
+use dope_runtime::executor::session::Completion;
 use dope_test::{
     fibers::Wait,
     harness::{
@@ -119,10 +124,7 @@ fn wire_failure_wins() {
         "application: {result:?}; {:?}",
         events.values().expect("terminal observations")
     );
-    assert!(
-        matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-        "unexpected reclaimed operations: {reclaim1:?}"
-    );
+    assert_reclaimed(&reclaim1);
     let events = events.values().expect("terminal observations");
     assert!(
         matches!(
@@ -285,10 +287,7 @@ where
                 native,
             );
             assert!(result.is_ok(), "application: {result:?}");
-            assert!(
-                matches!(reclaim1.events(), Ok(events) if events.is_empty()),
-                "unexpected reclaimed operations: {reclaim1:?}"
-            );
+            assert_reclaimed(&reclaim1);
 
             audit.checked((0, 0));
             assert_eq!([commit.hits(), settled.hits(), closed.hits()], [1; 3]);
@@ -297,8 +296,4 @@ where
         },
     )
     .expect("spawn protocol peer");
-}
-
-fn native<S: Debug, T: Debug>(result: Result<T, Kind<'_, S, &T>>) -> T {
-    result.expect("native lifecycle")
 }

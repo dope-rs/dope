@@ -4,17 +4,10 @@ use std::{net::Shutdown, time::Duration};
 
 use common::{discard::eof, wire::Input};
 use dope_core::{
-    Errno,
     driver::{result::poll, route::kind, schedule::ready},
-    io::{
-        Reclaimed,
-        event::{
-            batch::Flow,
-            net::{
-                accept::Failure,
-                recv::{Kind, Status},
-            },
-        },
+    io::event::{
+        batch::Flow,
+        net::recv::{Kind, Status},
     },
 };
 use dope_net::link::{
@@ -230,23 +223,7 @@ fn idle_peer_progress() {
                     assert!(!pool.inspect().has_rearm());
                 });
             assert_eq!(input, Input::Empty);
-            let mut errors = 0;
-            for report in reports {
-                if matches!(report, Reclaimed::RecvRoute {
-                result: Err(error), flow: Flow::Last, ..
-            } if error == Errno::NO_BUFFER_SPACE)
-                {
-                    errors += 1;
-                } else {
-                    assert!(
-                        matches!(report, Reclaimed::Accept {
-                    result: Err(Failure::Syscall(error)), flow: Flow::Last, ..
-                } if error.is_canceled()),
-                        "unsettled native operation: {report:?}"
-                    );
-                }
-            }
-            assert_eq!(errors, tails);
+            common::discard::assert_reclaimed(&reports, tails);
         }
     })
     .expect("test deadline");

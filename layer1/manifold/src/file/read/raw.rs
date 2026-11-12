@@ -12,14 +12,21 @@ use dope_runtime::executor;
 use o3::{
     alloc,
     buffer::bytes::bounded,
-    mem::{Rejected, Return},
+    mem::{Lease, Rejected, Return, lease::Open},
 };
+
+pub struct Read<R: Return, F, O> {
+    file: F,
+    output: Lease<R, Open>,
+    offset: O,
+    length: transfer::NonZero,
+}
 
 use crate::{
     app::{dispatch, dispatch::event},
     file::read::{
-        self, Active, Error, Metadata, MetadataError, MetadataState, Outcome, Phase, Reader,
-        Request,
+        self, Active, Batch, Completion, Error, FREE, Metadata, MetadataError, MetadataState,
+        Outcome, Phase, Poll, Reader, Request, Ticket,
     },
 };
 
@@ -73,6 +80,16 @@ impl Metadata {
 }
 
 impl<'d, R: Return<Item = read::Buffer<'d>>> read::Read<R> {
+    /// Reuses the admitted allocation without filling or copying it.
+    pub fn at(mut self, offset: fs::Offset) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    pub const fn offset(&self) -> fs::Offset {
+        self.offset
+    }
+
     /// Selects the remaining allocation without copying its initialized prefix.
     pub fn try_append_at(
         mut self,
@@ -89,6 +106,32 @@ impl<'d, R: Return<Item = read::Buffer<'d>>> read::Read<R> {
         self.offset = offset;
         Ok(self)
     }
+}
+
+impl<'d, R: Return<Item = read::Buffer<'d>>, F, O> Read<R, F, O> {
+    pub fn try_new(
+        file: F,
+        output: Lease<R, Open>,
+        offset: O,
+    ) -> Result<Self, Rejected<(F, Lease<R, Open>, O), read::SizeError>> {
+        let length = transfer::Len::try_new(output.item().capacity())
+            .map_err(read::SizeError::Overflow)
+            .and_then(|length| length.nonzero().ok_or(read::SizeError::Empty));
+        let length = match length {
+            Ok(length) => length,
+            Err(cause) => return Err(Rejected::new((file, output, offset), cause)),
+        };
+        Ok(Self {
+            file,
+            output,
+            offset,
+            length,
+        })
+    }
+
+    pub fn into_parts(self) -> (F, Lease<R, Open>, O) {
+        (self.file, self.output, self.offset)
+    }
 
     pub(super) fn prepare(&mut self) {
         let prefix = self.output.item().capacity() - self.length.widen().get();
@@ -104,6 +147,110 @@ impl<'d, R: Return<Item = read::Buffer<'d>>> read::Read<R> {
         // SAFETY: the private owner retains its admitted capacity, and initialized
         // length cannot exceed it. This borrow prevents resubmission or mutation.
         bounded::Value::from_raw(unsafe { bounded::raw::Input::new(self.output.item().as_ref()) })
+    }
+
+    fn borrow(&mut self) -> (&F, bounded::Value<&mut [mem::MaybeUninit<u8>]>, &O) {
+        let output = self.output.item_mut();
+        // SAFETY: admission retains this positive window after the initialized prefix;
+        // the private owner cannot move or grow the heap during native access.
+        let output = bounded::Value::from_raw(unsafe {
+            bounded::raw::Input::new(std::slice::from_raw_parts_mut(
+                output.as_mut_ptr().add(output.len()).cast(),
+                self.length.widen().get(),
+            ))
+        });
+        (&self.file, output, &self.offset)
+    }
+
+    fn complete(&mut self, amount: transfer::Len) {
+        let output = self.output.item_mut();
+        // SAFETY: the matching terminal CQ ended native access and initialized
+        // this suffix within the exact admitted window.
+        unsafe { output.set_len(output.len() + amount.into_raw()) };
+    }
+}
+
+impl<'d, R: Return<Item = read::Buffer<'d>>> read::Batch<R> {
+    pub fn events<'a>(&'a self) -> fs::watch::raw::Events<'a>
+    where
+        'd: 'a,
+    {
+        // SAFETY: private successful Outcome::Read follows the matching terminal
+        // CQ. Watch preparation discards any prior prefix; errors never yield Batch.
+        unsafe { fs::watch::raw::events(&self.0.file, self.0.output().into_inner()) }
+    }
+
+    pub fn into_read(self) -> read::Watch<R> {
+        self.0
+    }
+}
+
+impl<'p, 'd, R: Return> Ticket<'p, 'd, R> {
+    pub fn poll(self, waiter: Option<wake::Waker<'d>>) -> Poll<'p, 'd, R> {
+        let slot = &self.slot;
+        let entry = slot.state();
+        match entry.phase.take() {
+            Some(Phase::Done(outcome)) => {
+                let request = entry.take();
+                slot.push::<FREE>(());
+                mem::forget(self);
+                Poll::Ready(match (request, outcome) {
+                    (Request::Open(request), Outcome::Open(result)) => {
+                        Completion::Open { request, result }
+                    }
+                    (Request::Directory(request), Outcome::Open(result)) => {
+                        let result = match result {
+                            // SAFETY: the matching Flight/CQ retains this exact
+                            // O_DIRECTORY request and its original opened descriptor.
+                            Ok(file) => {
+                                unsafe { request.try_complete(file) }.map_err(Error::Allocation)
+                            }
+                            Err(cause) => Err(cause),
+                        };
+                        Completion::Directory {
+                            path: request.into_path(),
+                            result,
+                        }
+                    }
+                    (
+                        Request::Rename {
+                            directory,
+                            old,
+                            new,
+                        },
+                        Outcome::Rename(result),
+                    ) => Completion::Rename {
+                        directory,
+                        old,
+                        new,
+                        result,
+                    },
+                    (Request::Read(request), Outcome::Read(result)) => {
+                        Completion::Read { request, result }
+                    }
+                    (Request::Watch(request), Outcome::Read(result)) => {
+                        Completion::Watch(match result {
+                            Ok(_) => Ok(Batch(request)),
+                            Err(cause) => Err(Rejected::new(request, cause)),
+                        })
+                    }
+                    (
+                        Request::Metadata(Metadata {
+                            file,
+                            state: MetadataState::Done(result),
+                        }),
+                        Outcome::Metadata,
+                    ) => Completion::Metadata { file, result },
+                    _ => unreachable!("operation"),
+                })
+            }
+            phase @ Some(Phase::Queued | Phase::Active { .. }) => {
+                entry.waiter.set(waiter);
+                entry.restore(phase);
+                Poll::Pending(self)
+            }
+            None => unreachable!("ticket"),
+        }
     }
 }
 
@@ -179,6 +326,16 @@ pub(super) fn submit<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>>(
                 }
                 .map(Active::Open)
             }
+            Request::Directory(request) => {
+                // SAFETY: the same fixed slot retains the typed directory request
+                // and its native options through original completion or quiescence.
+                unsafe {
+                    driver
+                        .reborrow()
+                        .submit_file(slots, request.submission(target))
+                }
+                .map(Active::Open)
+            }
             Request::Rename {
                 directory,
                 old,
@@ -190,20 +347,17 @@ pub(super) fn submit<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>>(
                 unsafe { driver.reborrow().submit_file(slots, operation) }.map(Active::Sync)
             }
             Request::Read(request) => {
-                let output = request.output.item_mut();
-                let prefix = output.len();
-                // SAFETY: admission retains an initialized prefix followed by this
-                // positive window. The private owner cannot move or grow its heap.
-                let output = bounded::Value::from_raw(unsafe {
-                    bounded::raw::Input::new(std::slice::from_raw_parts_mut(
-                        output.as_mut_ptr().add(prefix).cast(),
-                        request.length.widen().get(),
-                    ))
-                });
-                let operation =
-                    fs::Submission::read_at(request.file.as_fd(), output, request.offset, target);
+                let (file, output, offset) = request.borrow();
+                let operation = fs::Submission::read_at(file.as_fd(), output, *offset, target);
                 // SAFETY: this installed owner retains the exact FD and exclusive
                 // stable heap through the original completion or native quiescence.
+                unsafe { driver.reborrow().submit_file(slots, operation) }.map(Active::Read)
+            }
+            Request::Watch(request) => {
+                let (watch, output, ()) = request.borrow();
+                let operation = fs::Submission::watch(watch, output, target);
+                // SAFETY: the same installed owner retains this watch and heap
+                // through its original completion or native quiescence.
                 unsafe { driver.reborrow().submit_file(slots, operation) }.map(Active::Read)
             }
             Request::Metadata(request) => {
@@ -330,21 +484,14 @@ impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> event::Drive<'d>
                         ..
                     }) if flight.matches(done.token()) => {
                         drop(flight);
-                        let result = entry.with_request(|request| {
-                            let Request::Read(request) = request else {
-                                unreachable!("operation")
-                            };
-                            match done.outcome() {
-                                Ok(amount) => {
-                                    let output = request.output.item_mut();
-                                    // SAFETY: the matching terminal CQ ended native access
-                                    // and initialized this suffix within the admitted window.
-                                    unsafe { output.set_len(output.len() + amount.into_raw()) };
-                                    Ok(amount)
-                                }
-                                Err(cause) => Err(Error::System(cause)),
-                            }
-                        });
+                        let result = done.outcome().map_err(Error::System);
+                        if let Ok(amount) = result {
+                            entry.with_request(|request| match request {
+                                Request::Read(request) => request.complete(amount),
+                                Request::Watch(request) => request.complete(amount),
+                                _ => unreachable!("operation"),
+                            });
+                        }
                         port.settle(&slot, Outcome::Read(result));
                     }
                     phase => {

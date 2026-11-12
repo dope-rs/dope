@@ -208,10 +208,7 @@ fn drops_one_per_step() {
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(
-        matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reclaimed(&reports);
 }
 
 #[test]
@@ -271,10 +268,7 @@ fn complete_during_drain() {
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(
-        matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reclaimed(&reports);
 }
 
 #[test]
@@ -350,10 +344,7 @@ fn partial_stays_live() {
             recovery::Policy::new(|event| reports.push(event), recover),
             runtime::check_scope,
         );
-        assert!(
-            matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-            "unexpected reclaimed operations: {reports:?}"
-        );
+        runtime::check_reclaimed(&reports);
     }
 }
 
@@ -422,10 +413,7 @@ fn failure_uses_budget() {
         recovery::Policy::new(|event| reports.push(event), recover),
         runtime::check_scope,
     );
-    assert!(
-        matches!(reports.as_slice(), [] | [Reclaimed::Shutdown]),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    runtime::check_reclaimed(&reports);
 
     assert_eq!(drops.count(), 3);
 }

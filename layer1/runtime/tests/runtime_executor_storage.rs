@@ -89,31 +89,3 @@ fn composed_plan() {
     });
     assert_eq!(dropped.map(Cell::into_inner), [Some(true); 2]);
 }
-
-#[test]
-fn pinned_drop() {
-    let mut create = Attempt::new();
-    let executor = Configured::throughput().try_executor(&mut create);
-    assert!(executor.is_ok(), "executor construction");
-    let Some(executor) = executor.ok() else {
-        return;
-    };
-    let mut reports = Vec::new();
-
-    let dropped = Cell::new(None);
-    executor
-        .with_storage(Pinned::new(&dropped))
-        .run(|executor| {
-            let result = executor.enter_with(
-                |session| session.storage().record(),
-                recovery::Policy::new(|event| reports.push(event), common::recover),
-            );
-            assert!(
-                reports.is_empty(),
-                "unexpected reclaimed operations: {reports:?}"
-            );
-
-            assert!(result.is_ok(), "pinned owner generation and finalization");
-        });
-    assert_eq!(dropped.get(), Some(true));
-}

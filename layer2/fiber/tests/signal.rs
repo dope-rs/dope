@@ -29,7 +29,8 @@ fn main() {
                 let mut attempt = Attempt::new();
                 let executor = Setup::for_profile::<Tasks>()
                     .try_executor(&mut attempt)
-                    .unwrap_or_else(|error| panic!("executor: {:?}", error.kind()))
+                    .map_err(|error| format!("{:?}", error.kind()))
+                    .expect("executor")
                     .shutdown(&mut signal)
                     .expect("signal registration");
                 executor.run(|executor| {
@@ -99,7 +100,7 @@ fn main() {
                                 common::recover,
                             ),
                         )
-                        .unwrap_or_else(|error| panic!("generation: {:?}", error.cause()));
+                        .as_ref().map_err(|error| error.cause()).expect("generation");
                 });
                 assert!(matches!(signal.result(), Some(Ok(()))));
             }

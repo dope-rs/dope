@@ -211,21 +211,24 @@ fn routed_binding_rejects_mismatched_framing() {
             });
         };
     let mut creation = Attempt::new();
-    Executor::new(&mut creation, settings)
-        .unwrap_or_else(|error| panic!("driver creation: {:?}", error.kind()))
-        .run(|executor| {
-            executor
-                .enter(
-                    ((relayed, direct), run),
-                    Policy::new(
-                        |_| {},
-                        |failure: Recovery<'_, '_>| -> Infallible {
-                            panic!("native recovery: {:?}", failure.cause())
-                        },
-                    ),
-                )
-                .unwrap_or_else(|error| panic!("driver retirement: {:?}", error.cause()));
-        });
+    let executor = Executor::new(&mut creation, settings)
+        .map_err(|error| format!("{:?}", error.kind()))
+        .expect("driver creation");
+    executor.run(|executor| {
+        executor
+            .enter(
+                ((relayed, direct), run),
+                Policy::new(
+                    |_| {},
+                    |failure: Recovery<'_, '_>| -> Infallible {
+                        panic!("native recovery: {:?}", failure.cause())
+                    },
+                ),
+            )
+            .as_ref()
+            .map_err(|error| error.cause())
+            .expect("driver retirement");
+    });
 }
 
 #[test]
@@ -337,21 +340,24 @@ fn owned_routed_server_starts_application() {
             })
         };
         let mut creation = Attempt::new();
-        Executor::new(&mut creation, settings)
-            .unwrap_or_else(|error| panic!("driver creation: {:?}", error.kind()))
-            .run(|executor| {
-                opened[usize::from(relay)] = executor
-                    .enter(
-                        ((first, second), run),
-                        Policy::new(
-                            |_| {},
-                            |failure: Recovery<'_, '_>| -> Infallible {
-                                panic!("native recovery: {:?}", failure.cause())
-                            },
-                        ),
-                    )
-                    .unwrap_or_else(|error| panic!("driver retirement: {:?}", error.cause()));
-            });
+        let executor = Executor::new(&mut creation, settings)
+            .map_err(|error| format!("{:?}", error.kind()))
+            .expect("driver creation");
+        executor.run(|executor| {
+            opened[usize::from(relay)] = *executor
+                .enter(
+                    ((first, second), run),
+                    Policy::new(
+                        |_| {},
+                        |failure: Recovery<'_, '_>| -> Infallible {
+                            panic!("native recovery: {:?}", failure.cause())
+                        },
+                    ),
+                )
+                .as_ref()
+                .map_err(|error| error.cause())
+                .expect("driver retirement");
+        });
     }
     assert_eq!(opened, [true, true], "direct and relayed Initial admission");
 }

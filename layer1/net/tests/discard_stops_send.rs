@@ -9,11 +9,7 @@ use dope_core::{
         route::{FrameworkTag, Tag, kind},
         settings::{Config, FileSlots},
     },
-    io::{
-        Reclaimed,
-        event::{batch::Flow, net::accept::Failure},
-        transfer,
-    },
+    io::transfer,
 };
 use dope_net::{
     link::{event::SendOutcome, slot::transmit::Attempt},
@@ -68,14 +64,5 @@ fn discard_stops_send() {
     assert!(!observed.inflight);
     let events = reports.events().expect("reclaimed operations");
     assert!(events.len() <= usize::from(observed.pending_accept));
-    for event in events {
-        assert!(
-            matches!(event,
-                Reclaimed::Accept {
-                    result: Err(Failure::Syscall(error)), flow: Flow::Last, ..
-                } if error.is_canceled()
-            ),
-            "unexpected reclaimed operation: {event:?}"
-        );
-    }
+    common::discard::assert_reclaimed(events, 0);
 }

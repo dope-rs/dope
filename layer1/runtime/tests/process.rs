@@ -117,7 +117,8 @@ fn reports_startup_failure() {
             } else {
                 let executor = source
                     .try_build(&mut attempt, common::runtime::topology::PROFILE_CONFIG)
-                    .unwrap_or_else(|error| panic!("executor: {:?}", error.kind()));
+                    .map_err(|error| format!("{:?}", error.kind()))
+                    .expect("executor");
                 let borrowed = cell::Cell::new(7);
                 let plan = common::runtime::executor::storage::Collision {
                     capacity: capacity::Count::new(1),

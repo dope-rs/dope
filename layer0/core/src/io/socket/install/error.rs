@@ -38,6 +38,10 @@ pub enum Error {
 }
 
 impl Error {
+    pub(crate) const fn validate(fault: dope_sys::Errno) -> Self {
+        Self::syscall(Operation::Validate, fault)
+    }
+
     pub(crate) fn reuse((reuse, errno): (socket::Reuse, dope_sys::Errno)) -> Self {
         let operation = match reuse {
             socket::Reuse::Address => Operation::ReuseAddress,
