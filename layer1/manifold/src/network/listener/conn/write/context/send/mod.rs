@@ -53,20 +53,6 @@ where
     W: wire::Spec + 'w + 'd,
     B: data::raw::Payload<'d>,
 {
-    pub(in crate::network::listener::conn::write::context) fn try_draft<R, F, E>(
-        self,
-        driver: &mut driver::Context<'_, 'd>,
-        call: F,
-    ) -> Result<write::Outcome<R>, error::Error<B, R, E>>
-    where
-        F: FnOnce(&mut C, &mut [u8]) -> Result<write::Draft<B, R>, E>,
-    {
-        self.try_header(driver, |state, bytes, owner| {
-            let draft = call(state, bytes).map_err(error::Error::Build)?;
-            write::Commit::try_draft(owner, draft).map_err(error::Error::Mismatch)
-        })
-    }
-
     pub(in crate::network::listener::conn::write::context) fn try_header<H, R, E>(
         self,
         driver: &mut driver::Context<'_, 'd>,
@@ -75,11 +61,10 @@ where
     where
         H: for<'b, 'id> FnOnce(
             &mut C,
-            &'b mut [u8; write::Prefix::CAPACITY],
-            region::Identity<'id>,
+            write::Prefix<'b, 'id>,
         ) -> Result<
-            write::Commit<region::Identity<'id>, B, R>,
-            error::Error<B, R, E>,
+            write::Commit<region::Identity<'id>, egress::load::Value<B>, R>,
+            E,
         >,
     {
         let Self {
@@ -176,28 +161,20 @@ where
     W: wire::Spec + 'w + 'd,
     B: data::raw::Payload<'d> + 'd,
 {
-    pub(in crate::network::listener::conn::write::context) fn execute<R, H>(
-        mut self,
-        driver: &mut driver::Context<'_, 'd>,
-        commit: H,
-    ) -> Result<write::Outcome<R>, error::Error<B, R, Infallible>>
-    where
-        H: FnOnce(&mut C, &mut [u8]) -> write::Draft<B, R>,
-    {
-        let draft = match &mut self.buffer {
-            memory::Bounded::Direct(flight) => commit(&mut *self.slot.conn, flight.as_mut()),
-            memory::Bounded::Queued { slot, .. } => commit(&mut *self.slot.conn, slot.as_mut()),
-        };
-        self.publish(driver, draft)
-    }
-
     pub(in crate::network::listener::conn::write::context) fn try_prefix<R, H>(
         self,
         driver: &mut driver::Context<'_, 'd>,
         call: H,
     ) -> Result<write::Outcome<R>, error::Error<B, R, Infallible>>
     where
-        H: FnOnce(&mut C, &mut [u8]) -> write::Draft<Infallible, R>,
+        H: for<'b, 'id> FnOnce(
+            &mut C,
+            write::Prefix<'b, 'id>,
+        ) -> write::Commit<
+            region::Identity<'id>,
+            egress::load::Value<Infallible>,
+            R,
+        >,
     {
         let Self {
             slot,
@@ -240,14 +217,21 @@ where
             buffer,
             lease,
         }
-        .try_draft(driver, |state, bytes| Ok(call(state, bytes).into_empty()))
+        .try_header(driver, |state, prefix| Ok(call(state, prefix).into_empty()))
     }
 
-    fn publish<R>(
+    pub(in crate::network::listener::conn::write::context) fn execute<R, H>(
         self,
         driver: &mut driver::Context<'_, 'd>,
-        draft: write::Draft<B, R>,
-    ) -> Result<write::Outcome<R>, error::Error<B, R, Infallible>> {
+        call: H,
+    ) -> Result<write::Outcome<R>, error::Error<B, R, Infallible>>
+    where
+        H: for<'b, 'id> FnOnce(
+            &mut C,
+            write::Prefix<'b, 'id>,
+        )
+            -> write::Commit<region::Identity<'id>, egress::load::Value<B>, R>,
+    {
         let Self {
             slot,
             flights,
@@ -257,13 +241,16 @@ where
         } = self;
         match buffer {
             memory::Bounded::Direct(flight) => {
-                let valid = match write::Commit::try_draft(flight, draft) {
-                    Ok(valid) => valid,
-                    Err(cause) => {
-                        slot.cancel_send();
-                        return Err(error::Error::Mismatch(cause));
-                    }
-                };
+                let valid =
+                    match write::Commit::try_with(&mut *slot.conn, flight, |state, prefix| {
+                        Ok(call(state, prefix))
+                    }) {
+                        Ok(valid) => valid,
+                        Err(cause) => {
+                            slot.cancel_send();
+                            return Err(cause);
+                        }
+                    };
                 let (receipt, end, direct) = valid.direct();
                 match direct {
                     Some(direct) => {
@@ -287,13 +274,16 @@ where
                 queue,
                 ..
             } => {
-                let checked = match write::Commit::try_draft(header, draft) {
-                    Ok(checked) => checked,
-                    Err(cause) => {
-                        slot.cancel_idle(queue.pending());
-                        return Err(error::Error::Mismatch(cause));
-                    }
-                };
+                let checked =
+                    match write::Commit::try_with(&mut *slot.conn, header, |state, prefix| {
+                        Ok(call(state, prefix))
+                    }) {
+                        Ok(checked) => checked,
+                        Err(cause) => {
+                            slot.cancel_idle(queue.pending());
+                            return Err(cause);
+                        }
+                    };
                 let checked = match checked.split() {
                     ControlFlow::Break((receipt, end)) => {
                         apply_end(slot, end);
@@ -314,11 +304,8 @@ where
                 let vacant = match vacant {
                     Ok(vacant) => vacant,
                     Err(cause) => {
-                        let draft = checked.into_draft();
                         slot.cancel_idle(queue.pending());
-                        return Err(error::Error::Mismatch(error::Mismatch::bounded(
-                            cause, draft,
-                        )));
+                        return Err(error::Error::Mismatch(checked.reject(cause)));
                     }
                 };
                 let (receipt, end, publish) = match checked.try_publish(vacant) {

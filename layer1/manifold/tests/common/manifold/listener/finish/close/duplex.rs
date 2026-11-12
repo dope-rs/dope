@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{convert, pin::Pin};
 
 use dope_core::{
@@ -60,14 +61,16 @@ impl<'d, ID: Identity> Application<'d, ID> for Fence {
         _: receive::End,
         driver: &mut driver::Context<'_, 'd>,
     ) {
-        let Phase::Seen(input) = *conn.state() else {
-            panic!("EOF before input");
-        };
+        let input = match *conn.state() {
+            Phase::Seen(input) => Ok(input),
+            phase => Err(phase),
+        }
+        .expect("EOF before input");
         *conn.state_mut() = Phase::Held(input);
-        let outcome = conn.write().try_bounded(driver, |state, prefix| {
+        let outcome = conn.write().try_bounded(driver, |state, mut prefix| {
             assert!(matches!(state, Phase::Held(_)));
-            prefix[..REPLY.len()].copy_from_slice(REPLY);
-            write::Draft::new(REPLY.len(), None, ())
+            prefix.write_slice(REPLY).unwrap();
+            prefix.commit(None, ())
         });
         assert!(matches!(outcome, Ok(write::Outcome::Committed(()))));
     }
@@ -112,9 +115,11 @@ impl<'d, ID: Identity> send::Drive<'d, ID> for Fence {
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, Phase<'d>>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
-        let Phase::Held(input) = *conn.state() else {
-            panic!("send before EOF");
-        };
+        let input = match *conn.state() {
+            Phase::Held(input) => Ok(input),
+            phase => Err(phase),
+        }
+        .expect("send before EOF");
         assert!(input <= driver.driver_ref().clock().now());
         *conn.state_mut() = Phase::Seen(input);
     }
@@ -177,16 +182,16 @@ impl<'d, ID: Identity> handler::Borrowed<'d, ID> for Duplex {
         match *conn.state() {
             Stage::Fresh => {
                 *conn.state_mut() = Stage::Seen;
-                let first = conn.write().try_bounded(driver, |state, prefix| {
+                let first = conn.write().try_bounded(driver, |state, mut prefix| {
                     assert!(matches!(state, Stage::Seen));
-                    prefix[..REPLY.len()].copy_from_slice(REPLY);
-                    write::Draft::new(REPLY.len(), None, ())
+                    prefix.write_slice(REPLY).unwrap();
+                    prefix.commit(None, ())
                 });
                 assert!(matches!(first, Ok(write::Outcome::Committed(()))));
                 conn.shutdown();
-                let sealed = conn.write().try_bounded(driver, |state, prefix| {
-                    assert!(matches!(state, Stage::Seen) && !prefix.is_empty());
-                    write::Draft::new(0, None, ())
+                let sealed = conn.write().try_bounded(driver, |state, mut prefix| {
+                    assert!(matches!(state, Stage::Seen) && prefix.writer().remaining() != 0);
+                    prefix.commit(None, ())
                 });
                 assert!(matches!(sealed, Ok(write::Outcome::Closed)));
             }

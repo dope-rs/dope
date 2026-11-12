@@ -37,6 +37,7 @@ impl<'p, 's, 'd, ID: Identity> Owned<'p, 's, 'd, ID> {
                 .get()
                 .as_slice()
                 .get_unchecked(..self.len.transfer().widen().get())
+                .assume_init_ref()
         }
     }
 }

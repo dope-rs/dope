@@ -25,8 +25,7 @@ use write::error;
 
 use crate::common::manifold::listener::egress::{RESPONSE, Retirement};
 
-type Build<'d, L> = error::Build<data::Bound<Shared<'d>, L>, ()>;
-type WriteResult<'d, L, E = Build<'d, L>> =
+type WriteResult<'d, L, E = o3::buffer::write::consume::Error> =
     Result<write::Outcome<()>, error::Error<data::Bound<Shared<'d>, L>, (), E>>;
 
 pub struct State<'d> {
@@ -92,16 +91,18 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(DirectWrite<'a>)> handler::Borrowed<
         let mut consumed = None;
         let measure = Tracker::begin();
         let result = conn.write().try_commit(driver, |state, mut prefix| {
-            if let Err(cause) = prefix.write_byte(0xa5) {
-                return Err(error::Build::prefix(cause, None, ()).close_after());
+            {
+                let mut writer = prefix.writer();
+                let mut staged = writer.try_split(1, 2)?;
+                staged.body().write_slice(b"xx")?;
             }
+            prefix.write_byte(0xa5)?;
             let body = state.body.take();
             consumed = body.as_ref().map(|body| body.as_ref().len());
             let body = body.map(|body| egress::Load::new(body).unbounded());
-            match prefix.commit(body, ()) {
-                Ok(commit) => Ok(commit.close_after()),
-                Err(cause) => Err(cause.close_after()),
-            }
+            Ok(prefix
+                .commit(body.map(egress::load::Value::Unchecked), ())
+                .close_after())
         });
         let activity = measure.finish();
         let allocs = (activity.allocations, activity.allocated_bytes);
@@ -129,7 +130,7 @@ pub enum BoundedEvent<'d> {
         result: WriteResult<
             'd,
             bound::AtMost<0>,
-            BranchError<egress::Excess<Shared<'d>>, Build<'d, bound::AtMost<0>>>,
+            BranchError<egress::Excess<Shared<'d>>, o3::buffer::write::consume::Error>,
         >,
     },
     Deferred {
@@ -183,13 +184,8 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Applicat
         let result = conn.write().try_commit(driver, |state, mut prefix| {
             called.set(true);
             body = Some(state.body.as_ref().map(|body| body.as_ref().len()));
-            prefix
-                .write_byte(0xc5)
-                .map_err(|cause| error::Build::prefix(cause, None, ()).close_after())?;
-            prefix
-                .commit(None, ())
-                .map(|commit| commit.close_after())
-                .map_err(|cause| cause.close_after())
+            prefix.write_byte(0xc5)?;
+            Ok(prefix.commit(None, ()).close_after())
         });
         (this.observe)(BoundedEvent::Activated { body, result });
     }
@@ -220,20 +216,14 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Borrowed
         let mut consumed = None;
         let measure = Tracker::begin();
         let result = conn.write().try_commit(driver, |state, mut prefix| {
-            if let Err(cause) = prefix.write_byte(0xb5) {
-                return Err(BranchError::Second(
-                    error::Build::prefix(cause, None, ()).close_after(),
-                ));
-            }
+            prefix.write_byte(0xb5).map_err(BranchError::Second)?;
             let body = state.body.take();
             consumed = body.as_ref().map(|body| body.as_ref().len());
             let body = body
                 .map(|body| egress::Load::new(body).try_bound::<bound::AtMost<0>>())
                 .transpose()
                 .map_err(BranchError::First)?;
-            prefix
-                .commit(body, ())
-                .map_err(|cause| BranchError::Second(cause.close_after()))
+            Ok(prefix.commit(body.map(egress::load::Value::Unchecked), ()))
         });
         let activity = measure.finish();
         let allocs = (activity.allocations, activity.allocated_bytes);
@@ -247,7 +237,7 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Borrowed
         let result = conn.write().try_commit(driver, |state, prefix| {
             called.set(true);
             body = Some(state.body.take().map(|body| body.as_ref().len()));
-            prefix.commit(None, ())
+            Ok(prefix.commit(None, ()))
         });
         (self.observe)(BoundedEvent::Deferred {
             body,

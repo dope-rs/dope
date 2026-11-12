@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{cell::Cell, convert, pin::Pin, rc::Rc};
 
 use dope_core::{
@@ -47,18 +48,18 @@ impl Wake {
             let result = if self.changed.replace(false) {
                 let body = egress::NonEmpty::from_array(b"C");
                 let body = Value::Checked(body);
-                conn.write().try_bounded(driver, |state, prefix| {
-                    callback = Some((prefix.len(), *state));
+                conn.write().try_bounded(driver, |state, mut prefix| {
+                    callback = Some((prefix.writer().remaining(), *state));
                     *state += 1;
                     commits.set(commits.get() + 1);
-                    write::Draft::new(0, Some(body), ()).close_after()
+                    prefix.commit(Some(body), ()).close_after()
                 })
             } else {
-                conn.write().try_bounded(driver, move |state, prefix| {
-                    prefix[0] = b'A' + *state;
+                conn.write().try_bounded(driver, move |state, mut prefix| {
+                    prefix.write_byte(b'A' + *state).unwrap();
                     *state += 1;
                     commits.set(commits.get() + 1);
-                    write::Draft::new(1, None, ())
+                    prefix.commit(None, ())
                 })
             };
             let ready = matches!(&result, Ok(write::Outcome::Committed(())));
@@ -187,9 +188,9 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Zero {
         let before = conn.work().remaining();
         let mut capacity = None;
         let measure = Tracker::begin();
-        let zero = conn.write().try_bounded(driver, |&mut (), prefix| {
-            capacity = Some(prefix.len());
-            write::Draft::new(0, None, 7)
+        let zero = conn.write().try_bounded(driver, |&mut (), mut prefix| {
+            capacity = Some(prefix.writer().remaining());
+            prefix.commit(None, 7)
         });
         let activity = measure.finish();
         let zero = ZeroEvent::Zero {
@@ -202,9 +203,9 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Zero {
             pending: conn.write().pending(),
         };
         let measure = Tracker::begin();
-        let sent = conn.write().try_bounded(driver, |&mut (), prefix| {
-            prefix[0] = b'Z';
-            write::Draft::new(1, None, ()).close_after()
+        let sent = conn.write().try_bounded(driver, |&mut (), mut prefix| {
+            prefix.write_byte(b'Z').unwrap();
+            prefix.commit(None, ()).close_after()
         });
         let activity = measure.finish();
         let sent = ZeroEvent::Sent {

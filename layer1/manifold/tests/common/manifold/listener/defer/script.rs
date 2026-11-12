@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{convert, pin::Pin, task};
 
 use dope_core::{
@@ -96,10 +97,10 @@ impl<F: for<'a, 'd> Fn(Event<'a, 'd>)> App<F> {
             Payload::Prefix => None,
         };
         let measure = Tracker::begin();
-        let result = conn.write().try_bounded(driver, move |state, prefix| {
+        let result = conn.write().try_bounded(driver, move |state, mut prefix| {
             *state = State::Done;
-            prefix[0] = b'R';
-            write::Draft::new(1, body, ()).close_after()
+            prefix.write_byte(b'R').unwrap();
+            prefix.commit(body, ()).close_after()
         });
         let activity = measure.finish();
         (self.observe)(Event::Write(

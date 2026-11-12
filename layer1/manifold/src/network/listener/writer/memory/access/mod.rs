@@ -217,6 +217,7 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID,
                     .into_ref()
                     .as_slice()
                     .get_unchecked(..end.into_raw())
+                    .assume_init_ref()
             };
             // SAFETY: Flight and its pool lease stay pinned through completion.
             let plain = unsafe { send::raw::Plain::retain(bytes) };
@@ -229,6 +230,7 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID,
                 .into_ref()
                 .as_slice()
                 .get_unchecked(start.into_raw()..end.into_raw())
+                .assume_init_ref()
         };
         let mut sent = progress::State::new(limit);
         let mut count = array::Len::<{ listener::IOV_CAP }>::ZERO;

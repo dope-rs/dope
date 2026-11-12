@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{cell::Cell, convert, pin::Pin, rc::Rc};
 
 use dope_core::{
@@ -68,10 +69,12 @@ impl Body {
         };
         if *conn.state() == State::First {
             let before = conn.work().remaining();
-            let result = conn.write().try_draft::<(), _, _>(driver, |_, prefix| {
-                prefix[0] = b'X';
-                Err(7_u8)
-            });
+            let result = conn
+                .write()
+                .try_commit::<(), _, _>(driver, |_, mut prefix| {
+                    prefix.write_byte(b'X').unwrap();
+                    Err(7_u8)
+                });
             let cause = match result {
                 Err(write::error::Error::Build(cause)) => Some(cause),
                 _ => None,
@@ -88,10 +91,10 @@ impl Body {
             Err(_) => unreachable!("unbounded"),
         };
         let mut capacity = None;
-        let result = conn.write().try_draft(driver, |state, prefix| {
-            capacity = Some(prefix.len());
+        let result = conn.write().try_commit(driver, |state, mut prefix| {
+            capacity = Some(prefix.writer().remaining());
             *state = next;
-            Ok::<_, convert::Infallible>(write::Draft::new(0, Some(body), ()))
+            Ok::<_, convert::Infallible>(prefix.commit(Some(body), ()))
         });
         let event = Event::Write(capacity, result.map_err(Error::from));
         self.events.push(event);

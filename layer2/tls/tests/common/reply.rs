@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{
     cell::Cell,
     convert,
@@ -104,9 +105,9 @@ impl Reply<'_> {
         bytes: resident::Shared<'d>,
     ) {
         let body = egress::Load::new(bytes);
-        let result = conn.write().try_bounded(driver, move |_, prefix| {
-            prefix[..PREFIX.len()].copy_from_slice(PREFIX);
-            write::Draft::new(PREFIX.len(), Some(Value::Unchecked(body)), ())
+        let result = conn.write().try_bounded(driver, move |_, mut prefix| {
+            prefix.write_slice(PREFIX).unwrap();
+            prefix.commit(Some(Value::Unchecked(body)), ())
         });
         (self.observe)(Event::Write(result));
     }

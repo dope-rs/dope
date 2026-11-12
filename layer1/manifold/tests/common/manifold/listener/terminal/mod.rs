@@ -1,4 +1,5 @@
 use dope_core::random::Seed;
+use o3::buffer::write::Sink as _;
 pub mod eof;
 pub mod wire;
 
@@ -373,9 +374,9 @@ where
             Ingress::Reply => {
                 (this.observe)(Observation::Write(conn.write().try_bounded(
                     driver,
-                    |_, prefix| {
-                        prefix[..5].copy_from_slice(b"reply");
-                        write::Draft::new(5, None, ())
+                    |_, mut prefix| {
+                        prefix.write_slice(b"reply").unwrap();
+                        prefix.commit(None, ())
                     },
                 )));
                 Outcome::Continue

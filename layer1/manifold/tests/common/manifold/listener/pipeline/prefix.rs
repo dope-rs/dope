@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{cell::Cell, convert::Infallible, pin::Pin, rc::Rc};
 
 use dope_core::{
@@ -98,11 +99,11 @@ impl Prefix {
         }
         let mut callback = None;
         let measure = Tracker::begin();
-        let result = conn.write().try_prefix(driver, |state, prefix| {
+        let result = conn.write().try_prefix(driver, |state, mut prefix| {
             callback = Some(*state);
             *state = State::Done;
-            prefix[0] = b'B';
-            write::Draft::new(1, None, ()).close_after()
+            prefix.write_byte(b'B').unwrap();
+            prefix.commit(None, ()).close_after()
         });
         let activity = measure.finish();
         if !matches!(

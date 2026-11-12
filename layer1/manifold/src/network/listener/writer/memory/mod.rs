@@ -52,12 +52,6 @@ impl NonZero {
 impl Len {
     pub(in crate::network::listener) const ZERO: Self = Self(transfer::Len::ZERO);
 
-    pub(in crate::network::listener) fn try_new(written: usize) -> Result<Self, bounded::Error> {
-        Ok(Self::from(
-            bounded::Usize::<WRITE_BUF_CAP>::ZERO.try_add(written)?,
-        ))
-    }
-
     pub(in crate::network::listener) const fn transfer(self) -> transfer::Len {
         self.0
     }
@@ -70,29 +64,30 @@ impl Len {
     }
 }
 
-impl From<bounded::Usize<WRITE_BUF_CAP>> for Len {
-    fn from(written: bounded::Usize<WRITE_BUF_CAP>) -> Self {
-        Self(transfer::Len::from_count(written))
+impl From<bounded::U32<0, { WRITE_BUF_CAP as u32 }>> for Len {
+    fn from(written: bounded::U32<0, { WRITE_BUF_CAP as u32 }>) -> Self {
+        Self(transfer::Len::from(written.widen()))
     }
 }
 
 /// One address-stable listener response header buffer.
 #[pin_project::pin_project(!Unpin)]
 pub(in crate::network::listener) struct Header {
-    bytes: [u8; WRITE_BUF_CAP],
+    bytes: [mem::MaybeUninit<u8>; WRITE_BUF_CAP],
 }
 
 impl Header {
     fn init(slot: &mut mem::MaybeUninit<Self>) {
-        // SAFETY: the exclusive slot's only field is this byte array.
-        unsafe { (&raw mut (*slot.as_mut_ptr()).bytes).write_bytes(0, 1) };
+        slot.write(Self {
+            bytes: [mem::MaybeUninit::uninit(); WRITE_BUF_CAP],
+        });
     }
 
-    pub(in crate::network::listener) fn as_slice(self: pin::Pin<&Self>) -> &[u8] {
+    pub(in crate::network::listener) fn as_slice(self: pin::Pin<&Self>) -> &[mem::MaybeUninit<u8>] {
         &self.get_ref().bytes
     }
 
-    fn as_mut_slice(self: pin::Pin<&mut Self>) -> &mut [u8; WRITE_BUF_CAP] {
+    fn as_mut_slice(self: pin::Pin<&mut Self>) -> &mut [mem::MaybeUninit<u8>; WRITE_BUF_CAP] {
         self.project().bytes
     }
 }
@@ -297,8 +292,8 @@ pub(in crate::network::listener) enum Buffer<
 pub(in crate::network::listener) type Bounded<'a, 'p, 's, 'e, 'd, ID, B = resident::Shared<'d>> =
     Buffer<'a, 'p, 's, 'e, 'd, ID, B, ()>;
 
-impl<ID: Identity> AsMut<[u8; WRITE_BUF_CAP]> for HeaderSlot<'_, '_, '_, ID> {
-    fn as_mut(&mut self) -> &mut [u8; WRITE_BUF_CAP] {
+impl<ID: Identity> AsMut<[mem::MaybeUninit<u8>; WRITE_BUF_CAP]> for HeaderSlot<'_, '_, '_, ID> {
+    fn as_mut(&mut self) -> &mut [mem::MaybeUninit<u8>; WRITE_BUF_CAP] {
         self.get_mut().as_mut_slice()
     }
 }
@@ -312,10 +307,10 @@ impl<'p, 's, 'd, ID: Identity> HeaderSlot<'p, 's, 'd, ID> {
     }
 }
 
-impl<'d, ID: Identity, B: data::raw::Payload<'d>> AsMut<[u8; WRITE_BUF_CAP]>
+impl<'d, ID: Identity, B: data::raw::Payload<'d>> AsMut<[mem::MaybeUninit<u8>; WRITE_BUF_CAP]>
     for DirectSlot<'_, '_, 'd, ID, B>
 {
-    fn as_mut(&mut self) -> &mut [u8; WRITE_BUF_CAP] {
+    fn as_mut(&mut self) -> &mut [mem::MaybeUninit<u8>; WRITE_BUF_CAP] {
         self.get_mut().project().header.as_mut_slice()
     }
 }

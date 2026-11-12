@@ -388,10 +388,10 @@ where
     ) {
         let this = self.get_mut();
         for frame in this.frames.iter().skip(usize::from(*conn.state())) {
-            let result = conn.write().try_bounded(driver, |state, prefix| {
-                prefix[..frame.len()].copy_from_slice(frame);
+            let result = conn.write().try_bounded(driver, |state, mut prefix| {
+                prefix.write_slice(frame).unwrap();
                 *state += 1;
-                write::Draft::new(frame.len(), None, ())
+                prefix.commit(None, ())
             });
             (this.observe)(Event::Enqueued(result));
         }

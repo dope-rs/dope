@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{cell::Cell, convert, num, pin::Pin, rc::Rc, time::Duration};
 
 use dope_core::{
@@ -12,7 +13,7 @@ use dope_core::{
 use dope_manifold::{
     app::receive::{self, Outcome, limits::Budget},
     network::listener::{
-        conn::{self, write},
+        conn,
         handler::{self, Application, failures, retire, send},
     },
 };
@@ -124,9 +125,9 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
         if !CONTROL {
             (this.observe)(Observation::Write(conn.write().try_bounded(
                 driver,
-                |_, prefix| {
-                    prefix[..5].copy_from_slice(b"after");
-                    write::Draft::new(5, None, ())
+                |_, mut prefix| {
+                    prefix.write_slice(b"after").unwrap();
+                    prefix.commit(None, ())
                 },
             )));
         }
@@ -238,9 +239,9 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CON
                 this.events.push(Event::Deferred(chunk.as_ref().to_vec()));
                 (this.observe)(Observation::Write(conn.write().try_bounded(
                     driver,
-                    |_, prefix| {
-                        prefix[..6].copy_from_slice(b"before");
-                        write::Draft::new(6, None, ())
+                    |_, mut prefix| {
+                        prefix.write_slice(b"before").unwrap();
+                        prefix.commit(None, ())
                     },
                 )));
                 return Outcome::Continue;

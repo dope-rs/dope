@@ -118,7 +118,11 @@ where
         commit: F,
     ) -> Result<write::Outcome<R>, Error<B, R, Infallible>>
     where
-        F: FnOnce(&mut C, &mut [u8]) -> write::Draft<B, R>,
+        F: for<'b, 'id> FnOnce(
+            &mut C,
+            write::Prefix<'b, 'id>,
+        )
+            -> write::Commit<region::Identity<'id>, egress::load::Value<B>, R>,
         B: 'd,
     {
         self.try_send::<_, _, _, true>(
@@ -136,7 +140,14 @@ where
         commit: F,
     ) -> Result<write::Outcome<R>, Error<B, R, Infallible>>
     where
-        F: FnOnce(&mut C, &mut [u8]) -> write::Draft<Infallible, R>,
+        F: for<'b, 'id> FnOnce(
+            &mut C,
+            write::Prefix<'b, 'id>,
+        ) -> write::Commit<
+            region::Identity<'id>,
+            egress::load::Value<Infallible>,
+            R,
+        >,
         B: 'd,
     {
         self.try_send::<_, _, _, false>(
@@ -220,20 +231,6 @@ where
     B: data::raw::Payload<'d>,
     G: bound::Bound,
 {
-    /// Reserves the final prefix and body bound before building a checked draft.
-    pub fn try_draft<R, F, E>(
-        self,
-        driver: &mut driver::Context<'_, 'd>,
-        commit: F,
-    ) -> Result<write::Outcome<R>, Error<Bound<B, G>, R, E>>
-    where
-        F: FnOnce(&mut C, &mut [u8]) -> Result<write::Draft<Bound<B, G>, R>, E>,
-    {
-        self.try_send::<_, _, _, false>(driver, egress::Queue::prove, |send, driver| {
-            send.try_draft(driver, commit)
-        })
-    }
-
     pub fn try_commit<R, F, E>(
         self,
         driver: &mut driver::Context<'_, 'd>,
@@ -243,13 +240,13 @@ where
         F: for<'b, 'id> FnOnce(
             &mut C,
             write::Prefix<'b, 'id>,
-        )
-            -> Result<write::Commit<region::Identity<'id>, Bound<B, G>, R>, E>,
+        ) -> Result<
+            write::Commit<region::Identity<'id>, egress::load::Value<Bound<B, G>>, R>,
+            E,
+        >,
     {
         self.try_send::<_, _, _, false>(driver, egress::Queue::prove, |send, driver| {
-            send.try_header(driver, |state, bytes, owner| {
-                commit(state, write::Prefix::new(bytes, owner)).map_err(Error::Build)
-            })
+            send.try_header(driver, commit)
         })
     }
 }

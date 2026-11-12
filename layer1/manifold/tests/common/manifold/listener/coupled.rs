@@ -91,10 +91,10 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for App {
             State::First(body) => {
                 this.state = State::Second;
                 let body = Value::Checked(body);
-                let done = conn.write().try_bounded(driver, |_, prefix| {
+                let done = conn.write().try_bounded(driver, |_, mut prefix| {
                     assert!(matches!(this.state, State::Second));
-                    assert_eq!(prefix.len(), write::Prefix::CAPACITY);
-                    write::Draft::new(0, Some(body), ())
+                    assert_eq!(prefix.writer().remaining(), write::Prefix::CAPACITY);
+                    prefix.commit(Some(body), ())
                 });
                 assert!(matches!(done, Ok(write::Outcome::Committed(()))));
                 this.first.hit();
@@ -290,10 +290,10 @@ impl<'w, 'd: 'w, ID: route::Identity, const DRAIN: bool> handler::Scoped<'w, 'd,
                 conn.state_mut().phase = 1;
                 let body = egress::NonEmpty::from_array(&QUEUED_BODY);
                 let body = Value::Checked(body);
-                let done = conn.write().try_bounded(driver, |state, prefix| {
+                let done = conn.write().try_bounded(driver, |state, mut prefix| {
                     assert_eq!(state.phase, 1);
-                    assert_eq!(prefix.len(), write::Prefix::CAPACITY);
-                    write::Draft::new(0, Some(body), ())
+                    assert_eq!(prefix.writer().remaining(), write::Prefix::CAPACITY);
+                    prefix.commit(Some(body), ())
                 });
                 assert!(matches!(done, Ok(write::Outcome::Committed(()))));
                 this.first.hit();
@@ -514,7 +514,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for BorrowedApp {
                 let body = Value::Checked(egress::NonEmpty::from_array(&QUEUED_BODY));
                 let done = conn
                     .write()
-                    .try_bounded(driver, |_, _| write::Draft::new(0, Some(body), ()));
+                    .try_bounded(driver, |_, prefix| prefix.commit(Some(body), ()));
                 self.written
                     .record(matches!(done, Ok(write::Outcome::Committed(()))));
                 self.first.hit();

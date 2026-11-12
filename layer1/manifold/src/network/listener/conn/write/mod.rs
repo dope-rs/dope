@@ -1,7 +1,6 @@
 pub mod body;
 mod commit;
 mod context;
-mod draft;
 pub mod error;
 mod outcome;
 mod prefix;
@@ -9,7 +8,6 @@ mod prefix;
 pub use commit::Commit;
 pub use context::Context;
 use dope_net::link::egress::reserve::error::Full;
-pub use draft::Draft;
 pub use outcome::Outcome;
 pub use prefix::Prefix;
 

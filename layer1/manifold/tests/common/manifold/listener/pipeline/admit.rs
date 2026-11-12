@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{cell::Cell, convert, pin::Pin, rc::Rc};
 
 use dope_core::{
@@ -93,9 +94,21 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Admit {
             (FIRST_REPLY.as_slice(), None),
             (SECOND_REPLY.as_slice(), None),
         ] {
-            let result = conn.write().try_bounded(driver, |&mut (), prefix| {
-                prefix[..header.len()].copy_from_slice(header);
-                write::Draft::new(header.len(), body, ())
+            let result = conn.write().try_bounded(driver, |&mut (), mut prefix| {
+                {
+                    let mut writer = prefix.writer();
+                    let mut staged = writer.try_split(1, header.len()).unwrap();
+                    staged.body().write_slice(header).unwrap();
+                }
+                {
+                    let (head, tail) = header.split_at(header.len() - 1);
+                    let mut writer = prefix.writer();
+                    let mut staged = writer.try_split(head.len(), tail.len()).unwrap();
+                    staged.body().write_slice(tail).unwrap();
+                    staged.head().write_slice(head).unwrap();
+                    staged.try_commit().unwrap();
+                }
+                prefix.commit(body, ())
             });
             let event = Event::Write(result.map_err(Error::from), conn.write().pending());
             self.events.push(event);
@@ -161,16 +174,16 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Bounded {
         driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let called = &self.as_ref().get_ref().called;
-        let result = conn.write().try_bounded(driver, move |state, prefix| {
+        let result = conn.write().try_bounded(driver, move |state, mut prefix| {
             called.set(true);
             *state = 9;
-            prefix[0] = b'X';
+            prefix.write_byte(b'X').unwrap();
             let body = egress::Load::new(resident::Shared::from(FIRST_BODY.as_slice()));
-            write::Draft::new(1, Some(Value::Unchecked(body)), ())
+            prefix.commit(Some(Value::Unchecked(body)), ())
         });
         let outcome = match result {
-            Err(error::Error::Mismatch(error::Mismatch::Bounded { cause, draft })) => {
-                let (written, body, (), end) = draft.into_parts();
+            Err(error::Error::Mismatch(error::Mismatch::Bounded { cause, commit })) => {
+                let (written, body, (), end) = commit.into_parts();
                 BoundedWrite::Draft {
                     cause,
                     written,

@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{
     cell::Cell,
     convert, marker,
@@ -197,9 +198,9 @@ fn reply<'w, 'd: 'w, ID: route::Identity>(
         conn.state_mut().extend_from_slice(chunk);
         observe(Event::Write(conn.write().try_bounded(
             driver,
-            |_, prefix| {
-                prefix[..ACK.len()].copy_from_slice(ACK);
-                write::Draft::new(ACK.len(), None, ())
+            |_, mut prefix| {
+                prefix.write_slice(ACK).unwrap();
+                prefix.commit(None, ())
             },
         )));
         if matches!(finish, Finish::Timeout(_)) {
@@ -220,10 +221,10 @@ fn reply<'w, 'd: 'w, ID: route::Identity>(
     }
     observe(Event::Write(conn.write().try_bounded(
         driver,
-        |state, prefix| {
+        |state, mut prefix| {
             observe(Event::Length(state.len()));
-            prefix[..PAYLOAD.len()].copy_from_slice(PAYLOAD);
-            write::Draft::new(PAYLOAD.len(), None, ())
+            prefix.write_slice(PAYLOAD).unwrap();
+            prefix.commit(None, ())
         },
     )));
     Outcome::CloseAfter

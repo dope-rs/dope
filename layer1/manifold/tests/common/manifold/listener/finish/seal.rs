@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{convert::Infallible, pin::Pin};
 
 use dope_core::{
@@ -84,9 +85,9 @@ impl<'d> handler::Application<'d, KeyTag<0>> for App<'d> {
         let this = self.get_mut();
         if matches!(this.phase, Phase::Sealing) {
             this.phase = Phase::Sealed;
-            let sent = conn.write().try_bounded(driver, |_, prefix| {
-                prefix[0] = b's';
-                write::Draft::new(1, None, ())
+            let sent = conn.write().try_bounded(driver, |_, mut prefix| {
+                prefix.write_byte(b's').unwrap();
+                prefix.commit(None, ())
             });
             assert!(matches!(sent, Ok(write::Outcome::Committed(()))));
         }
@@ -112,15 +113,16 @@ impl<'d> handler::Borrowed<'d, KeyTag<0>> for App<'d> {
         driver: &mut driver::Context<'_, 'd>,
     ) -> receive::Outcome {
         let byte = match self.phase {
-            Phase::Open => b'a',
-            Phase::Sealed => b'b',
-            Phase::Sealing => panic!("input before seal notice"),
-        };
+            Phase::Open => Some(b'a'),
+            Phase::Sealed => Some(b'b'),
+            Phase::Sealing => None,
+        }
+        .expect("input before seal notice");
         assert_eq!(chunk.as_ref(), [byte]);
         *conn.state_mut() = byte == b'b';
-        let sent = conn.write().try_bounded(driver, |_, prefix| {
-            prefix[0] = byte;
-            write::Draft::new(1, None, ())
+        let sent = conn.write().try_bounded(driver, |_, mut prefix| {
+            prefix.write_byte(byte).unwrap();
+            prefix.commit(None, ())
         });
         assert!(matches!(sent, Ok(write::Outcome::Committed(()))));
         receive::Outcome::Continue

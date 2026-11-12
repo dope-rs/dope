@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{convert, pin::Pin};
 
 use dope_core::{
@@ -56,10 +57,9 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Drain {
     ) -> Outcome {
         assert!(!chunk.as_ref().is_empty());
         let payload = &self.as_ref().get_ref().payload;
-        let n = payload.len();
-        let outcome = conn.write().try_bounded(driver, |&mut (), prefix| {
-            prefix[..n].copy_from_slice(payload);
-            write::Draft::new(n, None, ()).close_after()
+        let outcome = conn.write().try_bounded(driver, |&mut (), mut prefix| {
+            prefix.write_slice(payload).unwrap();
+            prefix.commit(None, ()).close_after()
         });
         assert!(matches!(outcome, Ok(write::Outcome::Committed(()))));
         Outcome::Continue

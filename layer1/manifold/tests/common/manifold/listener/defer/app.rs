@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{convert, pin::Pin};
 
 use dope_core::{
@@ -50,10 +51,10 @@ impl<F: for<'a, 'd> Fn(Event<'a, 'd>)> App<F> {
                 State::Done => return,
             };
             let load = egress::NonEmpty::from_array(BODY);
-            let result = conn.write().try_bounded(driver, move |state, prefix| {
+            let result = conn.write().try_bounded(driver, move |state, mut prefix| {
                 *state = next;
-                prefix[0] = byte;
-                let draft = write::Draft::new(1, Some(Value::Checked(load)), ());
+                prefix.write_byte(byte).unwrap();
+                let draft = prefix.commit(Some(Value::Checked(load)), ());
                 if close { draft.close_after() } else { draft }
             });
             (self.observe)(Event::Write(&result));

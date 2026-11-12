@@ -1,3 +1,4 @@
+use o3::buffer::write::Sink as _;
 use std::{convert, net, pin::Pin, time};
 
 use dope_core::{
@@ -106,12 +107,11 @@ impl<'d, ID: Identity> handler::Borrowed<'d, ID> for App {
         let Some(reply) = self.as_ref().get_ref().payload.as_ref() else {
             return Outcome::Continue;
         };
-        let n = reply.len();
-        let outcome = conn.write().try_bounded(driver, |state, prefix| {
+        let outcome = conn.write().try_bounded(driver, |state, mut prefix| {
             assert_eq!(*state, 0);
             *state = 1;
-            prefix[..n].copy_from_slice(reply);
-            write::Draft::new(n, None, ())
+            prefix.write_slice(reply).unwrap();
+            prefix.commit(None, ())
         });
         assert!(matches!(outcome, Ok(write::Outcome::Committed(()))));
         Outcome::CloseAfter
