@@ -98,11 +98,11 @@ impl<R, A, S, X, P> Startup<R, A, S, X, P> {
             ));
         }
         let edge = indices::Edge::from(total);
-        let (app, ctl, retain, bytes) =
-            <(A::Input, A::Continuation) as retain::Policy<'w, 'd, ID, A>>::prepare::<
-                S,
-                E::Transport,
-            >(self.app, self.ctl, main)?;
+        let app = self.app;
+        let mut ctl = self.ctl;
+        let (retain, bytes) =
+            <(A::Input, A::Continuation) as retain::Policy<'w, 'd, ID, A>>::prepare(&app, main)?;
+        attempt::Control::resize(&mut ctl, main.scale::<1>()).map_err(creation::Error::Attempt)?;
         let setup = demand::Fallible::prepare(egress, main);
         change::try_prepare::<
             ID,
