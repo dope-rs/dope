@@ -40,7 +40,7 @@ license = "MIT"
 authors = ["inq <gofiri@gmail.com>"]
 
 [workspace.dependencies]
-dope-test = { path = "layer2/test", version = "0.70.0" }
+dope-test = { path = "layer2/test" }
 dope = { path = "layer1/dope", version = "0.70.0" }
 dope-core = { path = "layer0/core", version = "0.70.0" }
 dope-net = { path = "layer1/net", version = "0.70.0" }
