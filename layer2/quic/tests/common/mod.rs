@@ -1,4 +1,3 @@
-pub mod e2e;
 pub mod recovery;
 
 pub mod retry;

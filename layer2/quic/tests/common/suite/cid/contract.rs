@@ -1,4 +1,3 @@
-use crate::common::e2e::life::driver::Ticket;
 use crate::common::runtime;
 use crate::common::suite::cid::{Count, Error, INITIAL};
 use crate::common::suite::peers::tls;
@@ -13,26 +12,14 @@ use std::num::NonZero;
 use std::time::Duration;
 use std::{net::SocketAddr, pin::Pin, time::Instant};
 
-use crate::common::e2e::life::identity::{
-    BindingEpoch, CidEpoch, Generation, PathEpoch, RouteId, ShardId, TransportId,
-};
-use crate::common::e2e::life::state::{Binding, Connection, Delivery, Route};
-use crate::common::e2e::life::{self, Action, RouteSpec, Witness};
 use dope_quic::errors::Code;
 use dope_quic::proto::cid::{Rotation, Schedule};
-
-pub const ROUTES: [RouteSpec; 1] = [RouteSpec::new(
-    RouteId::new(0),
-    TransportId::new(0),
-    ShardId::new(0),
-)];
 
 pub struct Wire {
     server: Peer,
     client: Peer,
-    pub(super) route: Route,
     active: Option<[u8; 8]>,
-    pub(super) steps: Steps,
+    now: Instant,
     authority: clients::Authority,
     rotation: Schedule,
 }
@@ -43,17 +30,12 @@ struct Peer {
     handle: Handle,
 }
 
-pub(super) struct Steps {
-    pub(super) pending: Option<(Ticket, life::ValidStep)>,
-    pub(super) next: u64,
-    now: Instant,
-}
-
 impl Wire {
-    pub fn counts(&self) -> (usize, usize) {
+    pub fn counts(&self) -> (usize, usize, usize) {
         (
             self.server.router.active_conns(),
             self.client.router.active_conns(),
+            self.server.router.handler().datagrams,
         )
     }
 
@@ -104,7 +86,6 @@ impl Wire {
         let period = NonZero::<u64>::MIN.saturating_add(999_999);
         let plan = Rotation::from_nanos(period, count);
         let rotation = Pin::new(&mut server).observe(started, |turn| turn.plan_cid(plan));
-        let witness = Witness::try_new(&INITIAL).map_err(Error::Witness)?;
         Ok(Self {
             server: Peer {
                 router: server,
@@ -116,40 +97,24 @@ impl Wire {
                 address: local,
                 handle: outbound,
             },
-            route: Route::new(
-                ROUTES[0],
-                Binding::new(BindingEpoch::INITIAL, PathEpoch::INITIAL),
-                Connection::new(Generation::INITIAL, Generation::INITIAL, witness),
-                CidEpoch::INITIAL,
-                Delivery::new(0, 0, true),
-            ),
             active: None,
-            steps: Steps {
-                pending: None,
-                next: 0,
-                now: started
-                    .checked_add(Duration::from_millis(150))
-                    .ok_or(Error::Runtime(runtime::Error::Deadline(started)))?,
-            },
+            now: started
+                .checked_add(Duration::from_millis(150))
+                .ok_or(Error::Runtime(runtime::Error::Deadline(started)))?,
             authority: auth,
             rotation,
         })
     }
 
     fn now(&mut self) -> Result<Instant, Error> {
-        self.steps.now = self
-            .steps
+        self.now = self
             .now
             .checked_add(Duration::from_millis(10))
-            .ok_or(Error::Runtime(runtime::Error::Deadline(self.steps.now)))?;
-        Ok(self.steps.now)
+            .ok_or(Error::Runtime(runtime::Error::Deadline(self.now)))?;
+        Ok(self.now)
     }
 
-    fn set(&mut self, binding: Binding, conn: Connection, cid: CidEpoch, delivery: Delivery) {
-        self.route = Route::new(self.route.spec(), binding, conn, cid, delivery);
-    }
-
-    fn probe(&mut self, sequence: u32) -> Result<(), Error> {
+    pub fn probe(&mut self, sequence: u32) -> Result<(), Error> {
         let before = self.server.router.handler().datagrams;
         let now = self.now()?;
         Pin::new(&mut self.client.router)
@@ -178,13 +143,6 @@ impl Wire {
             )
             .map_err(Error::Runtime)?;
             if self.server.router.handler().datagrams == before + 1 {
-                let accepted = self.route.delivery().accepted() + 1;
-                self.set(
-                    self.route.binding(),
-                    self.route.connection(),
-                    self.route.cid(),
-                    Delivery::new(accepted, accepted, true),
-                );
                 return Ok(());
             }
         }
@@ -194,7 +152,7 @@ impl Wire {
         })
     }
 
-    fn rotate(&mut self) -> Result<(), Error> {
+    pub fn rotate(&mut self) -> Result<(), Error> {
         let Some(conn) = self.server.router.conn(self.server.handle) else {
             return Err(Error::Connection {
                 handle: self.server.handle,
@@ -259,12 +217,6 @@ impl Wire {
                 .all(|entry| entry.0 != retiring);
             if emitted && next.is_some() && retired {
                 self.active = next;
-                self.set(
-                    self.route.binding(),
-                    self.route.connection(),
-                    CidEpoch::new(self.route.cid().get() + 1),
-                    self.route.delivery(),
-                );
                 return Ok(());
             }
         }
@@ -275,7 +227,7 @@ impl Wire {
         })
     }
 
-    fn rebind(&mut self, epoch: BindingEpoch, sequence: u32) -> Result<(), Error> {
+    pub fn rebind(&mut self, sequence: u32) -> Result<(), Error> {
         self.client.address.set_port(self.client.address.port() + 1);
         let before = self.server.router.handler().datagrams;
         let now = self.now()?;
@@ -313,13 +265,6 @@ impl Wire {
             if self.server.router.handler().datagrams == before + 1
                 && peer == Some(self.client.address)
             {
-                let accepted = self.route.delivery().accepted() + 1;
-                self.set(
-                    Binding::new(epoch, PathEpoch::new(self.route.binding().path().get() + 1)),
-                    self.route.connection(),
-                    self.route.cid(),
-                    Delivery::new(accepted, accepted, true),
-                );
                 return Ok(());
             }
         }
@@ -331,13 +276,8 @@ impl Wire {
         })
     }
 
-    fn cycle(&mut self) -> Result<(), Error> {
-        let conn = self.route.connection();
-        let next = Generation::new(conn.client().get() + 1);
-        let Ok(cycle) = u8::try_from(next.get()) else {
-            return Err(Error::Generation { actual: next.get() });
-        };
-        let cid = [cycle; 8];
+    pub fn cycle(&mut self) -> Result<(), Error> {
+        let cid = [1; 8];
         let mut client = Builder::client(Count::default())
             .build()
             .map_err(Error::Build)?;
@@ -453,7 +393,7 @@ impl Wire {
             .observe(deadline, |mut turn| turn.output().drive())
             .map_err(runtime::Error::Output)
             .map_err(Error::Runtime)?;
-        self.steps.now = deadline;
+        self.now = deadline;
         if retiring.active_conns() != 0 || self.server.router.active_conns() != 1 {
             return Err(Error::Drain {
                 retiring: retiring.active_conns(),
@@ -461,59 +401,6 @@ impl Wire {
             });
         }
         self.active = None;
-        let witness = Witness::try_new(&cid).map_err(Error::Witness)?;
-        self.set(
-            self.route.binding(),
-            Connection::new(next, next, witness),
-            self.route.cid(),
-            self.route.delivery(),
-        );
         Ok(())
-    }
-
-    fn target(&self, target: life::Target) -> Result<(), Error> {
-        let spec = self.route.spec();
-        let owned = match target {
-            life::Target::All => true,
-            life::Target::Transport(id) => id == spec.transport(),
-            life::Target::Route(id) => id == spec.route(),
-        };
-        if !owned {
-            return Err(Error::Target {
-                target,
-                route: spec.route(),
-                transport: spec.transport(),
-            });
-        }
-        Ok(())
-    }
-
-    pub(super) fn execute(&mut self, valid: life::ValidStep) -> Result<(), Error> {
-        match valid.action() {
-            Action::Probe { target, sequence } => {
-                self.target(target)?;
-                self.probe(sequence)
-            }
-            Action::RotateLocalCids { target } => {
-                self.target(target)?;
-                self.rotate()
-            }
-            Action::RebindTransports {
-                target,
-                epoch,
-                probe_sequence: sequence,
-            } => {
-                self.target(target)?;
-                self.rebind(epoch, sequence)
-            }
-            Action::CycleConnections { target } => {
-                self.target(target)?;
-                self.cycle()
-            }
-            Action::Drain { target } => {
-                self.target(target)?;
-                Err(Error::Action(valid.step()))
-            }
-        }
     }
 }

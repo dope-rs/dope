@@ -1,26 +1,15 @@
 pub mod common;
-use crate::common::e2e::life::{self, driver::Driver, identity::RouteId};
-use common::suite::cid::contract::{ROUTES, Wire};
-use std::num::NonZero;
+use common::suite::cid::contract::Wire;
 
 #[test]
 fn replays_lifecycle() {
-    let topology = life::Topology::try_new(1, 1, &ROUTES)
-        .expect("the fixture maps its sole transport and shard");
-    let scenario =
-        life::Scenario::new(topology, &life::CANONICAL_ACTIVE_STEPS, NonZero::<u16>::MIN);
-    let mut driver = Wire::new().expect("the fixed lifecycle fixture must construct");
-    let result = scenario.replay(&mut driver);
-    assert!(
-        matches!(result, life::Execution::Complete),
-        "the canonical lifecycle trace must complete"
-    );
-    let delivery = driver
-        .snapshot(RouteId::new(0))
-        .expect("known route")
-        .delivery();
-    assert_eq!(delivery.accepted(), 4);
-    assert_eq!(delivery.delivered(), 4);
-    assert!(delivery.is_live());
-    assert_eq!(driver.counts(), (1, 1));
+    let mut wire = Wire::new().expect("lifecycle peers");
+    wire.probe(0).expect("initial delivery");
+    wire.rotate().expect("initial CID retirement");
+    wire.probe(1).expect("delivery after rotation");
+    wire.rebind(2).expect("delivery on rebound path");
+    wire.rotate().expect("rebound CID retirement");
+    wire.cycle().expect("connection replacement and retirement");
+    wire.probe(3).expect("replacement delivery");
+    assert_eq!(wire.counts(), (1, 1, 4));
 }

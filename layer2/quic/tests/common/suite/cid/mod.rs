@@ -3,11 +3,6 @@ use crate::common::suite::peers::tls;
 use crate::common::{runtime, suite::mux::dispatch::Capture};
 use dope_quic::runtime::mux::builder;
 pub mod contract;
-mod driver;
-use crate::common::e2e::life::driver::Ticket;
-use crate::common::e2e::life::error;
-use crate::common::e2e::life::identity::{RouteId, TransportId};
-use crate::common::e2e::life::{self, Step};
 use conn::life::accept::Authority;
 use dope_quic::conn;
 use dope_quic::conn::id::{self, Handle};
@@ -210,9 +205,7 @@ impl cert::Sink<0, id::Static> for Count {
 #[derive(Debug)]
 pub enum Error {
     Runtime(runtime::Error),
-    Route(RouteId),
     Limits(builder::Error),
-    Witness(error::Witness),
     Build(Failure),
     Initial(errors::Connect),
     ProbeSend(errors::SendFailure<Vec<u8>>),
@@ -253,9 +246,6 @@ pub enum Error {
         sent: usize,
         received: usize,
     },
-    Generation {
-        actual: u32,
-    },
     Replacement {
         client: usize,
         server: usize,
@@ -268,22 +258,5 @@ pub enum Error {
     Drain {
         retiring: usize,
         server: usize,
-    },
-    Target {
-        target: life::Target,
-        route: RouteId,
-        transport: TransportId,
-    },
-    Action(Step),
-    Pending {
-        ticket: Ticket,
-        step: Step,
-    },
-    Idle {
-        ticket: Ticket,
-    },
-    Ticket {
-        expected: Ticket,
-        actual: Ticket,
     },
 }
