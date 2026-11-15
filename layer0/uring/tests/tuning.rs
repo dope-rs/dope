@@ -3,10 +3,10 @@ pub mod common;
 use std::{
     cell::Cell,
     num::{self, NonZero},
-    thread,
     time::Duration,
 };
 
+use dope::runtime::process::lifecycle::{Entry, Task as _};
 use dope_sys::{
     Errno,
     engine::ring::Backend as _,
@@ -345,7 +345,7 @@ fn split_options_complete() {
     use dope_sys::io::socket::option::tuning::raw::Chain as _;
     use o3::depot::capacity;
 
-    thread::spawn(|| {
+    Entry(|| {
         type Target = <Uring as submit::Control>::Target;
 
         let mut ring = Uring::try_ring::<4, 8>(false).expect("ring fixture");
@@ -413,6 +413,6 @@ fn split_options_complete() {
         assert_eq!(calls.get(), 3, "each option consumed once");
         assert!(ring.try_close().is_ok());
     })
-    .join()
+    .with(|| ())
     .expect("split submission thread");
 }

@@ -152,8 +152,7 @@ fn canary_retains_scalar() {
 
 #[test]
 fn metadata_population() {
-    use std::thread;
-
+    use dope::runtime::process::lifecycle::{Entry, Task as _};
     use dope_sys::{
         io::{Close as _, Retry as _},
         memory::{
@@ -167,7 +166,7 @@ fn metadata_population() {
     type Context = <Uring as provided::Source>::Context<Layout>;
     type Producer = <Uring as provided::Source>::Producer<Layout>;
 
-    thread::spawn(|| {
+    Entry(|| {
         let context = Context::new(Layout::fixed::<2, 16>()).expect("payload population");
         seccomp::deny_populate().expect("thread-local population filter");
         let failures = schedule::try_run(|| {
@@ -190,6 +189,6 @@ fn metadata_population() {
         assert_eq!(failures[0].length, 32);
         assert_eq!(failures[0].length, failures[1].length);
     })
-    .join()
+    .with(|| ())
     .expect("population cleanup remains on its owning thread");
 }

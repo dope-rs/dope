@@ -1,10 +1,8 @@
 pub mod common;
 
-use std::{
-    os::{fd::AsFd as _, unix::net},
-    thread,
-};
+use std::os::{fd::AsFd as _, unix::net};
 
+use dope::runtime::process::lifecycle::{Entry, Task as _};
 use dope_sys::{
     Errno,
     io::{Close as _, Retry as _, reactor::submit},
@@ -341,7 +339,7 @@ fn close_frees_registration() {
 
 #[test]
 fn release_keeps_mappings() {
-    thread::spawn(|| {
+    Entry(|| {
         let ring = Uring::try_ring::<2, 4>(false).expect("ring fixture");
         let ring = ring.try_register().expect("ring registration");
         seccomp::deny_unregister().expect("thread-local unregister filter");
@@ -358,13 +356,13 @@ fn release_keeps_mappings() {
         });
         assert!(matches!(unmaps, Err(Error::Missing([None, None]))));
     })
-    .join()
+    .with(|| ())
     .expect("unregister owner remains on its filtered thread");
 }
 
 #[test]
 fn mapping_retry_stays_free() {
-    thread::spawn(|| {
+    Entry(|| {
         let ring = Uring::try_ring::<2, 4>(false).expect("ring fixture");
         let ring = ring.try_register().expect("ring registration");
         let mut observed = Vec::new();
@@ -395,7 +393,7 @@ fn mapping_retry_stays_free() {
             );
         }
     })
-    .join()
+    .with(|| ())
     .expect("mapping owner remains on its filtered thread");
 }
 
@@ -411,7 +409,7 @@ fn retirement_wait_errors() {
     let denied = Errno::try_from(libc::EPERM).expect("positive errno");
     for code in [Errno::INTERRUPTED, denied] {
         for flight in [true, false] {
-            thread::spawn(move || {
+            Entry(move || {
                 backend::with(|owner| {
                     seccomp::deny_wait(code).expect("thread-local wait filter");
                     let resolver = backend::Retirement {
@@ -437,7 +435,7 @@ fn retirement_wait_errors() {
                     }
                 });
             })
-            .join()
+            .with(|| ())
             .expect("retirement keeps its filtered native owner");
         }
     }

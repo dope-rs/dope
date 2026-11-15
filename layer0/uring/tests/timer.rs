@@ -1,5 +1,6 @@
 use std::{env, os::unix::process::ExitStatusExt as _, process, thread, time::Duration};
 
+use dope::runtime::process::lifecycle::{Entry, Task as _};
 use dope_sys::{
     Timer as _,
     thread::{Thread, timer::Error},
@@ -50,11 +51,11 @@ fn expiry_kills_owner() {
 
 #[test]
 fn rejects_arming() {
-    let result = thread::spawn(|| {
+    let ((), result) = Entry(|| {
         seccomp::deny_timer_settime().expect("thread-local timer-settime filter");
         <Uring as Thread>::Timer::try_new(Positive::from_secs::<3600>()).map(drop)
     })
-    .join()
+    .with(|| ())
     .expect("watchdog rejection on the filtered thread");
     assert!(matches!(result, Err(Error::Arm(code)) if code.code().get() == libc::EPERM));
 }
