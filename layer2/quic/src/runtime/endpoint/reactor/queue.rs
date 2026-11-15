@@ -101,21 +101,21 @@ where
         })
     }
 
-    pub(in crate::runtime::endpoint) fn reject(
-        mut self,
+    pub(in crate::runtime::endpoint) fn rejection(
+        mut mux: pin::Pin<&mut router::Router<H, ID, B, M>>,
         error: datagram::RejectCause,
     ) -> ControlFlow<()> {
         match error {
             datagram::RejectCause::QueueFull => return ControlFlow::Continue(()),
             datagram::RejectCause::Resident { required, .. }
-                if required.get() <= self.mux.as_mut().output().byte_limit() =>
+                if required.get() <= mux.as_mut().output().byte_limit() =>
             {
                 return ControlFlow::Continue(());
             }
             _ => {}
         }
-        let endpoint = self.mux.as_ref().get_ref().domain();
-        let handler = self.mux.as_mut().handler_mut();
+        let endpoint = mux.as_ref().get_ref().domain();
+        let handler = mux.as_mut().handler_mut();
         <H::Events as Dispatch<H, ID, B, M::Send, M::Identity>>::Socket::call(|| {
             socket::Event::new((handler, net::Event::Rejected { endpoint, error }))
         });
@@ -157,7 +157,7 @@ where
         output::Submit::Accepted((), grant)
     }
 
-    fn notify(
+    pub(super) fn notify(
         mut mux: pin::Pin<&mut router::Router<H, ID, B, M>>,
         accepted: net::Accepted<M::Identity, ID>,
     ) {

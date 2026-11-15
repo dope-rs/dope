@@ -12,7 +12,7 @@ use crate::stream::Recv;
 
 use crate::runtime::mux::handler::hook::data::{datagram, release, stream};
 use crate::runtime::mux::handler::hook::life::{close, closing, early, ready};
-use crate::runtime::mux::handler::hook::wire::{endpoint, ingress, packet, socket};
+use crate::runtime::mux::handler::hook::wire::{endpoint, ingress, packet, socket, udp};
 use crate::runtime::mux::handler::hook::writable;
 
 pub struct On;
@@ -31,6 +31,7 @@ pub struct Set<
     L = closing::Off,
     C = close::Off,
     W = writable::Off,
+    U = udp::Off,
 > {
     established: marker::PhantomData<fn() -> E>,
     datagram: marker::PhantomData<fn() -> D>,
@@ -44,6 +45,7 @@ pub struct Set<
     closing: marker::PhantomData<fn() -> L>,
     close: marker::PhantomData<fn() -> C>,
     writable: marker::PhantomData<fn() -> W>,
+    udp: marker::PhantomData<fn() -> U>,
 }
 
 pub trait Dispatch<H, const DOMAIN: u8, B, D, I>
@@ -65,6 +67,7 @@ where
     type Closing: closing::Mode<H, DOMAIN, B, D, I>;
     type Close: close::Mode<H, DOMAIN, B, D, I>;
     type Writable: writable::Mode<H, DOMAIN, B, D, I>;
+    type Udp: udp::Mode<H, DOMAIN, B, D, I>;
 }
 
 pub trait Established<H, const DOMAIN: u8, B, D, I>
@@ -426,8 +429,8 @@ where
     }
 }
 
-impl<H, const DOMAIN: u8, B, D, I, E, G, S, A, R, N, Q, P, O, L, C, W> Dispatch<H, DOMAIN, B, D, I>
-    for Set<E, G, S, A, R, N, Q, P, O, L, C, W>
+impl<H, const DOMAIN: u8, B, D, I, E, G, S, A, R, N, Q, P, O, L, C, W, U>
+    Dispatch<H, DOMAIN, B, D, I> for Set<E, G, S, A, R, N, Q, P, O, L, C, W, U>
 where
     H: Handler<DOMAIN, B, D, I>,
     B: Recv,
@@ -445,6 +448,7 @@ where
     L: closing::Mode<H, DOMAIN, B, D, I>,
     C: close::Mode<H, DOMAIN, B, D, I>,
     W: writable::Mode<H, DOMAIN, B, D, I>,
+    U: udp::Mode<H, DOMAIN, B, D, I>,
 {
     type Established = E;
     type Datagram = G;
@@ -458,4 +462,5 @@ where
     type Closing = L;
     type Close = C;
     type Writable = W;
+    type Udp = U;
 }

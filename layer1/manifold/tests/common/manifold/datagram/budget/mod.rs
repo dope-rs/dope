@@ -4,4 +4,4 @@ mod receive;
 pub mod shutdown;
 
 pub use packet::Packet;
-pub use receive::Receive;
+pub use receive::{Backlog, Receive};

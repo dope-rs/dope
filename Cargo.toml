@@ -41,11 +41,11 @@ authors = ["inq <gofiri@gmail.com>"]
 
 [workspace.dependencies]
 dope-test = { path = "layer2/test" }
-dope = { path = "layer1/dope", version = "0.71.0" }
+dope = { path = "layer1/dope", version = "0.71.1" }
 dope-core = { path = "layer0/core", version = "0.71.0" }
 dope-net = { path = "layer1/net", version = "0.71.0" }
 dope-runtime = { path = "layer1/runtime", version = "0.71.0" }
-dope-manifold = { path = "layer1/manifold", version = "0.71.0" }
+dope-manifold = { path = "layer1/manifold", version = "0.71.1" }
 dope-fiber = { path = "layer2/fiber", version = "0.71.0" }
 dope-uring = { path = "layer0/uring", version = "0.71.0" }
 dope-sys = { path = "layer0/sys", version = "0.71.0" }

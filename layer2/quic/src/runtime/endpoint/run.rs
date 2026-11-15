@@ -19,12 +19,12 @@ use o3::{
 use crate::{
     conn::id,
     runtime::{
-        endpoint::{Payload, Socket, Transport, reactor},
+        endpoint::{Payload, Socket, Transport, Udp, reactor},
         mux::{
             self, auth, handler,
             handler::hook::{
                 set,
-                wire::{cert, packet},
+                wire::{cert, packet, udp::Storage as _},
             },
             manage, output,
         },
@@ -127,18 +127,11 @@ where
             this.flush.open();
             let mut quota = Quantum::new();
             loop {
-                let ready = has_work(mux.as_ref(), app);
-                let output = (this.pooled.is_some() || !mux.as_mut().output().is_empty())
-                    && this.flush.is_open();
-                let due = mux.as_ref().schedule(raw).is_break();
-                if !ready && !output && !due {
-                    break;
-                }
                 let admit = this.app.work.admit(|source| match source {
                     Work::Application => {
                         use mux::app::BATCH_QUANTUM;
 
-                        if !ready {
+                        if !has_work(mux.as_ref(), app) {
                             return quota::Admission::Empty;
                         }
                         let parent = socket.as_ref().wake_target();
@@ -172,12 +165,31 @@ where
                         quota::Admission::Item(false)
                     }
                     Work::Output => {
-                        if !output {
+                        let output = (this.pooled.is_some() || !mux.as_mut().output().is_empty())
+                            && this.flush.is_open();
+                        if !output && !Udp::<'d, H, ID, B>::pending::<ID>(this.input) {
                             return quota::Admission::Empty;
                         }
                         let Some(permit) = work.permit() else {
                             return quota::Admission::Exhausted;
                         };
+                        if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(this.input)
+                            && input.select(output)
+                        {
+                            let failed = permit
+                                .run(|| input.step(mux.as_mut(), socket.as_mut(), now))
+                                .is_break();
+                            if failed {
+                                Self::stop(
+                                    mux.as_mut(),
+                                    this.pooled,
+                                    this.stopping,
+                                    this.rotation,
+                                    this.input,
+                                );
+                            }
+                            return quota::Admission::Item(failed);
+                        }
                         let Some(credit) = quota.credit() else {
                             return quota::Admission::Item(true);
                         };
@@ -194,8 +206,7 @@ where
                             }
                             output::Submit::Rejected(cause) => {
                                 this.flush.block();
-                                if queue::Queue::new(socket.as_mut(), this.pooled, mux.as_mut())
-                                    .reject(cause)
+                                if queue::Queue::<ID, H, B, M, Q>::rejection(mux.as_mut(), cause)
                                     .is_break()
                                 {
                                     Self::stop(
@@ -203,6 +214,7 @@ where
                                         this.pooled,
                                         this.stopping,
                                         this.rotation,
+                                        this.input,
                                     );
                                 }
                                 quota::Admission::Item(*this.stopping)
@@ -210,7 +222,7 @@ where
                         }
                     }
                     Work::Transport => {
-                        if !due {
+                        if !mux.as_ref().schedule(raw).is_break() {
                             return quota::Admission::Empty;
                         }
                         let Some(permit) = work.permit() else {

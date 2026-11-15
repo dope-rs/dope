@@ -42,7 +42,7 @@ use crate::{
                 self,
                 hook::{
                     set::{self, Dispatch},
-                    wire::{cert, packet},
+                    wire::{cert, packet, udp},
                     writable,
                 },
             },
@@ -80,6 +80,15 @@ type Interest<'d, H, const ID: u8, B> =
         resident::Shared<'d>,
         id::Driver<'d>,
     >>::Writable as writable::Mode<H, ID, B, resident::Shared<'d>, id::Driver<'d>>>::Interest;
+
+type Udp<'d, H, const ID: u8, B> = <<H as handler::Handler<
+    ID,
+    B,
+    resident::Shared<'d>,
+    id::Driver<'d>,
+>>::Events as Dispatch<H, ID, B, resident::Shared<'d>, id::Driver<'d>>>::Udp;
+
+type Input<'d, H, const ID: u8, B> = <Udp<'d, H, ID, B> as udp::Storage>::State<'d, ID>;
 
 /// Datagram ownership and the engine share exactly one driver and packet residency.
 type Transport<'d, const ID: u8, H, B, A, M, Q> =
@@ -135,6 +144,7 @@ pub enum BindError {
     Connection(errors::Connect),
     Mux(builder::Failure),
     Datagram(creation::Error),
+    Input(o3::alloc::Error),
     Framing {
         plan: Option<(PrefixPlan, num::NonZero<u16>)>,
         socket: Option<(PrefixPlan, num::NonZero<u16>)>,
@@ -340,6 +350,10 @@ where
         let mut this = owner.as_mut().project();
         let host = this.udp.as_mut().handler_mut().project();
         host.rotation.seal();
+        use udp::Storage as _;
+        if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(host.input) {
+            input.clear();
+        }
         manage::Shutdown::new(host.mux).finish(proof);
         let child = executor::raw::Finish::new(this.udp, install, proof);
         let child = <<Transport<'d, ID, H, B, A, M::Mode, Q> as dispatch::raw::Manifold<'d>>::Finish as executor::raw::Finishes<'d, _>>::call(

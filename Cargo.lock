@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "dope"
-version = "0.71.0"
+version = "0.71.1"
 dependencies = [
  "dope-core",
  "dope-gen",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "dope-manifold"
-version = "0.71.0"
+version = "0.71.1"
 dependencies = [
  "dope-core",
  "dope-fiber",
@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "dope-quic"
-version = "0.71.0"
+version = "0.72.0"
 dependencies = [
  "aws-lc-rs",
  "dope",

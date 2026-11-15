@@ -1,6 +1,6 @@
 [package]
 name = "dope"
-version.workspace = true
+version = "0.71.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Public facade for the dope manifold runtime"

@@ -7,6 +7,9 @@ use o3::{
 };
 use provided::{Frozen as _, account};
 
+mod backlog;
+pub use backlog::Backlog;
+
 #[repr(transparent)]
 pub struct Packet<'turn, 'd, T = recv::Lease<'d>> {
     view: T,

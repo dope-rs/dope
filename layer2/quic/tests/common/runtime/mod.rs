@@ -5,6 +5,7 @@ pub mod loopback;
 pub mod pooled;
 pub mod reap;
 pub mod relay;
+pub mod udp;
 
 pub mod suffix;
 

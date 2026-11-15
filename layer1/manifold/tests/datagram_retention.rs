@@ -17,8 +17,112 @@ use dope_manifold::{
     network::datagram::{packet, plan, plan::Config},
 };
 use dope_runtime::executor::session::Completion;
-use dope_test::{fibers, harness::signals::Gate, reclaim::Reports};
-use o3::buffer::{pool, storage::provided::account};
+use dope_test::{
+    fibers,
+    harness::signals::{Gate, LocalGate, Progress as _},
+    reclaim::Reports,
+};
+use o3::{
+    buffer::{pool, storage::provided::account},
+    depot::capacity,
+};
+
+#[test]
+fn backlog_recycles() {
+    let received = LocalGate::new();
+    let received = received.handle();
+    let cleared = LocalGate::new();
+    let cleared = cleared.handle();
+    let runtime = Runtime::quic::<2, 2048>();
+    let mut reports =
+        Reports::<_>::new(runtime.config(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+    runtime.with_scope(
+        |mut session| {
+            let endpoint = {
+                let mut driver = session.driver();
+                plan::Plan::<KeyTag<0>>::new(Config::new(1, 0, 1).expect("send bounds"))
+                    .prepare(&mut driver)
+                    .expect("endpoint preparation")
+                    .bind(
+                        (net::Ipv4Addr::LOCALHOST, 0).into(),
+                        handler::Handler::new(
+                            budget::Backlog {
+                                packets: packet::Backlog::try_new(capacity::Count::new(1))
+                                    .expect("backlog allocation"),
+                                received,
+                                cleared,
+                            },
+                            check_backlog,
+                        ),
+                        &mut driver,
+                    )
+                    .expect("endpoint bind")
+            };
+            let address = endpoint.local_addr();
+            let sender = net::UdpSocket::bind((net::Ipv4Addr::LOCALHOST, 0)).expect("sender bind");
+            let mut finish = Completion::new();
+            session
+                .with_quiesce(
+                    &mut finish,
+                    Host::new(endpoint),
+                    Duration::from_secs(2),
+                    |mut app| {
+                        for byte in 0_u8..3 {
+                            assert_eq!(sender.send_to(&[byte], address).expect("datagram"), 1);
+                            assert_eq!(
+                                fibers::TEST
+                                    .try_wait(&mut app, &received, u32::from(byte) + 1)
+                                    .expect("receive progress"),
+                                fibers::Wait::Reached
+                            );
+                        }
+                    },
+                )
+                .expect("endpoint retirement");
+            assert_eq!(cleared.hits(), 1, "shutdown clears an admitted packet");
+        },
+        recovery::Policy::new(|event| reports.push(event), recover),
+    );
+    assert!(
+        reports
+            .matches_one(&Receive::<KeyTag<0>>(Parts::new(
+                SlotIndex::ZERO,
+                Epoch::INITIAL
+            )))
+            .expect("reclaim validation")
+    );
+}
+
+fn check_backlog<'d>(
+    this: &mut budget::Backlog<'_, 'd>,
+    event: handler::Event<'_, '_, '_, '_, 'd>,
+) {
+    match event {
+        handler::Event::Access(received, _) => {
+            let (source, packet) = received.expect("native datagram");
+            assert_eq!(
+                packet.as_ref(),
+                [u8::try_from(this.received.hits()).expect("fixture count")]
+            );
+            let pointer = packet.as_ref().as_ptr();
+            match this.packets.try_push(source, packet) {
+                Ok(()) => assert_eq!(this.received.hits(), 0),
+                Err(rejected) => {
+                    let (packet, cause) = rejected.into_parts();
+                    assert_eq!((cause.used(), cause.capacity()), (1, 1));
+                    assert_eq!(packet.as_ref().as_ptr(), pointer);
+                    this.packets.clear();
+                    this.packets
+                        .try_push(source, packet)
+                        .map_err(|rejected| rejected.into_parts().1)
+                        .expect("released backlog slot");
+                }
+            }
+            this.received.hit();
+        }
+        _ => panic!("unexpected datagram callback"),
+    }
+}
 
 #[test]
 fn retained_is_bounded() {

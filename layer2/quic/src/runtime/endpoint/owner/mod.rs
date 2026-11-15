@@ -86,7 +86,7 @@ impl<'d, const ID: u8, R: receive::Policy, Q: buffer::Residency + buffer::raw::S
         <H::Events as Dispatch<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>>::Packet:
             packet::Mode<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>, Output = ()>,
     {
-        let runtime = reactor::Engine::new(mux, app, self.rotation);
+        let runtime = reactor::Engine::try_new(mux, app, self.rotation)?;
         let udp = self
             .datagram
             .bind(bind, runtime, driver)
@@ -111,7 +111,7 @@ impl<'d, const ID: u8, R: receive::Policy, Q: buffer::Residency + buffer::raw::S
         <H::Events as Dispatch<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>>::Packet:
             packet::Mode<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>, Output = ()>,
     {
-        let runtime = reactor::Engine::new(mux, app, self.rotation);
+        let runtime = reactor::Engine::try_new(mux, app, self.rotation)?;
         let udp = self
             .datagram
             .adopt(lease, runtime, driver)
