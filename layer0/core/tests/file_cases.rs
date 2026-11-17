@@ -57,6 +57,65 @@ fn target<'d>(driver: driver::Reference<'d>, n: u16) -> Target<'d, Route> {
         .bind(SlotIndex::from(n), Epoch::INITIAL)
 }
 
+#[test]
+fn preserves_native_file_owner_and_permissions() {
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, symlink};
+
+    use dope_sys::io::file::Mode;
+
+    let root = file::Directory::try_with(&env::temp_dir(), "file_owner", cleanup)
+        .expect("temporary directory");
+    let target = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(root.path().join("target"))
+        .expect("target file");
+    let expected = target.metadata().expect("native target metadata");
+    let dir = fs::Dir::open(root.path()).expect("parent directory");
+    let name = path::Component::parse_os("target".as_ref())
+        .expect("target component")
+        .try_to_owned()
+        .expect("target name");
+    let metadata = dir.entry(&name).symlink_metadata().expect("entry metadata");
+    assert!(metadata.kind().is_regular());
+    assert_eq!(
+        metadata.owner(),
+        fs::File::from(target).metadata().expect("owned target").owner()
+    );
+    let temporary = fs::File::from(
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(root.path().join("temporary"))
+            .expect("exclusive temporary"),
+    );
+    temporary.set_owner(metadata.owner()).expect("native fchown");
+    temporary
+        .set_permissions(Mode::new(0o640))
+        .expect("native fchmod after fchown");
+    let actual = File::from(temporary).metadata().expect("same temporary fd");
+    assert_eq!((actual.uid(), actual.gid()), (expected.uid(), expected.gid()));
+    assert_eq!(actual.mode() & 0o7777, 0o640);
+
+    symlink("target", root.path().join("link")).expect("target symlink");
+    let name = path::Component::parse_os("link".as_ref())
+        .expect("link component")
+        .try_to_owned()
+        .expect("link name");
+    let entry = dir.entry(&name);
+    assert!(
+        entry
+            .symlink_metadata()
+            .expect("symlink metadata")
+            .kind()
+            .is_symlink()
+    );
+    std::fs::remove_file(root.path().join("link")).expect("remove link");
+    assert!(matches!(entry.symlink_metadata(), Err(Errno::NOT_FOUND)));
+}
+
 /// # Safety
 /// The caller retains request through this exact scope's final quiescence.
 unsafe fn submit_unobserved_open<'a, 'd>(

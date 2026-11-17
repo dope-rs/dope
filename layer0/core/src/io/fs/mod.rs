@@ -355,11 +355,17 @@ impl File {
     }
 
     pub fn metadata(&self) -> Result<Metadata, Errno> {
-        let value = Backend::metadata::<dope_sys::Errno>(fd::AsFd::as_fd(self))?;
-        Ok(Metadata {
-            kind: value.kind(),
-            length: value.size(),
-        })
+        Backend::metadata(fd::AsFd::as_fd(self)).map(Metadata::new)
+    }
+
+    /// Synchronously applies a native metadata snapshot's owner to this descriptor.
+    pub fn set_owner(&self, owner: metadata::Owner) -> Result<(), Errno> {
+        Backend::set_owner(fd::AsFd::as_fd(self), owner)
+    }
+
+    /// Synchronously applies permission bits to this descriptor.
+    pub fn set_permissions(&self, mode: file::Mode) -> Result<(), Errno> {
+        Backend::set_permissions(fd::AsFd::as_fd(self), mode)
     }
 
     /// Attempts an exclusive advisory lock without waiting for its current owner.

@@ -25,7 +25,7 @@ mod sync;
 pub mod watch;
 
 pub use kind::Kind;
-pub use metadata::{Error as MetadataError, Identity, Metadata, Value as MetadataValue};
+pub use metadata::{Error as MetadataError, Identity, Metadata, Owner, Value as MetadataValue};
 pub use mode::Mode;
 pub use open::Open;
 
@@ -140,6 +140,22 @@ pub trait File: errno::Source + raw::Directory {
         // SAFETY: stat returns zero after filling value or -1 on failure.
         unsafe { kernel::raw::Status::new(raw).try_zero::<Self, E>() }?;
         Ok(Metadata::new(unsafe { value.assume_init() }))
+    }
+
+    fn set_owner<E: From<Errno>>(file: BorrowedFd<'_>, owner: Owner) -> Result<(), E> {
+        // SAFETY: the descriptor remains borrowed; fchown returns zero or -1.
+        unsafe {
+            kernel::raw::Status::new(libc::fchown(file.as_raw_fd(), owner.uid, owner.gid))
+                .try_zero::<Self, E>()
+        }
+    }
+
+    fn set_permissions<E: From<Errno>>(file: BorrowedFd<'_>, mode: Mode) -> Result<(), E> {
+        // SAFETY: the descriptor remains borrowed; fchmod returns zero or -1.
+        unsafe {
+            kernel::raw::Status::new(libc::fchmod(file.as_raw_fd(), mode.raw()))
+                .try_zero::<Self, E>()
+        }
     }
 
     fn mkdir<E: From<Errno>>(path: &std::ffi::CStr, mode: Mode) -> Result<(), E> {

@@ -1,4 +1,4 @@
-/// One creation mode for `open(2)`.
+/// Native file permission bits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct Mode(libc::mode_t);

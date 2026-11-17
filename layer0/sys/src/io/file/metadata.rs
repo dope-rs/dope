@@ -8,6 +8,12 @@ pub struct Identity {
     pub inode: libc::ino_t,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Owner {
+    pub(super) uid: libc::uid_t,
+    pub(super) gid: libc::gid_t,
+}
+
 pub type Value = (Kind, super::Offset, Option<Identity>);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,6 +29,7 @@ pub struct Metadata {
     kind: Kind,
     size: i64,
     identity: Identity,
+    owner: Owner,
 }
 
 impl Metadata {
@@ -33,6 +40,10 @@ impl Metadata {
             identity: Identity {
                 device: raw.st_dev,
                 inode: raw.st_ino,
+            },
+            owner: Owner {
+                uid: raw.st_uid,
+                gid: raw.st_gid,
             },
         }
     }
@@ -48,5 +59,9 @@ impl Metadata {
 
     pub const fn identity(self) -> Identity {
         self.identity
+    }
+
+    pub const fn owner(self) -> Owner {
+        self.owner
     }
 }

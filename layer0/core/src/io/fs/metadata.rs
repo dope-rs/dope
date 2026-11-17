@@ -1,6 +1,6 @@
 use std::mem;
 
-pub use dope_sys::io::file::{Identity, MetadataError as Error};
+pub use dope_sys::io::file::{Identity, MetadataError as Error, Owner};
 
 use crate::io::fs::{Kind, Len};
 
@@ -31,14 +31,28 @@ const _: () = {
 /// Descriptor metadata retains its signed length until the caller validates it.
 #[derive(Clone, Copy, Debug)]
 pub struct Metadata {
-    pub(super) kind: Kind,
-    pub(super) length: i64,
+    kind: Kind,
+    length: i64,
+    owner: Owner,
 }
 
 impl Metadata {
+    pub(super) fn new(value: dope_sys::io::file::Metadata) -> Self {
+        Self {
+            kind: value.kind(),
+            length: value.size(),
+            owner: value.owner(),
+        }
+    }
+
     pub const fn kind(&self) -> Kind {
         self.kind
     }
+
+    pub const fn owner(&self) -> Owner {
+        self.owner
+    }
+
     pub fn len(&self) -> Result<Len, Negative> {
         Len::try_from(self.length)
     }
@@ -47,10 +61,6 @@ impl Metadata {
         use dope_sys::io::file::File as _;
 
         use crate::Backend;
-        let raw = Backend::stat::<dope_sys::Errno>(path)?;
-        Ok(Self {
-            kind: raw.kind(),
-            length: raw.size(),
-        })
+        Backend::stat(path).map(Self::new)
     }
 }

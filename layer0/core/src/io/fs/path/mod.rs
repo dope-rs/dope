@@ -155,6 +155,16 @@ impl<'a> Entry<'a> {
     pub(crate) fn name(self) -> &'a std::ffi::CStr {
         self.name.as_c_str()
     }
+
+    /// Reads this entry's metadata synchronously without following a final symlink.
+    pub fn symlink_metadata(self) -> Result<fs::metadata::Metadata, crate::Errno> {
+        use std::os::fd::AsFd as _;
+
+        use dope_sys::io::file::File as _;
+
+        crate::Backend::metadata_at(Some(self.directory.as_fd()), self.name.as_c_str())
+            .map(fs::metadata::Metadata::new)
+    }
 }
 
 impl<'a> Rename<'a> {
