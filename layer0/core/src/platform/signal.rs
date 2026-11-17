@@ -13,6 +13,10 @@ pub type Receiver = <Backend as Thread>::Receiver;
 #[derive(Debug)]
 pub enum Error<'owner, E> {
     Acquire(Acquire),
+    AcquireRelease {
+        acquire: Acquire,
+        release: Release<'owner>,
+    },
     Run(E),
     Release {
         run: Option<E>,
@@ -70,8 +74,8 @@ impl Signal for Source<'_> {
 
 impl Source<'_> {
     /// Enters the exclusive signal scope on the process's original thread.
-    /// Call during single-threaded startup. Other code must not change SIGTERM
-    /// handling while `run` executes; masks on other existing threads are not updated.
+    /// Call during single-threaded startup. Other code must not change SIGTERM or
+    /// SIGINT handling while `run` executes; existing threads' masks are not updated.
     /// Workers must start inside `run` and finish before the policy is restored.
     pub fn scope<'owner, R, E>(
         retained: slot::Vacant<'owner, Receiver>,
@@ -87,9 +91,16 @@ impl Source<'_> {
         // restoration. The receiver stays on this thread through release.
         let receiver = match unsafe { <Receiver as signal::raw::Receiver>::try_new() } {
             Ok(receiver) => retained.insert(receiver),
-            Err(error) => {
+            Err(signal::raw::Acquire::Failed(error)) => {
                 CLAIMED.with(|claimed| claimed.set(false));
                 return Err(Error::Acquire(Acquire::from_native(error)));
+            }
+            Err(signal::raw::Acquire::Retained { cause, receiver }) => {
+                let acquire = Acquire::from_native(cause);
+                return Err(match release(retained.insert(receiver)) {
+                    Ok(()) => Error::Acquire(acquire),
+                    Err(release) => Error::AcquireRelease { acquire, release },
+                });
             }
         };
         let source = Source {

@@ -22,7 +22,9 @@ impl Receiver {
         unsafe { libc::sigemptyset(mask.as_mut_ptr()) };
         // SAFETY: sigemptyset established an empty native set and SIGTERM is valid.
         unsafe { libc::sigaddset(mask.as_mut_ptr(), libc::SIGTERM) };
-        // SAFETY: zeroed initialized the full Rust representation; both calls preserve it.
+        // SAFETY: SIGINT is valid and mask remains initialized.
+        unsafe { libc::sigaddset(mask.as_mut_ptr(), libc::SIGINT) };
+        // SAFETY: zeroed initialized the full Rust representation; the calls preserve it.
         unsafe { mask.assume_init() }
     }
 }
@@ -38,16 +40,15 @@ const _: () = {
 };
 
 impl signal::raw::Receiver for Receiver {
-    type Acquire = Acquire;
     type Wait = Wait;
     type Source<'a> = Source<'a>;
 
-    unsafe fn try_new() -> Result<Self, Acquire> {
+    unsafe fn try_new() -> Result<Self, signal::raw::Acquire<Self>> {
         use std::os::fd::OwnedFd;
 
         use dope_sys::io::fd;
         let mask = Self::mask();
-        // SAFETY: mask contains SIGTERM and -1 requests a new descriptor.
+        // SAFETY: mask contains the termination signals and -1 requests a new descriptor.
         let raw = unsafe { libc::signalfd(-1, &mask, libc::SFD_CLOEXEC | libc::SFD_NONBLOCK) };
         // SAFETY: signalfd returns a fresh descriptor or -1 with unchanged errno.
         let fd = unsafe { <OwnedFd as fd::raw::Adopt>::try_adopt::<Uring, Errno>(raw) }

@@ -28,3 +28,7 @@ libc.workspace = true
 [[test]]
 name = "signal_scope"
 harness = false
+
+[[test]]
+name = "signal_interrupt"
+harness = false

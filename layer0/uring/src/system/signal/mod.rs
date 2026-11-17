@@ -31,7 +31,7 @@ impl signal::Signal for Source<'_> {
 
         let mut info = mem::MaybeUninit::<libc::signalfd_siginfo>::uninit();
         loop {
-            // SAFETY: source borrows a live SIGTERM receiver and info is writable.
+            // SAFETY: source borrows a live termination receiver and info is writable.
             let len = unsafe {
                 libc::read(
                     self.as_fd().as_raw_fd(),

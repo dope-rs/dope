@@ -26,7 +26,7 @@ impl<'a> Source<'a> {
 
 impl signal::Signal for Source<'_> {
     type Error = Wait;
-    /// A blocking SIGTERM-only queue and one output slot guarantee one completed event.
+    /// A blocking termination queue and one output slot guarantee one completed event.
     fn wait(&self) -> Result<(), Wait> {
         let mut event = [mem::MaybeUninit::<libc::kevent>::uninit()];
         loop {
