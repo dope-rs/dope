@@ -361,6 +361,123 @@ fn cancellation_and_uncollected_completion_preserve_owners() {
 }
 
 #[test]
+fn retained_cancellation_returns_the_original_request() {
+    let dir = fixture("fiber_file_retained_cancel");
+    let path = dir.path().join("data");
+    let layout = read::Layout::<KeyTag<42>>::try_new(NonZero::<u32>::MIN).expect("one request");
+    for active in [false, true] {
+        let mut finish = session::Completion::new();
+        let mut reports = Vec::new();
+        Setup::try_for_plan::<Profile, _>(&layout)
+            .expect("file layout")
+            .with_session(
+                |mut session| {
+                    let returned = Cell::new(None);
+                    let port = layout.try_port().expect("request slots");
+                    let reader =
+                        read::Reader::<KeyTag<42>, _>::try_new(&port, &mut session.driver())
+                            .expect("reader");
+                    let budget = session
+                        .driver()
+                        .storage
+                        .budget(Resident::bytes(8))
+                        .expect("resident budget");
+                    let file = fs::File::open(&path).expect("file");
+                    let descriptor = file.as_raw_fd();
+                    let output = buffer(&budget);
+                    let address = output.as_ref().as_ptr();
+                    let request = read::Read::try_new(
+                        file.into(),
+                        Lease::open(Capture(&returned), output),
+                        file::Offset::fixed::<0>(),
+                    )
+                    .map_err(Rejected::discard)
+                    .expect("nonempty read");
+                    let submitted = Cell::new(false);
+                    let observed = Observed {
+                        reader,
+                        submitted: &submitted,
+                        on_completion: None,
+                    };
+                    session
+                        .with_quiesce(
+                            &mut finish,
+                            Host::new(observed),
+                            scenario::TIMEOUT,
+                            |mut app| {
+                                let mut ticket = Some(
+                                    port.try_request(read::Request::Read(request))
+                                        .map_err(Rejected::discard)
+                                        .expect("admitted read"),
+                                );
+                                if active {
+                                    let first = dope_fiber::abi::poll_fn(|_| {
+                                        match ticket.take().expect("original ticket").poll(None) {
+                                            read::Poll::Pending(pending) => {
+                                                ticket = Some(pending);
+                                                std::task::Poll::Pending
+                                            }
+                                            read::Poll::Ready(_) => std::task::Poll::Ready(()),
+                                        }
+                                    });
+                                    assert!(
+                                        fibers::TEST
+                                            .try_run(&mut app, fibers::TEST.poll_once(first))
+                                            .expect("submission turn")
+                                            .is_none()
+                                    );
+                                    assert!(submitted.get());
+                                }
+                                let completion = fibers::TEST
+                                    .try_run(
+                                        &mut app,
+                                        dope_fiber::abi::poll_fn(|context| {
+                                            assert!(returned.take().is_none());
+                                            match ticket
+                                                .take()
+                                                .expect("retained ticket")
+                                                .cancel(Some(context.as_ref().completion()))
+                                            {
+                                                read::Poll::Pending(pending) => {
+                                                    ticket = Some(pending);
+                                                    std::task::Poll::Pending
+                                                }
+                                                read::Poll::Ready(done) => std::task::Poll::Ready(done),
+                                            }
+                                        }),
+                                    )
+                                    .expect("terminal receipt wakes the original waiter");
+                                let read::Completion::Read { request, result } = completion else {
+                                    panic!("read completion")
+                                };
+                                if active {
+                                    assert!(
+                                        result.map(transfer::Len::into_raw) == Ok(3)
+                                            || result == Err(read::Error::System(Errno::CANCELED))
+                                    );
+                                } else {
+                                    assert_eq!(result, Err(read::Error::Cancelled));
+                                    assert!(!submitted.get());
+                                }
+                                let (file, output, _) = request.into_parts();
+                                assert_eq!(file.as_fd().as_raw_fd(), descriptor);
+                                assert_eq!(output.item().as_ref().as_ptr(), address);
+                                assert_eq!(budget.resident(), 8);
+                                drop((file, output));
+                            },
+                        )
+                        .expect("normal native finish");
+                    drop(returned.take().expect("caller reclaims the original lease"));
+                    assert_eq!(budget.resident(), 0);
+                },
+                recovery::Policy::new(|event| reports.push(event), recover),
+                runtime::check_scope,
+            );
+        runtime::check_reports(&reports);
+    }
+}
+
+#[test]
 fn cancelled_open_reclaims_an_already_opened_descriptor() {
     let dir = fixture("fiber_file_late_open");
     let directory = file::Dir::open(dir.path()).expect("directory owner");

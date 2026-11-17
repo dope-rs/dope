@@ -415,6 +415,58 @@ fn reset_releases_once() {
 }
 
 #[test]
+fn reset_ack_publishes_retirement_once() {
+    let Pair {
+        mut server,
+        mut client,
+        mut work,
+    } = Pair::try_default().expect("connected peers");
+    let stream = client.with_scope(|mut scope| {
+        let mut streams = scope.streams();
+        let id = streams.send().open_uni().expect("one send half");
+        streams.send().reset(id, Code::ZERO).expect("empty reset");
+        assert!(!streams.view().is_send_complete(id));
+        id.id()
+    });
+    let sent = Instant::now() + Duration::from_secs(1);
+    server
+        .receive_from(&mut work, &mut client, sent)
+        .expect("reset delivery");
+    let ack = server.view().send_at(sent + Duration::from_millis(30));
+    let (packets, result) = server.with_scope(|mut scope| scope.output().send(ack));
+    result.expect("reset acknowledgement");
+    let duplicates = packets.clone();
+    let mut releases = Vec::new();
+    for mut packet in packets.into_iter().chain(duplicates) {
+        let mut failure = None;
+        client
+            .with_scope(|mut scope| {
+                scope.input(&mut work).recv_with(
+                    &mut packet,
+                    ack,
+                    &mut Capture(&mut releases, &mut failure),
+                )
+            })
+            .expect("acknowledgement delivery");
+        assert!(failure.is_none());
+    }
+    assert_eq!(releases.len(), 1);
+    let event = releases[0];
+    assert!(event.source.id() == stream);
+    assert!(matches!(event.cause, release::Cause::ResetAcked));
+    assert_eq!(
+        (event.charge.logical_bytes, event.charge.resident_bytes, event.charge.owners),
+        (0, 0, 0),
+    );
+    client.with_scope(|mut scope| {
+        let streams = scope.streams();
+        let id = streams.view().resolve_send(stream).expect("original send half");
+        assert!(streams.view().is_send_complete(id));
+        assert!(!streams.view().has_events(), "retirement needs no stream queue event");
+    });
+}
+
+#[test]
 fn late_write_is_retired() {
     let Pair {
         mut server,

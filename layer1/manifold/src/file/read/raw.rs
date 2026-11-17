@@ -26,7 +26,7 @@ use crate::{
     app::{dispatch, dispatch::event},
     file::read::{
         self, Active, Batch, Completion, Error, FREE, Metadata, MetadataError, MetadataState,
-        Outcome, Phase, Poll, Reader, Request, Ticket,
+        Outcome, Phase, Poll, Reader, Reply, Request, Ticket,
     },
 };
 
@@ -187,6 +187,15 @@ impl<'d, R: Return<Item = read::Buffer<'d>>> read::Batch<R> {
 
 impl<'p, 'd, R: Return> Ticket<'p, 'd, R> {
     pub fn poll(self, waiter: Option<wake::Waker<'d>>) -> Poll<'p, 'd, R> {
+        self.observe::<false>(waiter)
+    }
+
+    /// Requests cancellation while retaining the original terminal reply and owners.
+    pub fn cancel(self, waiter: Option<wake::Waker<'d>>) -> Poll<'p, 'd, R> {
+        self.observe::<true>(waiter)
+    }
+
+    fn observe<const CANCEL: bool>(self, waiter: Option<wake::Waker<'d>>) -> Poll<'p, 'd, R> {
         let slot = &self.slot;
         let entry = slot.state();
         match entry.phase.take() {
@@ -245,6 +254,9 @@ impl<'p, 'd, R: Return> Ticket<'p, 'd, R> {
                 })
             }
             phase @ Some(Phase::Queued | Phase::Active { .. }) => {
+                if CANCEL && entry.reply.replace(Reply::Cancelling) == Reply::Waiting {
+                    slot.push::<{ read::WORK }>(());
+                }
                 entry.waiter.set(waiter);
                 entry.restore(phase);
                 Poll::Pending(self)
@@ -258,7 +270,7 @@ pub(super) struct Entry<'d, R: Return> {
     pub(super) index: indices::SlotIndex,
     pub(super) phase: cell::Cell<Option<Phase<'d>>>,
     pub(super) waiter: cell::Cell<Option<wake::Waker<'d>>>,
-    pub(super) detached: cell::Cell<bool>,
+    pub(super) reply: cell::Cell<Reply>,
     request: cell::UnsafeCell<Option<Request<R>>>,
 }
 
@@ -268,7 +280,7 @@ impl<'d, R: Return> Entry<'d, R> {
             index,
             phase: cell::Cell::new(None),
             waiter: cell::Cell::new(None),
-            detached: cell::Cell::new(false),
+            reply: cell::Cell::new(Reply::Detached),
             request: cell::UnsafeCell::new(None),
         }
     }

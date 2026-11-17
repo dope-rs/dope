@@ -220,17 +220,23 @@ impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, 
         }
     }
 
-    pub(in crate::conn) fn retire_reset(
+    pub(in crate::conn) fn retire_reset<E: release::Sink>(
         &mut self,
         events: &mut queue::Pending,
         id: Id,
         ctrl: &mut control::Pending,
+        evidence: &mut E,
     ) -> Result<(), conn::Error> {
         let stream::State {
             resident, transmit, ..
         } = self.state;
         if let Some(id) = Ack::retire_reset(transmit, id, resident, ctrl)? {
             self.retire_send(events, id, ctrl);
+            evidence.release(
+                Default::default(),
+                crate::stream::send::admit::Source::new(id),
+                release::Cause::ResetAcked,
+            );
         }
         Ok(())
     }

@@ -2,7 +2,7 @@ use o3::buffer::hold;
 
 use crate::stream::{release, send::admit};
 
-/// Exact physical owners released from one source after budget commitment.
+/// Physical owner releases or send-half retirement from one source after commitment.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Event {
     pub source: admit::Source,

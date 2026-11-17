@@ -69,13 +69,18 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Delivery<'a
         }
     }
 
-    fn ack_ctrl(&mut self, handle: revision::Key) -> Result<(), conn::Error> {
+    fn ack_ctrl<E: release::Sink>(
+        &mut self,
+        handle: revision::Key,
+        evidence: &mut E,
+    ) -> Result<(), conn::Error> {
         match Records::new(&mut *self.control).ack(handle) {
             control::Effect::None => Ok(()),
             control::Effect::RetireStream(id) => receive::Update::new(self.streams).retire_reset(
                 self.stream_events,
                 id,
                 self.control,
+                evidence,
             ),
         }
     }
@@ -91,7 +96,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Delivery<'a
             self.handshake.crypto.acknowledge(handle);
         }
         for handle in ctrls {
-            self.ack_ctrl(handle)?;
+            self.ack_ctrl(handle, evidence)?;
         }
         for handle in sends {
             receive::Update::new(self.streams).acknowledge(

@@ -127,6 +127,7 @@ pub enum Error {
     System(dope_core::Errno),
     Submission(SubmitError),
     Allocation(alloc::Exhausted),
+    Cancelled,
     Shutdown,
 }
 
@@ -240,6 +241,13 @@ enum Phase<'d> {
     Done(Outcome),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reply {
+    Waiting,
+    Cancelling,
+    Detached,
+}
+
 impl<'d, R: Return<Item = Buffer<'d>>> Port<'d, R> {
     fn try_new(capacity: table::Capacity) -> Result<Self, CreateError> {
         let mut indices = capacity.into_iter();
@@ -281,7 +289,7 @@ impl<'d, R: Return<Item = Buffer<'d>>> Port<'d, R> {
         }
         let entry = slot.state();
         entry.insert(request);
-        entry.detached.set(false);
+        entry.reply.set(Reply::Waiting);
         entry.restore(Some(Phase::Queued));
         self.pending.set(self.pending.get() + 1);
         slot.push::<WORK>(());
@@ -292,7 +300,7 @@ impl<'d, R: Return<Item = Buffer<'d>>> Port<'d, R> {
         slot.clear::<WORK>();
         self.pending.set(self.pending.get() - 1);
         let entry = slot.state();
-        if entry.detached.get() {
+        if entry.reply.get() == Reply::Detached {
             let request = entry.take();
             slot.push::<FREE>(());
             drop((request, outcome));
@@ -314,7 +322,7 @@ impl<R: Return> Drop for Ticket<'_, '_, R> {
         let slot = &self.slot;
         let entry = slot.state();
         entry.waiter.take();
-        entry.detached.set(true);
+        entry.reply.set(Reply::Detached);
         match entry.phase.take() {
             Some(Phase::Done(outcome)) => {
                 let request = entry.take();
@@ -399,10 +407,13 @@ impl<'p, 'd, ID: Identity, R: Return<Item = Buffer<'d>>> Reader<'p, 'd, ID, R> {
                 quota::Admission::Empty | quota::Admission::Exhausted => return,
             };
             let entry = slot.state();
-            let stop = entry.detached.get() || !port.accepting.get();
+            let cancelled = entry.reply.get() != Reply::Waiting;
+            let stop = cancelled || !port.accepting.get();
             match entry.phase.take() {
                 Some(Phase::Queued) => {
-                    let submitted = if stop {
+                    let submitted = if cancelled {
+                        Err(Error::Cancelled)
+                    } else if stop {
                         Err(Error::Shutdown)
                     } else {
                         raw::submit(entry, &self.flights, &mut self.free, driver)
