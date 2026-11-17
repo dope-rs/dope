@@ -15,7 +15,10 @@ use dope::{
         },
         service::bindings,
     },
-    net::link::{egress, pool::change::opening},
+    net::{
+        link::{egress, pool::change::opening},
+        wire,
+    },
 };
 use o3::{
     base::{Call, cell::region, time::Positive},
@@ -218,7 +221,7 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
         )
     }
 
-    fn flush() -> Option<
+    fn flush<'w, W: wire::Spec + 'w>(_: &W::Connection<'w, ID>) -> Option<
         impl for<'a, 'x, 'y, 'z> Call<(
             &'a mut Owner<'life, 's, 'd, Self, ID, LANES, N>,
             &'x mut Context<'y, 'z, 'd, ID>,
