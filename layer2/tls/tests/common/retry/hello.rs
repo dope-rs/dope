@@ -6,6 +6,7 @@ use dope::{
         io::event::{self, net::recv},
     },
     net::link::{
+        egress::data::raw::Payload,
         event::{ControlRecv, Dispatch, DispatchRecv, ParkRecv, Reservation},
         slot::transmit::{Finalize, outcome::Retention},
     },
@@ -13,32 +14,38 @@ use dope::{
 
 use crate::common::{
     Read,
-    retry::{Error, Held, Key, Mode, Pool, native::next, pending, settle, submit},
+    retry::{Error, Held, Key, Mode, Pool, UPDATES, native::next, pending, settle, submit},
 };
 
 /// Retains real receive completions until the handshake send completion is held,
 /// then processes authenticated input before settling that original send owner.
-pub(super) fn establish<'p, 'w, 'd: 'w>(
-    pool: &mut Pool<'p, 'w, 'd>,
+pub(super) fn establish<'p, 'w, 'd: 'w, B: Payload<'d>>(
+    pool: &mut Pool<'p, 'w, 'd, B>,
     keys: [Key<'d>; 2],
     scope: &mut life::Scope<'_, 'd>,
     mode: Mode,
 ) -> Result<Option<Held>, Error> {
+    let hold = matches!(mode, Mode::Held | Mode::Updates);
+    let expected = [
+        if matches!(mode, Mode::Updates) {
+            UPDATES
+        } else {
+            1
+        },
+        1,
+    ];
     {
         let mut driver = scope.context();
-        for key in keys
-            .into_iter()
-            .take(if matches!(mode, Mode::Held) { 1 } else { 2 })
-        {
+        for key in keys.into_iter().take(if hold { 1 } else { 2 }) {
             pool.recv()
                 .arm(key, &mut driver)
                 .map_err(|failure| Error::Submit(failure.cause))?;
         }
     }
-    let mut ready = [false; 2];
+    let mut received = [0; 2];
     let mut queued = VecDeque::new();
     let mut held = None;
-    let mut observed = None;
+    let mut observed: Option<Held> = None;
     'events: loop {
         let event = if held.is_some() || observed.is_some() {
             match queued.pop_front() {
@@ -50,7 +57,7 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
         };
         match event {
             event::Kind::Recv(done) => 'receive: {
-                if matches!(mode, Mode::Held)
+                if hold
                     && held.is_none()
                     && observed.is_none()
                     && pool
@@ -67,15 +74,17 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
                         ControlFlow::Continue(never) => match never {},
                     };
                 let data = match done.classify() {
-                    recv::Kind::Data(bytes) => match pool.recv().data(bytes, |_, _| ()) {
-                        Reservation::Ready(data) => data.scoped(),
+                    recv::Kind::Data(bytes) => match pool.recv().data(
+                        bytes, |_, _| (), |plan| plan.map(|data| data.scoped()),
+                    ).1 {
+                        Reservation::Ready(data) => data,
                         Reservation::Control(control) => DispatchRecv::Control(control),
                         Reservation::Parked(ParkRecv::Deferred) => break 'receive,
                         Reservation::Parked(_) => return Err(Error::Reserve("parked")),
                         Reservation::Stale(_) => return Err(Error::Reserve("stale")),
                         Reservation::Drop => return Err(Error::Reserve("drop")),
                     },
-                    recv::Kind::Control(control) => match pool.recv().dispatch(control) {
+                    recv::Kind::Control(control) => match pool.recv().dispatch(control).1 {
                         Dispatch::Settled => break 'receive,
                         Dispatch::Ready(control) => DispatchRecv::Control(control),
                         Dispatch::Parked(ParkRecv::Deferred) => break 'receive,
@@ -92,20 +101,20 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
                             .iter()
                             .position(|other| *other == key)
                             .ok_or(Error::Key)?;
-                        let mut marker = Vec::new();
+                        let mut valid = true;
                         chunk
                             .drive(
                                 Ok(()),
                                 &mut Read(|bytes: &[u8]| {
-                                    marker.extend_from_slice(bytes);
+                                    valid &= bytes.iter().all(|byte| *byte == b'A' + index as u8);
+                                    received[index] += bytes.len();
                                     bytes.len()
                                 }),
                             )
                             .map_err(Error::Consume)?;
-                        if marker.as_slice() != [b'A' + index as u8] {
+                        if !valid || received[index] > expected[index] {
                             return Err(Error::Record);
                         }
-                        ready[index] = true;
                         key
                     }
                     DispatchRecv::Control(ControlRecv::NoChunk(key)) => key,
@@ -120,13 +129,19 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
                 submit(pool, key, scope)?;
             }
             event::Kind::Send(done) => {
-                if matches!(mode, Mode::Held) && observed.is_none() {
+                if hold && observed.is_none() {
                     if held.is_some() {
                         return Err(Error::Flight);
                     }
                     held = Some(done);
                 } else {
-                    settle(pool, done, scope)?;
+                    let bytes = done.outcome();
+                    let key = settle(pool, done, scope)?;
+                    if let (true, Some(held), Ok(bytes)) =
+                        (key == keys[0], observed.as_mut(), bytes)
+                    {
+                        held.sent += bytes.into_raw();
+                    }
                 }
             }
             _ => return Err(Error::Handshake),
@@ -151,13 +166,14 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
                 .flush(turn.turn().maint(), &mut driver)
                 .map_err(|failure| Error::Submit(failure.cause))?;
         }
-        if matches!(mode, Mode::Held) && observed.is_none() && ready[0] {
+        if hold && observed.is_none() && received[0] == expected[0] {
             let conn = pool.inspect().get(keys[0]).ok_or(Error::Key)?;
             let status = conn.send_status();
             observed = Some(Held {
                 inflight: status.is_inflight(),
                 retained: matches!(status.retention(), Retention::Held),
                 rearm: pool.inspect().has_rearm(),
+                sent: 0,
             });
             settle(pool, held.take().ok_or(Error::Flight)?, scope)?;
             let mut driver = scope.context();
@@ -165,7 +181,7 @@ pub(super) fn establish<'p, 'w, 'd: 'w>(
                 .arm(keys[1], &mut driver)
                 .map_err(|failure| Error::Submit(failure.cause))?;
         }
-        if ready == [true; 2]
+        if received == expected
             && (!matches!(mode, Mode::Failed)
                 || pool
                     .inspect()

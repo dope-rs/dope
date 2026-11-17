@@ -57,23 +57,34 @@ where
     {
         work.with(|driver, turn, bound| {
             let mut backing = None;
-            let control = 'admit: {
-                let prep = match P::reserve(policy.as_mut(), data, driver.region_token()) {
-                    event::Reservation::Ready(prepared) => prepared,
-                    event::Reservation::Control(next) => break 'admit Ok(next),
-                    event::Reservation::Parked(parked) => break 'admit Err(parked),
-                    event::Reservation::Stale(Stale) | event::Reservation::Drop => {
-                        return ((), bound.empty());
+            let (pool, mut context) = P::parts(policy.as_mut());
+            let (entry, (next, unused)) = pool.recv().data(
+                data,
+                |key, state| P::receipt(&mut context, key, state, driver.region_token()),
+                |plan| match plan {
+                    event::Reservation::Ready(prepared) => {
+                        let (next, unused) = prepared.dispatch(&mut backing, bound);
+                        (Some(Ok(next)), unused)
                     }
-                };
-                let (next, unused) = prep.dispatch(&mut backing, bound);
-                flow::apply_done(policy.as_mut(), next, turn, driver);
-                return ((), unused);
-            };
-            let unused = bound.empty();
-            match control {
-                Ok(next) => ingress::apply_control(policy.as_mut(), next, turn, driver),
-                Err(parked) => ingress::apply_parked(policy.as_mut(), parked, turn, driver),
+                    event::Reservation::Control(next) => {
+                        (Some(Ok(event::DispatchRecv::Control(next))), bound.empty())
+                    }
+                    event::Reservation::Parked(parked) => (Some(Err(parked)), bound.empty()),
+                    event::Reservation::Stale(Stale) | event::Reservation::Drop => {
+                        (None, bound.empty())
+                    }
+                },
+            );
+            if let Some(entry) = entry {
+                match next {
+                    Some(Ok(next)) => drop(flow::apply_done::<ID, P>(
+                        &mut context, entry, next, turn, driver,
+                    )),
+                    Some(Err(parked)) => drop(ingress::apply_parked::<ID, P>(
+                        &mut context, entry, parked, turn, driver,
+                    )),
+                    None => {}
+                }
             }
             ((), unused)
         })

@@ -75,64 +75,58 @@ where
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ControlFlow<io::Event<'d>> {
-        use io::event::Kind;
+    fn dispatch<'event>(
+        mut this: pin::Pin<&mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+        turn: schedule::Turn<'_, 'd>,
+        mut driver: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
+        use io::event::{Kind, Selected};
 
-        let (this, (), (ev, turn, mut driver)) = call.into_parts();
-        let mut this = this;
-        match ev.into_kind() {
-            Kind::Recv(done) => {
-                if let ControlFlow::Break(done) = <A as Runtime<'w, 'd, ID>>::dispatch(
-                    this.as_mut(),
-                    done,
-                    turn.reborrow(),
-                    &mut driver,
-                ) {
-                    return ControlFlow::Break(io::Event::from(done));
+        let (ev, vacant) = 'rejected: {
+            match event.select() {
+                Selected::Recv(member) => {
+                    let (done, vacant) = member.take();
+                    if let ControlFlow::Break(done) = <A as Runtime<'w, 'd, ID>>::dispatch(
+                        this.as_mut(),
+                        done,
+                        turn.reborrow(),
+                        &mut driver,
+                    ) {
+                        break 'rejected (io::Event::from(done), vacant);
+                    }
+                    this.as_mut()
+                        .arm_accept(turn.reborrow().maint(), &mut driver);
+                    flush_dirty(this, turn.reborrow(), &mut driver);
+                    return ControlFlow::Continue(());
                 }
-                this.as_mut()
-                    .arm_accept(turn.reborrow().maint(), &mut driver);
-                flush_dirty(this, turn.reborrow(), &mut driver);
-                return ControlFlow::Continue(());
-            }
-            Kind::Send(done) => {
-                use writer::phase::send::pump_send;
+                Selected::Send(member) => {
+                    use writer::phase::send::pump_send;
 
-                pump_send(this.as_mut(), done, turn.reborrow(), &mut driver)
-            }
-            Kind::Accept(done) => {
-                phase::accept(this.as_mut(), done, turn.reborrow(), &mut driver);
-            }
-            Kind::Tuning(done) => {
-                if let Err(done) = phase::tune(this.as_mut(), done, turn.reborrow(), &mut driver) {
-                    return ControlFlow::Break(Kind::Tuning(done).into());
+                    let (done, _) = member.take();
+                    pump_send(this.as_mut(), done, turn.reborrow(), &mut driver)
                 }
+                Selected::Accept(member) => {
+                    let (done, _) = member.take();
+                    phase::accept(this.as_mut(), done, turn.reborrow(), &mut driver);
+                }
+                Selected::Tuning(member) => {
+                    let (done, vacant) = member.take();
+                    if let Err(done) =
+                        phase::tune(this.as_mut(), done, turn.reborrow(), &mut driver)
+                    {
+                        break 'rejected (Kind::Tuning(done).into(), vacant);
+                    }
+                }
+                other => return ControlFlow::Break(other.into_dispatch()),
             }
-            kind @ (Kind::RetiredRecv(_)
-            | Kind::Socket(_)
-            | Kind::Connect(_)
-            | Kind::Open(_)
-            | Kind::Read(_)
-            | Kind::Write(_)
-            | Kind::Sync(_)
-            | Kind::Shutdown) => return ControlFlow::Break(kind.into()),
-        }
-        this.as_mut()
-            .arm_accept(turn.reborrow().maint(), &mut driver);
-        this.as_mut().flush_recv(turn.reborrow(), &mut driver);
-        flush_dirty(this, turn.reborrow(), &mut driver);
-        ControlFlow::Continue(())
+            this.as_mut()
+                .arm_accept(turn.reborrow().maint(), &mut driver);
+            this.as_mut().flush_recv(turn.reborrow(), &mut driver);
+            flush_dirty(this, turn.reborrow(), &mut driver);
+            return ControlFlow::Continue(());
+        };
+        ControlFlow::Break(executor::raw::Dispatch::new(vacant.insert(ev)))
     }
 }
 

@@ -336,10 +336,12 @@ fn creates_component() {
     let root =
         file::Directory::try_with(&base, "component_create", cleanup).expect("temporary path");
     let dir = (fs::Dir::open(root.path())).expect("directory capability");
-    let name = "x".repeat(255);
-    let part = (path::Component::parse_os(name.as_ref())).expect("bounded component");
+    let name = format!("{}.gz", "x".repeat(252));
+    let part = (path::Component::parse_os(name[..252].as_ref())).expect("bounded component");
+    let suffix = path::Component::parse_os(".gz".as_ref()).expect("suffix");
     let request = fs::OpenRequest::new(
-        dir.confine_name(part).expect("component allocation"),
+        dir.confine(part.try_concat(suffix).expect("component allocation"))
+            .expect("directory retain"),
         Options::new(Access::ReadWrite).creation(Creation::Exclusive),
     );
     let existing = fs::OpenRequest::new(
@@ -558,8 +560,7 @@ fn dispatch_all<'d>(
     mut dispatch: impl FnMut(Event<'d>),
 ) -> Result<poll::Drain, poll::Failure> {
     let out = driver::Context::dispatch(driver, work, |event, _source| {
-        let event = event;
-        dispatch(event);
+        dispatch(event.into_inner());
         ops::ControlFlow::Continue(())
     });
     match out {

@@ -55,18 +55,6 @@ impl<B: crate::stream::Recv, D: buffer::raw::Segment> ops::DerefMut for Update<'
 }
 
 impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, D> {
-    pub(in crate::conn) fn release_conn(&mut self, count: u64, ctrl: &mut control::Pending) {
-        let Some(max) = self.receive.connection_window.release(count) else {
-            return;
-        };
-        match records::Records::new(ctrl).set_data(&mut self.receive.max_data, max) {
-            Ok(()) => self.receive.map.clear_data(),
-            Err(journal::Error::Vacant | journal::Error::Revision(_)) => {
-                self.receive.map.mark_data();
-            }
-        }
-    }
-
     fn is_send_done(&self, id: Id, stream: streams::Relative) -> bool {
         if stream.is_local() {
             let opened = stream.number() < *stream.direction().bind(&self.local_initiated.opened);
@@ -199,7 +187,7 @@ impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Update<'state, B, 
             }
             map::Slot::Unavailable => return,
         };
-        self.release_conn(free, ctrl);
+        self.receive.connection_window.release(free);
         if retire {
             self.close_recv(id, ctrl);
         }

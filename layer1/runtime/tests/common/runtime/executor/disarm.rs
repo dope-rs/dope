@@ -22,6 +22,7 @@ impl<'d, const COORDS: usize> executor::raw::Layout<'d> for Observer<'_, COORDS>
 unsafe impl<'d, const COORDS: usize> executor::raw::App<'d> for Observer<'_, COORDS> {
     const ROUTES: settings::Routes = settings::Routes::EMPTY;
     const COORDS: usize = COORDS;
+    const PARK: bool = true;
 
     fn install<'app, 'owner>(
         call: executor::raw::Install<'app, 'owner, 'd, Self>,
@@ -46,9 +47,7 @@ unsafe impl<'d, const COORDS: usize> executor::raw::App<'d> for Observer<'_, COO
         }
     }
 
-    fn select_park() -> Option<Self::ParkPlan> {
-        Some(())
-    }
+    fn select_park() -> Self::ParkPlan {}
 
     /// # Safety
     /// The runtime retains this exact installed owner and its admitted park plan.

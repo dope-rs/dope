@@ -15,53 +15,15 @@ use protocol::dial::{self, setup};
 use router::routing::issuer;
 use tls::clients;
 
-pub(crate) trait Pooled<'tls, H, const DOMAIN: u8, B, Route, E>
+impl<'a, 'brand, 'tls, H, const DOMAIN: u8, B, Route, E>
+    protocol::Io<'a, 'brand, H, DOMAIN, B, auth::Pooled<'tls, Route, E>>
 where
     H: handler::Handler<DOMAIN, B, E::Send, E::Identity>,
     B: stream::Recv,
     Route: routing::LocalRoute,
     E: issuer::Binding,
 {
-    fn connect_in(
-        &mut self,
-        scope: brand::Token<'_>,
-        peer: net::SocketAddr,
-        pool: &'tls clients::Pool,
-        opts: options::Options,
-        dcid: cid::Id,
-        now: time::Instant,
-    ) -> Result<id::Handle<E::Identity, DOMAIN>, errors::Connect>;
-
-    fn route_in<R: routing::PeerRoute>(
-        &mut self,
-        scope: brand::Token<'_>,
-        peer: net::SocketAddr,
-        pool: &'tls clients::Pool,
-        opts: options::Options,
-        route: R,
-        now: time::Instant,
-    ) -> Result<id::Handle<E::Identity, DOMAIN>, errors::Connect>;
-
-    fn reconnect_in<R: routing::PeerRoute>(
-        &mut self,
-        scope: brand::Token<'_>,
-        pool: &'tls clients::Pool,
-        opts: options::Options,
-        again: life::Reconnect,
-        route: R,
-        now: time::Instant,
-    ) -> Result<id::Handle<E::Identity, DOMAIN>, errors::Reconnect>;
-}
-
-impl<'a, 'brand, 'tls, H, const DOMAIN: u8, B, Route, E> Pooled<'tls, H, DOMAIN, B, Route, E>
-    for protocol::Io<'a, 'brand, H, DOMAIN, B, auth::Pooled<'tls, Route, E>>
-where
-    H: handler::Handler<DOMAIN, B, E::Send, E::Identity>,
-    B: stream::Recv,
-    Route: routing::LocalRoute,
-    E: issuer::Binding,
-{
-    fn connect_in(
+    pub(crate) fn pool_connect_in(
         &mut self,
         scope: brand::Token<'_>,
         peer: net::SocketAddr,
@@ -92,7 +54,7 @@ where
         })
     }
 
-    fn route_in<R: routing::PeerRoute>(
+    pub(crate) fn pool_route_in<R: routing::PeerRoute>(
         &mut self,
         scope: brand::Token<'_>,
         peer: net::SocketAddr,
@@ -120,7 +82,7 @@ where
         })
     }
 
-    fn reconnect_in<R: routing::PeerRoute>(
+    pub(crate) fn pool_reconnect_in<R: routing::PeerRoute>(
         &mut self,
         scope: brand::Token<'_>,
         pool: &'tls clients::Pool,

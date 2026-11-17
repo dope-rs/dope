@@ -1,6 +1,9 @@
 use std::{mem, pin, task, time};
 
-use crate::{abi, context, core::driver::schedule::clock::timer};
+use crate::{
+    abi, context,
+    core::driver::schedule::clock::{self, timer},
+};
 
 pub const MAXIMUM_DURATION: time::Duration = time::Duration::new(i64::MAX as u64 / 2, 999_999_999);
 
@@ -29,16 +32,33 @@ impl From<timer::Exhausted> for Error {
 }
 
 #[must_use = "a fiber does nothing unless it is driven"]
-pub struct Sleep<'d> {
+pub struct Sleep<'d, T = time::Duration> {
     alarm: timer::Alarm<'d>,
-    state: State,
+    state: State<T>,
 }
 
 #[derive(Clone, Copy)]
-enum State {
-    New(time::Duration),
+enum State<T> {
+    New(T),
     Armed,
     Done,
+}
+
+#[doc(hidden)]
+pub trait Start<'d>: Copy + Unpin {
+    fn deadline(self, now: clock::Moment<'d>) -> clock::Deadline<'d>;
+}
+
+impl<'d> Start<'d> for time::Duration {
+    fn deadline(self, now: clock::Moment<'d>) -> clock::Deadline<'d> {
+        now.clamp_add(self)
+    }
+}
+
+impl<'d> Start<'d> for clock::Deadline<'d> {
+    fn deadline(self, _: clock::Moment<'d>) -> Self {
+        self
+    }
 }
 
 impl<'d> Sleep<'d> {
@@ -52,6 +72,18 @@ impl<'d> Sleep<'d> {
         })
     }
 
+    pub fn until(
+        timer: timer::Timer<'d>,
+        deadline: clock::Deadline<'d>,
+    ) -> Result<Sleep<'d, clock::Deadline<'d>>, Error> {
+        Ok(Sleep {
+            alarm: timer.try_alarm()?,
+            state: State::New(deadline),
+        })
+    }
+}
+
+impl<'d, T: Start<'d>> Sleep<'d, T> {
     /// Polls this timer as a leaf of an already admitted application transition.
     /// Completion is retained here; subsequent polls remain pending.
     pub fn poll_sleep(
@@ -63,8 +95,8 @@ impl<'d> Sleep<'d> {
         }
         let wake = context.as_ref().completion();
         let now = context.as_mut().driver().driver_ref().clock().now();
-        let polled = if let State::New(duration) = self.state {
-            let polled = self.alarm.arm_and_poll(now.clamp_add(duration), now, wake);
+        let polled = if let State::New(start) = self.state {
+            let polled = self.alarm.arm_and_poll(start.deadline(now), now, wake);
             self.state = State::Armed;
             polled
         } else {
@@ -77,7 +109,7 @@ impl<'d> Sleep<'d> {
     }
 }
 
-impl<'d> abi::Fiber<'d> for Sleep<'d> {
+impl<'d, T: Start<'d>> abi::Fiber<'d> for Sleep<'d, T> {
     type Output = ();
 
     fn poll(call: context::PollCall<'_, '_, 'd, Self>) -> task::Poll<()> {
@@ -90,3 +122,12 @@ const _: () = assert!(mem::size_of::<Sleep<'static>>() == 4 * mem::size_of::<usi
 const _: () = assert!(mem::size_of::<Error>() == 3 * mem::size_of::<usize>());
 const _: () =
     assert!(mem::size_of::<Result<Sleep<'static>, Error>>() == 4 * mem::size_of::<usize>());
+const _: () = {
+    assert!(
+        mem::size_of::<Sleep<'static, clock::Deadline<'static>>>() == 4 * mem::size_of::<usize>()
+    );
+    assert!(
+        mem::size_of::<Result<Sleep<'static, clock::Deadline<'static>>, Error>>()
+            == 4 * mem::size_of::<usize>()
+    );
+};

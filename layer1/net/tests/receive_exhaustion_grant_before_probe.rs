@@ -56,7 +56,7 @@ fn grant_before_probe() {
                 if queued {
                     pool.suspend(key);
                     assert!(matches!(
-                        pool.recv().dispatch(done),
+                        pool.recv().dispatch(done).1,
                         Dispatch::Parked(ParkRecv::Deferred)
                     ));
                     pool.resume(key);
@@ -68,7 +68,7 @@ fn grant_before_probe() {
                     ));
                     eof::arm(pool, key, scope).expect("second native flight");
                 } else {
-                    assert!(matches!(pool.recv().dispatch(done), Dispatch::Ready(_)));
+                    assert!(matches!(pool.recv().dispatch(done).1, Dispatch::Ready(_)));
                     eof::flush(pool, scope).expect("optimistic probe submission");
                 }
                 let (flow, item) = eof::receive(scope).expect("second native exhaustion");
@@ -85,7 +85,7 @@ fn grant_before_probe() {
                         pool.suspend(key);
                     }
                     assert!(matches!(
-                        pool.recv().dispatch(probe),
+                        pool.recv().dispatch(probe).1,
                         Dispatch::Parked(ParkRecv::Deferred)
                     ));
                     None
@@ -93,10 +93,7 @@ fn grant_before_probe() {
                     Some(probe)
                 };
 
-                assert!(matches!(
-                    pool.recv().data(first, |_, _| ()),
-                    event::Reservation::Drop
-                ));
+                assert!(pool.recv().data(first, |_, _| (), |plan| matches!(plan, event::Reservation::Drop)).1);
                 {
                     let (_, mut driver, mut control) = scope.split();
                     let mut turn = control.begin();
@@ -124,7 +121,7 @@ fn grant_before_probe() {
                 .expect("live receive owner");
                 assert_eq!(resumed.key(), key);
                 let dispatch = match probe {
-                    Some(probe) => pool.recv().dispatch(probe),
+                    Some(probe) => pool.recv().dispatch(probe).1,
                     None => {
                         if paused {
                             eof::flush(pool, scope).expect("flush while application paused");
@@ -149,7 +146,7 @@ fn grant_before_probe() {
                             }
                             .expect("first exhaustion control");
                             assert!(matches!(done.status(), Status::Exhausted));
-                            assert!(matches!(pool.recv().dispatch(done), Dispatch::Ready(_)));
+                            assert!(matches!(pool.recv().dispatch(done).1, Dispatch::Ready(_)));
                             eof::flush(pool, scope).expect("newer probe before queued replay");
                             assert!(!pool.inspect().has_rearm());
                             if active {
@@ -173,10 +170,7 @@ fn grant_before_probe() {
                                     _ => None,
                                 }
                                 .expect("preserved native data");
-                                assert!(matches!(
-                                    pool.recv().data(done, |_, _| ()),
-                                    event::Reservation::Parked(ParkRecv::Deferred)
-                                ));
+                                assert!(pool.recv().data(done, |_, _| (), |plan| matches!(plan, event::Reservation::Parked(ParkRecv::Deferred))).1);
                                 assert!(!pool.inspect().has_rearm());
                             }
                         }
@@ -195,7 +189,7 @@ fn grant_before_probe() {
                             pool.suspend(key);
                             assert!(!pool.inspect().has_rearm());
                         }
-                        pool.recv().dispatch(done)
+                        pool.recv().dispatch(done).1
                     }
                 };
                 if active {
@@ -235,7 +229,7 @@ fn grant_before_probe() {
                     }
                     .expect("replayed exhaustion control");
                     assert!(matches!(control.status(), Status::Exhausted));
-                    assert!(matches!(pool.recv().dispatch(control), Dispatch::Settled));
+                    assert!(matches!(pool.recv().dispatch(control).1, Dispatch::Settled));
                     assert!(matches!(
                         pool.recv().pop_ready(&resumed),
                         recv::Ready::Empty
@@ -278,9 +272,9 @@ fn grant_before_probe() {
                 let status = done.status();
                 assert!(matches!(status, Status::Eof | Status::Exhausted));
                 if matches!(status, Status::Eof) {
-                    assert!(matches!(pool.recv().dispatch(done), Dispatch::Settled));
+                    assert!(matches!(pool.recv().dispatch(done).1, Dispatch::Settled));
                 } else {
-                    let done = match pool.recv().dispatch(done) {
+                    let done = match pool.recv().dispatch(done).1 {
                         Dispatch::Retired(done) => Some(done),
                         _ => None,
                     }

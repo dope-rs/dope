@@ -2,7 +2,7 @@ use std::{cell, marker};
 
 use o3::{depot, depot::arena::linked::fifo::ends};
 
-use crate::reply::{Owned, retain, retain::grant::entries, usage::Footprint};
+use crate::reply::{Owned, retain, usage::Footprint};
 
 impl<C: Footprint> Owned<'_, '_, '_, C> {
     #[inline(always)]
@@ -15,20 +15,13 @@ impl<C: Footprint> Owned<'_, '_, '_, C> {
         // together. This private owner removes each original member once and
         // never accepts an independently supplied item or credit.
         let part = unsafe { sum.take(item.amount) };
-        edge.active.key.parts().core.lanes.release_data(part);
+        // SAFETY: the detached owner carries this sum's original issuing State.
+        unsafe { edge.active.key.parts().core.lanes.release_data(edge.source, part) };
         Some(Self {
             data: data?,
             credit: retain::Batch { edge, sum },
         })
     }
-}
-
-/// # Safety
-/// Retain the original pool and grant as one affine owner; consume it only once.
-pub(super) unsafe trait Release<'credits> {
-    /// # Safety
-    /// `grant` must be this pool's original still-counted entry acquisition.
-    unsafe fn release_slot(&self, grant: entries::Grant<'credits, entries::Unit>);
 }
 
 const END: u32 = u32::MAX - 1;

@@ -1,5 +1,8 @@
 pub mod batch;
+mod dispatch;
 mod entry;
+
+pub use dispatch::{Dispatch, Member, Selected};
 
 pub mod file;
 pub mod net;
@@ -7,6 +10,7 @@ pub mod net;
 use file::{open, read, sync, write};
 use net::{accept, connect, recv, send, socket, tuning};
 
+#[repr(u8)]
 pub enum Kind<'d> {
     Accept(accept::Completion<'d>),
     Recv(recv::Completion<'d>),

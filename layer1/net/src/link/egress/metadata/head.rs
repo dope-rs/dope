@@ -18,10 +18,10 @@ pub(in crate::link::egress::metadata) fn detach<
 >(
     queue: metadata::Queue<'_, 'p, 'd, T, M, D, P>,
     token: &mut region::Token<region::Identity<'d>>,
-) -> Option<(egress::NonEmpty<T>, Index<'d>, credit::Stored<'p>)> {
+) -> Option<(egress::NonEmpty<T>, Index<'d>)> {
     let metadata::Prefix { queue, prefix } = queue.prefix()?;
     let index = prefix.index();
-    let (next, value, stored) = queue.pool.store.detach(token, index);
-    let (slot, stored) = prefix.pop(|slot| (next, slot, stored));
-    Some((value, slot, stored))
+    let (next, value) = queue.pool.store.detach(token, index);
+    let slot = prefix.pop(|slot| (next, slot));
+    Some((value, slot))
 }

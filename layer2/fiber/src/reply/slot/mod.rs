@@ -236,7 +236,7 @@ const _: () = {
     assert!(
         mem::size_of::<State<'static, (), u64>>()
             + mem::size_of::<Owner<'static, 'static, 'static>>()
-            == 14 * mem::size_of::<usize>()
+            == 13 * mem::size_of::<usize>()
     );
     assert!(
         mem::size_of::<Open<'static, 'static, 'static, 'static, (), ()>>()

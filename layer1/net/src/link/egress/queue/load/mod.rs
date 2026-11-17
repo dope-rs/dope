@@ -53,7 +53,7 @@ impl<B> Load<B> {
 
     /// Checks the actual owner once and retains its exact resident bound.
     pub fn try_bound<G: bound::Bound>(self) -> Result<Load<Bound<B, G>>, Excess<B>> {
-        if let bound::Limit::AtMost(maximum) = G::LIMIT
+        if let bound::Limit::AtMost(maximum, _) = G::LIMIT
             && self.charge.resident().is_excess(maximum)
         {
             return Err(Excess {

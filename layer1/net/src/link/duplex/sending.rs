@@ -1,16 +1,24 @@
 use std::marker;
 
 use dope_core::{
-    driver::{self, result, retained::flight, route, route::kind},
+    driver::{self, result, retained::flight, route, route::Identity, route::kind},
     io::{fd::handles, transfer},
+};
+use o3::{
+    depot::{index::Initialized, raw::Proof},
+    mem::{raw::Vacant, slot::Storage},
 };
 
 use crate::{
     link::{
         duplex::{ops, state},
         event::SendSource,
+        slot::types,
     },
-    wire::send::{self, reclaim},
+    wire::{
+        self,
+        send::{self, reclaim},
+    },
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,31 +39,12 @@ impl From<Source> for SendSource {
     }
 }
 
-pub(in crate::link) struct Completion {
-    sent: send::Sent,
-    origin: SendSource,
-}
-
-impl Completion {
-    pub(in crate::link) fn into_parts(self) -> (send::Sent, SendSource) {
-        (self.sent, self.origin)
-    }
-}
-
 pub(in crate::link) enum Invalid {
-    Stale {
-        sent: transfer::Len,
-    },
     Excess {
         sent: transfer::Len,
         limit: transfer::Len,
         origin: SendSource,
     },
-}
-
-pub(in crate::link) enum Done {
-    Idle,
-    Active(SendSource),
 }
 
 pub(in crate::link) enum Shutdown {
@@ -64,18 +53,18 @@ pub(in crate::link) enum Shutdown {
     Rejected(result::SubmitError),
 }
 
-struct Data {
+pub(in crate::link) struct Data {
     bytes: transfer::NonZero,
     source: Source,
 }
 
-enum Inflight {
+pub(in crate::link) enum Inflight {
     Data(Data),
     Shutdown,
 }
 
 impl Inflight {
-    fn origin(&self) -> SendSource {
+    pub(in crate::link) fn origin(&self) -> SendSource {
         match self {
             Self::Data(data) => data.source.into(),
             Self::Shutdown => SendSource::WriteShutdown,
@@ -98,14 +87,16 @@ impl Inflight {
         }
     }
 
-    fn complete(self, life: &mut state::State, sent: transfer::Len) -> Completion {
+    pub(in crate::link) fn try_complete(
+        self,
+        life: &mut state::State,
+        sent: transfer::Len,
+    ) -> Result<send::Sent, Invalid> {
+        self.validate(sent)?;
         if let Self::Shutdown = self {
             life.close.finish_write();
         }
-        Completion {
-            sent: send::Sent::new(sent),
-            origin: self.origin(),
-        }
+        Ok(send::Sent::new(sent))
     }
 }
 
@@ -115,7 +106,7 @@ struct Active<'d> {
 }
 
 pub(in crate::link) struct Sending<'d, P: reclaim::Policy = reclaim::OnComplete> {
-    active: Option<Active<'d>>,
+    active: Storage<Active<'d>>,
     policy: marker::PhantomData<P>,
 }
 
@@ -137,8 +128,12 @@ pub(in crate::link) enum Pending<'a, 'd, P: reclaim::Policy> {
 pub(in crate::link) struct Seal<'a, 'd, P: reclaim::Policy>(Ready<'a, 'd, P>);
 
 /// Exclusive idle-send admission retained until submission.
-#[repr(transparent)]
-pub(in crate::link) struct Ready<'a, 'd, P: reclaim::Policy>(Submission<'a, 'd, P>);
+pub(in crate::link) struct Ready<'a, 'd, P: reclaim::Policy> {
+    active: Vacant<'a, Active<'d>>,
+    lifecycle: &'a mut state::State,
+    source: Source,
+    policy: marker::PhantomData<P>,
+}
 
 impl<'a, 'd, P: reclaim::Policy> Submission<'a, 'd, P> {
     pub(super) fn new(
@@ -157,7 +152,7 @@ impl<'a, 'd, P: reclaim::Policy> Submission<'a, 'd, P> {
         let Some(ready) = self.try_ready() else {
             return Pending::Inflight;
         };
-        match ready.0.lifecycle.close.check_seal() {
+        match ready.lifecycle.close.check_seal() {
             state::Seal::Ready => Pending::Ready(Seal(ready)),
             state::Seal::Missing => Pending::Missing,
             state::Seal::Duplicate => Pending::Duplicate,
@@ -165,7 +160,12 @@ impl<'a, 'd, P: reclaim::Policy> Submission<'a, 'd, P> {
     }
 
     pub(in crate::link) fn try_ready(self) -> Option<Ready<'a, 'd, P>> {
-        (!self.sending.is_inflight()).then_some(Ready(self))
+        Some(Ready {
+            active: self.sending.active.vacant()?,
+            lifecycle: self.lifecycle,
+            source: self.source,
+            policy: marker::PhantomData,
+        })
     }
 
     pub(in crate::link) fn submit<
@@ -206,19 +206,18 @@ impl<'a, 'd, P: reclaim::Policy> Ready<'a, 'd, P> {
     where
         'd: 'input,
     {
-        let Self(submit) = self;
         let waiting = ready.is_waiting();
-        submit.lifecycle.wait_send(waiting);
+        self.lifecycle.wait_send(waiting);
         let (data, credit, close) = ready.into_parts();
         if waiting {
             return send::Attempt::idle(credit);
         }
-        let selected = send::Payload::select(&data);
+        let selected = send::Payload::select(data);
         let ready = match selected {
             None => {
                 match close {
                     send::End::Keep => {}
-                    send::End::Close => submit.lifecycle.drain(),
+                    send::End::Close => self.lifecycle.drain(),
                 }
                 return send::Attempt::idle(credit);
             }
@@ -231,13 +230,13 @@ impl<'a, 'd, P: reclaim::Policy> Ready<'a, 'd, P> {
             };
         match close {
             send::End::Keep => {}
-            send::End::Close => submit.lifecycle.drain(),
+            send::End::Close => self.lifecycle.drain(),
         };
         let active = Inflight::Data(Data {
             bytes,
-            source: submit.source,
+            source: self.source,
         });
-        submit.sending.active = Some(Active {
+        self.active.insert(Active {
             inflight: active,
             flight,
         });
@@ -249,51 +248,58 @@ impl<'a, 'd, P: reclaim::Policy> Seal<'a, 'd, P> {
     pub(in crate::link) fn seal(self, waiting: bool) -> Ready<'a, 'd, P> {
         let submit = self.0;
         if !waiting {
-            submit.0.lifecycle.close.seal();
+            submit.lifecycle.close.seal();
         }
         submit
     }
 }
 
-impl<'d, P: reclaim::Policy> ops::State<'d, P> {
-    /// Retires the terminal native flight before validating its byte count.
-    pub(in crate::link) fn try_complete_send(
+impl<'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w, S>
+    types::Connection<'w, 'd, ID, W, S>
+{
+    pub(in crate::link) fn observe_send(
         &mut self,
-        sent: transfer::Len,
-    ) -> Result<Completion, Invalid> {
-        let Some(active) = self.sending.active.take() else {
-            return Err(Invalid::Stale { sent });
-        };
+        target: route::Erased<'d, kind::Send>,
+        before: impl FnOnce(&mut Self),
+    ) -> Option<Inflight> {
+        let active = &self.control.engine.operations.sending.active;
+        if !active.get()?.flight.matches(target) {
+            return None;
+        }
+        before(self);
+        // SAFETY: the callback cannot retire this private matched flight. The
+        // exclusive pool loan and route claim prevent replacing its connection.
+        let active = unsafe {
+            Proof::<_, Initialized<Active<'d>>>::new((
+                &mut self.control.engine.operations.sending.active,
+                (),
+            ))
+        }
+        .into();
+        let (active, _) = active.take();
         drop(active.flight);
-        active.inflight.validate(sent)?;
-        Ok(active.inflight.complete(&mut self.lifecycle, sent))
+        Some(active.inflight)
     }
 }
 
 impl<'d, P: reclaim::Policy> Sending<'d, P> {
     pub(super) fn new() -> Self {
         Self {
-            active: None,
+            active: Storage::new(()),
             policy: marker::PhantomData,
         }
     }
 
     pub(in crate::link) fn is_inflight(&self) -> bool {
-        self.active.is_some()
-    }
-
-    pub(in crate::link) fn matches(&self, target: route::Erased<'d, kind::Send>) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|active| active.flight.matches(target))
+        self.active.get().is_some()
     }
 
     pub(in crate::link) fn origin(&self) -> Option<SendSource> {
-        self.active.as_ref().map(|active| active.inflight.origin())
+        self.active.get().map(|active| active.inflight.origin())
     }
 
     pub(super) fn cancel(&mut self) -> ops::Cancel<'_, 'd, kind::Send> {
-        match &mut self.active {
+        match self.active.get_mut() {
             Some(active) => ops::Cancel::Armed(&mut active.flight),
             None => ops::Cancel::Idle,
         }
@@ -306,28 +312,18 @@ impl<'d, P: reclaim::Policy> Sending<'d, P> {
         fd: &handles::Descriptor<'d>,
         target: route::Target<'d, Tag>,
     ) -> Shutdown {
-        if self.is_inflight() {
+        let Some(active) = self.active.vacant() else {
             return Shutdown::Busy;
-        }
+        };
         let flight = match slots.shutdown(driver.reborrow(), fd, target) {
             Ok(flight) => flight,
             Err(error) => return Shutdown::Rejected(error),
         };
-        self.active = Some(Active {
+        active.insert(Active {
             inflight: Inflight::Shutdown,
             flight,
         });
         Shutdown::Armed
-    }
-
-    pub(super) fn done(&mut self) -> Done {
-        match self.active.take() {
-            Some(active) => {
-                drop(active.flight);
-                Done::Active(active.inflight.origin())
-            }
-            None => Done::Idle,
-        }
     }
 }
 
@@ -351,5 +347,4 @@ const _: () = {
         mem::size_of::<Seal<'static, 'static, reclaim::OnComplete>>()
             == mem::size_of::<Submission<'static, 'static, reclaim::OnComplete>>()
     );
-    assert!(mem::size_of::<Completion>() == mem::size_of::<(send::Sent, SendSource)>());
 };

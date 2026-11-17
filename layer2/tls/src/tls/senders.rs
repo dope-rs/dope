@@ -3,7 +3,10 @@ use dope::{
     core::io::transfer::{self, progress::Bytes},
     net::wire::{send, terminal},
 };
-use o3::{buffer::pool, depot::array};
+use o3::{
+    buffer::{pool, write::consume},
+    depot::array,
+};
 use send::{progress, reclaim};
 use std::{
     io::{self, Write as _},
@@ -16,6 +19,14 @@ use crate::{
 };
 
 impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, R, ID> {
+    pub(crate) fn publish_update(&mut self) -> Result<(), crate::Error> {
+        if self.can_write() && !self.native.wants_write() {
+            consume::Error::check(self.native.writer().write(&[])?, 0)
+                .map_err(|_| crate::Error::InvalidBufferProgress)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn prepare<'b>(
         &mut self,
         send: send::Storage<'b, tls::SendState<'d>>,
@@ -263,13 +274,20 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         let Some(end) = end else {
             return Poll::Ready(());
         };
+        if let Err(cause) = self.publish_update() {
+            self.failed = true;
+            end.fail(cause);
+            return Poll::Ready(());
+        }
         if !self.native.wants_write() {
             return Poll::Ready(());
         }
         let Some(egress) = self.try_buffer(send) else {
             return Poll::Pending;
         };
-        if let Some(cause) = self.refill(egress) {
+        if egress.is_empty()
+            && let Some(cause) = self.drain(egress)
+        {
             end.fail(cause);
         }
         Poll::Ready(())
@@ -280,11 +298,14 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> tls::Connection<'d, 
         &mut self,
         output: &mut pool::Cursor<pool::Layout, pool::Borrowed<'d>>,
     ) -> Option<crate::Error> {
-        if output.is_empty() {
-            self.drain(output)
-        } else {
-            None
+        if !output.is_empty() {
+            return None;
         }
+        if let Err(cause) = self.publish_update() {
+            self.failed = true;
+            return Some(cause);
+        }
+        self.drain(output)
     }
 
     pub(crate) fn finish<'b>(

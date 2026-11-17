@@ -241,12 +241,18 @@ impl<'a, 'd> Context<'a, 'd> {
     }
 
     /// Reclaims a terminal routed receive and reports its original target and outcome.
-    pub fn retire(&mut self, event: io::Event<'d>) -> ControlFlow<io::Event<'d>> {
+    pub fn retire<'event>(
+        &mut self,
+        event: o3::mem::slot::Occupied<'event, io::Event<'d>>,
+    ) -> ControlFlow<o3::mem::slot::Occupied<'event, io::Event<'d>>> {
         use io::event::Kind;
 
-        let done = match event.into_kind() {
+        if !matches!(event.as_ref(), Kind::RetiredRecv(_)) {
+            return ControlFlow::Break(event);
+        }
+        let done = match event.into_inner().into_kind() {
             Kind::RetiredRecv(done) => done,
-            kind => return ControlFlow::Break(kind.into()),
+            _ => unreachable!("kind"),
         };
         self.reclaim(done);
         ControlFlow::Continue(())
@@ -323,7 +329,11 @@ impl<'a, 'd> Context<'a, 'd> {
     pub fn dispatch(
         &mut self,
         work: scope::Reactor<'_, 'd>,
-        emit: impl FnMut(io::Event<'d>, &mut Self) -> ControlFlow<io::Event<'d>>,
+        emit: impl for<'event> FnMut(
+            o3::mem::slot::Occupied<'event, io::Event<'d>>,
+            &mut Self,
+        )
+            -> ControlFlow<o3::mem::slot::Occupied<'event, io::Event<'d>>>,
     ) -> poll::Dispatch<'d> {
         let work = native::Backend::new(work);
         // SAFETY: Context retains the same Local root, registered storage, and

@@ -1,6 +1,6 @@
 use crate::proto::path::Peer;
-use o3::buffer::storage;
-use std::num::NonZero;
+use o3::buffer::{storage, write};
+use std::{mem, num::NonZero};
 
 mod flight;
 pub(in crate::runtime) mod gate;
@@ -19,7 +19,11 @@ use o3::{
     depot::{capacity, queue::ring},
 };
 
-use crate::conn::{self, wire::packet};
+use crate::conn::{
+    self,
+    output::transmit,
+    wire::{packet, permits},
+};
 
 pub(super) struct Storage {
     pub(super) pending: Pending,
@@ -35,15 +39,23 @@ pub(super) struct Pending {
 }
 
 pub(super) struct Cache {
-    pub(super) batch: Option<packet::Gso>,
+    pub(super) gso: Option<dope::core::io::datagram::GsoLimits>,
     pub(super) recycled: Vec<Vec<u8>>,
 }
 
 /// Vacant queue entry coupled to its packet and byte credits until commit.
-struct Reservation<'storage> {
+pub(super) struct Reservation<'storage> {
     vacant: ring::Vacant<'storage, ring::Fifo<Flight>>,
     packets: &'storage mut usize,
     bytes: &'storage mut usize,
+}
+
+pub(super) struct Packet<'storage> {
+    slot: Reservation<'storage>,
+    cache: &'storage mut Cache,
+    packet: Vec<u8>,
+    peer: &'storage Peer,
+    limit: usize,
 }
 
 pub(in crate::runtime) enum Submit<'quota, R, E> {
@@ -138,6 +150,7 @@ impl Pending {
 
 impl Reservation<'_> {
     // Private producers construct flights within their admitted packet and byte extents.
+    #[inline(always)]
     fn commit(self, outgoing: Flight) -> NonZero<usize> {
         let count = outgoing.packet_count();
         let len = outgoing.byte_len();
@@ -153,12 +166,6 @@ impl Reservation<'_> {
 impl Cache {
     fn recycle(&mut self, mut packet: Vec<u8>) {
         packet.clear();
-        if let Some(batch) = self.batch.as_mut() {
-            packet = match batch.recycle(packet) {
-                Ok(()) => return,
-                Err(packet) => packet,
-            };
-        }
         if self.recycled.len() < self.recycled.capacity() {
             self.recycled.push(packet);
         }
@@ -175,7 +182,7 @@ impl Storage {
             },
             bytes_capacity: limit,
             cache: Cache {
-                batch: None,
+                gso: None,
                 recycled: Vec::try_new(capacity.get())?,
             },
         })
@@ -187,17 +194,16 @@ impl Storage {
     }
 
     pub(super) fn gso_room(&self, max: NonZero<usize>) -> usize {
-        let Some(batch) = self.cache.batch.as_ref() else {
+        let Some(limits) = self.cache.gso else {
             return 0;
         };
-        let count = batch
-            .limits()
+        let count = limits
             .capacity()
             .count()
             .min(conn::MAX_BATCH_PACKETS)
             .min(self.pending.capacity() - self.pending.len())
             .min(self.bytes_capacity.saturating_sub(self.pending.bytes()) / max);
-        crate::runtime::raw::Gso::capacity::<true>(batch.limits(), self.bytes_capacity, max, count)
+        crate::runtime::raw::Gso::capacity::<true>(limits, self.bytes_capacity, max, count)
     }
 
     pub(super) fn emit_gso<E>(
@@ -207,7 +213,7 @@ impl Storage {
         outer: usize,
         participants: usize,
         fallback: Peer,
-        emit: impl FnOnce(&mut crate::runtime::raw::Gso<'_>) -> (Option<Peer>, Result<(), E>),
+        emit: impl FnOnce(&mut crate::runtime::raw::Gso) -> (Option<Peer>, Result<(), E>),
     ) -> Result<(usize, Result<(), E>), conn::output::transmit::Admission> {
         let Self {
             pending,
@@ -217,13 +223,19 @@ impl Storage {
         let Some(slot) = pending.reserve(*limit, packet, byte) else {
             return Ok((0, Ok(())));
         };
-        let Some(batch) = cache.batch.as_mut() else {
+        let Some(limits) = cache.gso else {
             return Ok((0, Ok(())));
         };
-        let mut batch = crate::runtime::raw::Gso::try_new(batch, packet, outer, participants)?;
+        let bytes = cache.recycled.pop().unwrap_or_default();
+        let mut batch =
+            crate::runtime::raw::Gso::try_new(limits, bytes, packet, outer, participants)?;
         let (addr, result) = emit(&mut batch);
-        let Some(ready) = batch.finish() else {
-            return Ok((0, result));
+        let ready = match batch.finish() {
+            packet::Storage::Ready(ready) => ready,
+            packet::Storage::Vacant(bytes) => {
+                cache.recycle(bytes);
+                return Ok((0, result));
+            }
         };
         let addr = addr.unwrap_or(fallback);
         let outgoing = if ready.packets.get() == 1 {
@@ -273,42 +285,76 @@ impl Storage {
             }
         }
     }
+}
 
-    pub(super) fn emit_round<E>(
-        &mut self,
+impl packet::Sink for Storage {
+    type Reservation<'sink> = Packet<'sink>;
+
+    #[inline(always)]
+    fn reserve<'sink>(
+        &'sink mut self,
         limit: usize,
-        max: usize,
-        fallback: Peer,
-        mut emit: impl for<'packet> FnMut(&'packet mut Vec<u8>) -> (Option<Peer>, Result<(), E>),
-    ) -> (usize, Result<(), E>) {
+        destination: &'sink transmit::Destination,
+    ) -> Result<Option<Self::Reservation<'sink>>, packet::Allocation> {
+        let transmit::Destination::Network(peer) = destination else {
+            return Ok(None);
+        };
+        let outer = packet::outer_limit(limit, destination.overhead())?;
         let Self {
             pending,
             bytes_capacity: cap,
             cache,
         } = self;
-        let mut emitted = 0;
-        while emitted != limit {
-            let Some(slot) = pending.reserve(*cap, 1, max) else {
-                break;
-            };
-            let mut packet = cache.recycled.pop().unwrap_or_default();
-            let (addr, result) = emit(&mut packet);
-            let addr = addr.unwrap_or(fallback);
-            let count = match storage::NonEmpty::try_new(packet) {
-                Ok(packet) => slot.commit(Flight::plain(addr, packet)).get(),
-                Err(empty) => {
-                    cache.recycle(empty.into_parts().0);
-                    0
-                }
-            };
-            emitted += count;
-            if let Err(error) = result {
-                return (emitted, Err(error));
-            }
-            if count == 0 {
-                break;
+        let Some(slot) = pending.reserve(*cap, 1, outer) else {
+            return Ok(None);
+        };
+        let mut packet = cache.recycled.pop().unwrap_or_default();
+        if let Err(error) = packet.try_grow(outer) {
+            cache.recycle(packet);
+            return Err(packet::Allocation::Payload {
+                error,
+                requested: outer,
+            });
+        }
+        Ok(Some(Packet {
+            slot,
+            cache,
+            packet,
+            peer,
+            limit,
+        }))
+    }
+}
+
+impl<'storage> permits::Reservation for Packet<'storage> {
+    type Validated = (Reservation<'storage>, Flight);
+
+    fn out(&mut self) -> write::Append<'_> {
+        write::Append::new(&mut self.packet)
+    }
+
+    fn limit(&self) -> usize {
+        self.limit
+    }
+
+    #[inline(always)]
+    fn validate(mut self, overhead: usize) -> Result<Self::Validated, Self> {
+        if self.packet.len() > overhead && self.packet.len() <= self.limit + overhead {
+            match storage::NonEmpty::try_new(mem::take(&mut self.packet)) {
+                Ok(packet) => return Ok((self.slot, Flight::plain(*self.peer, packet))),
+                Err(empty) => self.packet = empty.into_parts().0,
             }
         }
-        (emitted, Ok(()))
+        Err(self)
+    }
+
+    #[inline(always)]
+    fn publish((slot, packet): Self::Validated) {
+        slot.commit(packet);
+    }
+
+    #[inline(always)]
+    fn rollback(self) {
+        self.cache.recycle(self.packet);
     }
 }

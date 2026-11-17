@@ -153,7 +153,6 @@ impl<'d> Stored<'d> for Retry<'d> {
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        use codec::Stateful as _;
         self.decode
             .decode(storage, state, budget, limit, |preview| {
                 let admit = self.admit(preview);
@@ -177,7 +176,6 @@ impl<'d> Stored<'d> for Retry<'d> {
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        use codec::Stateful as _;
         self.decode
             .finish(input, budget, limit, |preview| self.admit(preview))
     }

@@ -199,7 +199,7 @@ impl eof::Eof<Eof> for Eof {
 }
 
 pub mod contract {
-    use std::{convert::Infallible, time::Duration};
+    use std::{cell::Cell, convert::Infallible, time::Duration};
 
     use dope_core::{
         driver::{
@@ -236,6 +236,7 @@ pub mod contract {
     pub enum Case {
         Buffered,
         Vectored,
+        Consumed,
     }
 
     impl wire::Spec for Case {
@@ -315,6 +316,14 @@ pub mod contract {
             let (case, storage) = context.into_parts();
             let (ready, allocations) = Tracker::usage(|| match case {
                 Self::Buffered => storage.buffered().close_after(),
+                Self::Consumed => {
+                    let mut plan = send::progress::Plan::vectored(storage, &plain);
+                    let (_, mut input) = plan.parts();
+                    let mut parts = input.take(transfer::Len::MAX);
+                    for _ in parts.take() {}
+                    parts.commit();
+                    plan.finish()
+                }
                 Self::Vectored => {
                     let mut plan = send::progress::Plan::vectored(storage, &plain);
                     {
@@ -484,14 +493,21 @@ pub mod contract {
                                             accept::Outcome::Rejected(cause) => match cause {},
                                         }
                                     };
+                                    let input: &[&[u8]] = match self {
+                                        Self::Buffered => &[b"keep"],
+                                        Self::Vectored | Self::Consumed => &[b"ab", b"cdef"],
+                                    };
+                                    let released = Cell::new(0);
+                                    let mut release = |bytes: &[u8]| {
+                                        let index = released.get();
+                                        assert_eq!(bytes.as_ptr(), input[index].as_ptr());
+                                        assert_eq!(bytes.len(), input[index].len());
+                                        released.set(index + 1);
+                                    };
                                     {
                                         let mut driver = scope.context();
                                         let queue =
                                             pool.egress_mut(key).ok_or(Error::Connection)?.queue;
-                                        let input: &[&[u8]] = match self {
-                                            Self::Buffered => &[b"keep"],
-                                            Self::Vectored => &[b"ab", b"cdef"],
-                                        };
                                         for &bytes in input {
                                             if !matches!(
                                                 queue.try_enqueue(driver.region_token(), bytes),
@@ -503,7 +519,7 @@ pub mod contract {
                                         match pool
                                             .sender(key)
                                             .ok_or(Error::Sender)?
-                                            .submit(&mut driver)
+                                            .submit(&mut driver, &mut release)
                                         {
                                             transmit::Attempt::Rejected(cause, _) => {
                                                 return Err(Error::Rejected(cause));
@@ -517,9 +533,20 @@ pub mod contract {
                                     let (queued, closing) = {
                                         let entry =
                                             pool.egress_mut(key).ok_or(Error::Connection)?;
+                                        if matches!(self, Self::Consumed) {
+                                            assert!(!entry.connection.send_status().is_inflight());
+                                            assert_eq!(released.get(), input.len());
+                                            return Ok((
+                                                !entry.queue.is_empty(),
+                                                entry.connection.is_draining(),
+                                                None,
+                                                matches!(entry.connection.send_status().retention(), Retention::Held),
+                                            ));
+                                        }
                                         if !entry.connection.send_status().is_inflight() {
                                             return Err(Error::Submitted);
                                         }
+                                        assert_eq!(released.get(), 0, "owners precede native completion");
                                         (!entry.queue.is_empty(), entry.connection.is_draining())
                                     };
                                     let done = match next(scope)?.into_kind() {
@@ -530,25 +557,27 @@ pub mod contract {
                                     let mut buffered = false;
                                     {
                                         let mut driver = scope.context();
-                                        let settled = pool.settle(done).settle_owned(
-                                            &mut driver,
-                                            |_| {},
-                                            |slot, _| {
-                                                buffered = matches!(
-                                                    slot.send_status().retention(),
-                                                    Retention::Held
-                                                );
+                                        let mut observed = false;
+                                        pool.settle(
+                                            done, &mut driver, &mut (), |_, _| {},
+                                            |_, _, body, _| release(body),
+                                            |_, completion, _| {
+                                                let dope_net::link::pool::send::Completion::Ready(owner, settled) = completion else {
+                                                    return;
+                                                };
+                                                drop(owner.publish(|slot| {
+                                                    buffered = matches!(slot.send_status().retention(), Retention::Held);
+                                                }));
+                                                observed = matches!(settled, SendOutcome::Queued { .. } | SendOutcome::Close);
                                             },
                                         );
-                                        if !matches!(
-                                            settled,
-                                            SendOutcome::Queued { .. }
-                                                | SendOutcome::CloseSent { .. }
-                                        ) {
-                                            return Err(Error::Submitted);
-                                        }
+                                        if !observed { return Err(Error::Submitted) }
                                     }
-                                    Ok((queued, closing, sent, buffered))
+                                    assert_eq!(
+                                        released.get(),
+                                        if matches!(self, Self::Vectored) { 2 } else { 0 },
+                                    );
+                                    Ok((queued, closing, Some(sent), buffered))
                                 })();
                                 let (flight, stream) = peer.close(scope);
                                 let mut returned = 0;
@@ -563,9 +592,7 @@ pub mod contract {
                     },
                     recovery::Policy::new(
                         |event| reports.push(event),
-                        |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                            panic!("driver recovery: {:?}", failure.cause())
-                        },
+                        |failure: recovery::Recovery<'_, '_>| -> Infallible { failure.abort() },
                     ),
                     |result| {
                         result
@@ -582,10 +609,15 @@ pub mod contract {
             let len = match self {
                 Self::Buffered => 8,
                 Self::Vectored => 6,
+                Self::Consumed => 0,
             };
             assert_eq!(
                 sent,
-                Ok(transfer::Len::try_new(len).expect("bounded output"))
+                if matches!(self, Self::Consumed) {
+                    None
+                } else {
+                    Some(Ok(transfer::Len::try_new(len).expect("bounded output")))
+                }
             );
             assert!(!buffered, "completion must release the buffered prefix");
             assert_eq!(returned, if matches!(self, Self::Buffered) { 4 } else { 0 });

@@ -38,11 +38,13 @@ impl<'s, 'd, F, const N: usize, D, S: storage::Storage>
         Some(self.admit()?.insert(fiber))
     }
 
-    pub fn entry<K: Copy + Into<key::Parts>>(
-        &mut self,
+    pub fn entry<'a, K: Copy + Into<key::Parts>>(
+        &'a mut self,
         id: Id<'s, 'd, D, K>,
-    ) -> Result<local::Entry<impl local::Member<Fiber = F>, Id<'s, 'd, D, K>>, Id<'s, 'd, D, K>>
-    {
+    ) -> Result<
+        local::Entry<impl local::Member<Fiber = F> + use<'a, K, F, N, D, S>, Id<'s, 'd, D, K>>,
+        Id<'s, 'd, D, K>,
+    > {
         let Some(member) = self.source.as_mut().project().inner.anchor(id.key.into()) else {
             return Err(id);
         };

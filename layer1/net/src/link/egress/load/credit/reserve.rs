@@ -8,7 +8,6 @@ use crate::link::egress::{
     reserve::{demand, guard::Rollback},
 };
 
-/// One queue-bound fair-credit acquisition.
 #[must_use = "a credit reservation must be stored or returned"]
 pub(in crate::link::egress) struct Reserve<
     'queue,
@@ -21,22 +20,43 @@ pub(in crate::link::egress) struct Reserve<
 > where
     M: credit::Access<'p, 'd>,
 {
-    queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
-    grant: credit::Grant<'p>,
+    pub(super) queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
+    pub(super) account: credit::Account<'p, 'd>,
+    pub(super) amount: credit::Amount,
 }
 
 impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
     Reserve<'queue, 'p, 'd, T, M, D, P>
 {
-    pub(in crate::link::egress) const fn new(
+    pub(super) const fn new(
         queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
-        grant: credit::Grant<'p>,
+        account: credit::Account<'p, 'd>,
+        amount: credit::Amount,
     ) -> Self {
-        Self { queue, grant }
+        Self {
+            queue,
+            account,
+            amount,
+        }
+    }
+
+    pub(super) fn try_charge(
+        queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
+        amount: credit::Amount,
+    ) -> Result<Self, egress::Admission> {
+        let account = credit::Lane::new(queue).account();
+        account
+            .try_acquire(amount)
+            .map_err(|cause| egress::Admission::Credit {
+                lane: queue.lane,
+                requested: egress::Credit::new(amount.entries(), amount.resident()),
+                cause,
+            })?;
+        Ok(Self::new(queue, account, amount))
     }
 
     pub(in crate::link::egress) fn amount(&self) -> credit::Amount {
-        self.grant.amount()
+        self.amount
     }
 
     pub(in crate::link::egress) fn queue(&self) -> metadata::Queue<'queue, 'p, 'd, T, M, D, P> {
@@ -46,23 +66,14 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position:
     pub(in crate::link::egress) fn try_split(
         &mut self,
         load: egress::NonEmpty<T>,
-    ) -> Result<credit::Split<'_, 'p, T>, batch::Rejected<T>> {
-        credit::Split::try_new(&mut self.grant, load)
-    }
-
-    pub(super) fn into_parts(
-        self,
-    ) -> (
-        metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
-        credit::Grant<'p>,
-    ) {
-        (self.queue, self.grant)
+    ) -> Result<credit::Split<'_, 'queue, 'p, 'd, T, M, D, P>, batch::Rejected<T>> {
+        credit::Split::try_new(self, load)
     }
 
     pub(in crate::link::egress) fn split_pair(&mut self, pair: credit::Pair) -> Self {
-        // SAFETY: Pair is the two active bounds that minted this aggregate grant.
-        let grant = unsafe { self.grant.bind_mut(pair) }.split(());
-        Self::new(self.queue, grant)
+        let first = credit::Amount::new(egress::Entries::new(1), pair.first);
+        self.amount = self.amount.sub(first);
+        Self::new(self.queue, self.account, first)
     }
 }
 
@@ -70,7 +81,9 @@ impl<'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State> 
     for Reserve<'_, 'p, 'd, T, M, D, P>
 {
     fn rollback(self, token: &mut region::Token<region::Identity<'d>>) {
-        credit::Lane::new(self.queue).release(token, self.grant);
+        // SAFETY: this owner consumes its unchanged, original residual acquisition.
+        unsafe { self.account.release(self.amount) };
+        credit::Lane::new(self.queue).released(token);
     }
 }
 

@@ -38,6 +38,7 @@ mod error;
 pub mod install;
 pub mod msg;
 pub mod option;
+pub mod peer;
 pub mod pending;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -123,7 +124,7 @@ impl Handle {
         self.fd
     }
 
-    pub(crate) fn bind(&self, addr: &Inet) -> Result<(), Errno> {
+    pub(crate) fn bind(&self, addr: &impl Prepared) -> Result<(), Errno> {
         addr.view()
             .native()
             .try_bind::<Backend, Errno>(self.fd.as_fd())

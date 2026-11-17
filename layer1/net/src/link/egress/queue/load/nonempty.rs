@@ -60,7 +60,7 @@ impl<B> NonEmpty<B> {
     pub fn try_bound<G: bound::Bound>(
         self,
     ) -> Result<NonEmpty<data::Bound<B, G>>, Rejected<Self, ResidentSize>> {
-        if let bound::Limit::AtMost(maximum) = G::LIMIT
+        if let bound::Limit::AtMost(maximum, _) = G::LIMIT
             && ResidentSize::from(self.resident).is_excess(maximum)
         {
             return Err(Rejected::new(self, ResidentSize::new(maximum)));

@@ -93,7 +93,7 @@ fn full_queue_retries_once() {
                         let result =
                             driver::Context::dispatch(&mut driver, turn.reactor(), |event, _| {
                                 assert!(
-                                    matches!(event.into_kind(), Kind::Send(_)),
+                                    matches!(event.into_inner().into_kind(), Kind::Send(_)),
                                     "idle receives have no CQE"
                                 );
                                 events += 1;
@@ -227,7 +227,7 @@ fn cancel_retries_once() {
                     );
                     let mut events = 0;
                     let result = driver.dispatch(turn.reactor(), |event, driver| {
-                        let done = match event.into_kind() {
+                        let done = match event.into_inner().into_kind() {
                             Kind::Recv(done) => Ok(done),
                             event => Err(event),
                         }
@@ -372,7 +372,7 @@ fn socket_retries_once() {
                             assert_eq!(error.cause(), SubmitCause::Full);
                             let mut events = 0;
                             let result = driver.dispatch(turn.reactor(), |event, _| {
-                                assert!(matches!(event.into_kind(), Kind::Connect(_)));
+                                assert!(matches!(event.into_inner().into_kind(), Kind::Connect(_)));
                                 events += 1;
                                 ControlFlow::Continue(())
                             });

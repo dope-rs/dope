@@ -215,77 +215,110 @@ fn control_full_is_atomic() {
 
 #[test]
 fn small_probe_keeps_cursor() {
-    let Pair {
-        mut server,
-        mut client,
-        mut work,
-    } = Pair::try_default().expect("probe peers must establish");
-    client.with_scope(|mut client| {
-        server.with_scope(|mut server| {
-            let sent_at = Instant::now() + Duration::from_secs(1);
-            let stream = (client.streams().send().open_uni())
-                .expect("the default credit must open one stream");
-            let peer = (server.streams().view().resolve_recv(stream.id()))
-                .expect("the peer must accept this stream direction");
-            client
-                .streams()
-                .send()
-                .send(stream, &[0x5a; 900])
-                .expect("the probe payload fits stream credit");
-            client
-                .streams()
-                .send()
-                .finish(stream)
-                .expect("the stream must finish once");
+    for lost in [false, true] {
+        let Pair {
+            mut server,
+            mut client,
+            mut work,
+        } = Pair::try_default().expect("probe peers must establish");
+        client.with_scope(|mut client| {
+            server.with_scope(|mut server| {
+                let sent_at = Instant::now() + Duration::from_secs(1);
+                let stream = (client.streams().send().open_uni())
+                    .expect("the default credit must open one stream");
+                let peer = (server.streams().view().resolve_recv(stream.id()))
+                    .expect("the peer must accept this stream direction");
+                client
+                    .streams()
+                    .send()
+                    .send(stream, &[0x5a; 900])
+                    .expect("the probe payload fits stream credit");
+                client
+                    .streams()
+                    .send()
+                    .finish(stream)
+                    .expect("the stream must finish once");
 
-            let mut dropped = Batch::default();
-            client
-                .output()
-                .send_batch(&mut dropped, sent_at, 1, 1_200)
-                .expect("the initial flight fits the journal");
-            assert_eq!(dropped.packets(), 1);
+                let mut dropped = Batch::default();
+                client
+                    .output()
+                    .send_batch(&mut dropped, sent_at, 1, 1_200)
+                    .expect("the initial flight fits the journal");
+                assert_eq!(dropped.packets(), 1);
 
-            let deadline =
-                (client.view().next_timer()).expect("the dropped stream packet must arm PTO");
-            let probe_at = deadline + Duration::from_millis(1);
-            assert_eq!(client.recovery().try_loss(probe_at), Ok(()));
-
-            let mut small = Batch::default();
-            client
-                .output()
-                .send_batch(&mut small, probe_at, 1, 128)
-                .expect("the small probe fits the journal");
-            assert_eq!(
-                small.packets(),
-                1,
-                "the first PTO allowance emits a non-stream probe"
-            );
-
-            let mut fitting = Batch::default();
-            client
-                .output()
-                .send_batch(&mut fitting, probe_at, 1, 1_200)
-                .expect("the fitting probe retains the pending payload");
-            assert_eq!(
-                fitting.packets(),
-                1,
-                "the unencoded stream probe must remain selected for the next fitting packet"
-            );
-            for packet in fitting.iter_mut() {
-                assert!(
+                let probe_at = if lost {
+                    let mut later = Batch::default();
+                    for step in 1..=3 {
+                        client.datagrams().try_send(vec![0x42]).expect("datagram");
+                        client
+                            .output()
+                            .send_batch(
+                                &mut later,
+                                sent_at + Duration::from_millis(step * 100),
+                                1,
+                                1_200,
+                            )
+                            .expect("later packet");
+                        assert_eq!(later.packets(), 1);
+                    }
+                    let at = sent_at + Duration::from_millis(500);
+                    for packet in later.iter_mut() {
+                        server
+                            .input(&mut work)
+                            .recv_packet(packet, at, |_| {})
+                            .expect("later ingress");
+                    }
                     server
-                        .input(&mut work)
-                        .recv_packet(packet, probe_at, |_| {})
-                        .is_ok(),
-                    "the fitting probe must reach the peer"
-                );
-            }
+                        .output()
+                        .send_batch(&mut later, at, 1, 1_200)
+                        .expect("loss ACK");
+                    for packet in later.iter_mut() {
+                        client
+                            .input(&mut work)
+                            .recv_packet(packet, at, |_| {})
+                            .expect("loss ingress");
+                    }
+                    at
+                } else {
+                    let deadline = client.view().next_timer().expect("stream PTO");
+                    let at = deadline + Duration::from_millis(1);
+                    assert_eq!(client.recovery().try_loss(at), Ok(()));
+                    at
+                };
 
-            let mut received = Vec::new();
-            let len = (server.streams().receive().recv(peer, &mut received))
-                .expect("the stream probe must resolve at the server");
-            assert_eq!(len, 900);
-            assert_eq!(received, vec![0x5a; 900]);
-        })
-    });
+                let mut small = Batch::default();
+                client
+                    .output()
+                    .send_batch(&mut small, probe_at, 1, 128)
+                    .expect("the small probe fits the journal");
+                assert_eq!(small.packets(), usize::from(!lost));
+
+                let mut fitting = Batch::default();
+                client
+                    .output()
+                    .send_batch(&mut fitting, probe_at, 1, 940)
+                    .expect("the fitting probe retains the pending payload");
+                assert_eq!(
+                    fitting.packets(),
+                    1,
+                    "the unencoded stream probe must remain selected for the next fitting packet"
+                );
+                for packet in fitting.iter_mut() {
+                    assert!(
+                        server
+                            .input(&mut work)
+                            .recv_packet(packet, probe_at, |_| {})
+                            .is_ok(),
+                        "the fitting probe must reach the peer"
+                    );
+                }
+
+                let mut received = Vec::new();
+                let len = (server.streams().receive().recv(peer, &mut received))
+                    .expect("the stream probe must resolve at the server");
+                assert_eq!(len, 900);
+                assert_eq!(received, vec![0x5a; 900]);
+            })
+        });
+    }
 }

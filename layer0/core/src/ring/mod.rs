@@ -6,6 +6,7 @@ use dope_sys::{
 
 mod cqe;
 use cqe::Envelope;
+use o3::mem::slot;
 
 use crate::{
     Engine, Events,
@@ -17,14 +18,20 @@ use crate::{
 
 type Rejected<'d> = Stopped<Option<tokens::Token<'d, <Engine as Complete>::Pending>>, fault::Fault>;
 
-pub(crate) fn resolve<'d, S>(
+pub(crate) fn resolve<'event, 'd, S>(
     root: &mut Resolver<'_, 'd, S>,
     entry: tokens::Entry<'d>,
-) -> Result<Option<io::Event<'d>>, Rejected<'d>> {
+    output: slot::Vacant<'event, io::Event<'d>>,
+) -> Result<Option<slot::Occupied<'event, io::Event<'d>>>, Rejected<'d>> {
     let local = &mut root.local;
     let drain = flight::Drain::new(local.flights, local.driver);
-    Envelope::resolve(local.backend.tuning(), &drain, entry.decode::<Events, _>())
-        .map_err(Rejected::from)
+    Envelope::resolve(
+        local.backend.tuning(),
+        &drain,
+        entry.decode::<Events, _>(),
+        output,
+    )
+    .map_err(Rejected::from)
 }
 
 pub(crate) fn reclaim<'d, S>(

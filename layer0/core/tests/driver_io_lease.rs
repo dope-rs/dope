@@ -35,7 +35,7 @@ use dope_core::{
     },
     io::{
         event::{
-            Kind,
+            self, Kind,
             batch::Flow,
             net::{accept, recv::Outcome},
         },
@@ -103,9 +103,10 @@ fn receive_payload<'d>(
         let mut turn = schedule.begin();
         assert!(matches!(
             driver::Context::dispatch(driver, turn.reactor(), |event, _source| {
+                let (event, vacant) = event.take();
                 let recv = match event.into_kind() {
                     Kind::Recv(done) => done,
-                    event => return ControlFlow::Break(event.into()),
+                    event => return ControlFlow::Break(vacant.insert(event.into())),
                 };
                 let (_, flow, event) = recv.into_parts();
                 match event {
@@ -164,7 +165,7 @@ fn receive_binds_lease() {
             let mut event = None;
             assert!(matches!(
                 driver::Context::dispatch(&mut driver, turn.reactor(), |completion, _source| {
-                    assert!(event.replace(completion).is_none());
+                    assert!(event.replace(completion.into_inner()).is_none());
                     ControlFlow::Continue(())
                 }),
                 Dispatch::Ready {
@@ -367,7 +368,7 @@ fn retained_receive_buffers_allow_accept() {
             for _ in 0..16 {
                 let mut turn = schedule.begin();
                 let result = driver.dispatch(turn.reactor(), |event, _| {
-                    match event.into_kind() {
+                    match event.into_inner().into_kind() {
                         Kind::Accept(done) => match done.into_parts().2 {
                             accept::Outcome::Accepted(slot) => {
                                 accepted = Some(slot.bind());
@@ -458,6 +459,17 @@ fn dispatch_retains_blocker() {
                     calls += 1;
                     let spare = (spare.take()).expect("single callback");
                     Descriptor::from(spare).close(driver);
+                    let event = event::Dispatch::new(event);
+                    let route = event.route();
+                    let event = event.select().into_dispatch();
+                    assert_eq!(event.route(), route);
+                    let event = match event.select() {
+                        event::Selected::Recv(member) => {
+                            let (done, vacant) = member.take();
+                            vacant.insert(Kind::Recv(done).into())
+                        }
+                        other => other.into_dispatch().into_event(),
+                    };
                     ControlFlow::Break(event)
                 });
             let observed = outcome;

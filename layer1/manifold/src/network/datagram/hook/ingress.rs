@@ -2,8 +2,9 @@ use std::{ops, pin};
 
 use dope_core::{
     driver::{route::Identity, schedule::clock},
-    io::{self, datagram::ReceiveError},
+    io::datagram::ReceiveError,
 };
+use dope_runtime::executor;
 use o3::base::cell::region;
 
 use crate::{
@@ -82,26 +83,26 @@ pub(in crate::network::datagram) trait Drive<'d, ID: Identity, H, R>
 where
     H: datagram::Ingress<'d, ID>,
 {
-    fn dispatch(
+    fn dispatch<'event>(
         socket: pin::Pin<&mut hook::Socket<'d, ID, H::Hooks>>,
-        event: io::Event<'d>,
+        event: executor::raw::Dispatch<'event, 'd>,
         sink: pin::Pin<&mut H>,
         clock: clock::Clock<'_, 'd>,
         token: &mut region::Token<region::Identity<'d, 1>>,
-    ) -> ops::ControlFlow<io::Event<'d>>;
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>>;
 }
 
 impl<'d, ID: Identity, H> Drive<'d, ID, H, hook::Enabled> for Time
 where
     H: datagram::Time<'d, ID> + datagram::Settlement<'d, ID>,
 {
-    fn dispatch(
+    fn dispatch<'event>(
         mut socket: pin::Pin<&mut hook::Socket<'d, ID, H::Hooks>>,
-        event: io::Event<'d>,
+        event: executor::raw::Dispatch<'event, 'd>,
         mut sink: pin::Pin<&mut H>,
         clock: clock::Clock<'_, 'd>,
         token: &mut region::Token<region::Identity<'d, 1>>,
-    ) -> ops::ControlFlow<io::Event<'d>> {
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         let now = clock.now();
         let event = match socket.as_mut().project().receive.route(event) {
             ops::ControlFlow::Continue(packet) => {
@@ -120,13 +121,13 @@ impl<'d, ID: Identity, H> Drive<'d, ID, H, hook::Enabled> for Coupled
 where
     H: datagram::Coupled<'d, ID> + datagram::Settlement<'d, ID>,
 {
-    fn dispatch(
+    fn dispatch<'event>(
         mut socket: pin::Pin<&mut hook::Socket<'d, ID, H::Hooks>>,
-        event: io::Event<'d>,
+        event: executor::raw::Dispatch<'event, 'd>,
         mut sink: pin::Pin<&mut H>,
         clock: clock::Clock<'_, 'd>,
         token: &mut region::Token<region::Identity<'d, 1>>,
-    ) -> ops::ControlFlow<io::Event<'d>> {
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         let now = clock.now();
         let event = match socket.as_mut().project().receive.route(event) {
             ops::ControlFlow::Continue(packet) => {

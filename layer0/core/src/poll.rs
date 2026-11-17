@@ -6,6 +6,7 @@ use dope_sys::{
     },
     probe::Stopped,
 };
+use o3::mem::slot;
 
 use crate::{
     Backend, Engine, Events,
@@ -27,10 +28,11 @@ impl From<native::host::poll::Failure> for poll::Dispatch<'_> {
     }
 }
 
-pub(crate) fn resolve<'d, S>(
+pub(crate) fn resolve<'event, 'd, S>(
     root: &mut Resolver<'_, 'd, S>,
     entry: tokens::Entry<'d>,
-) -> Result<Option<io::Event<'d>>, Rejected<'d>> {
+    output: slot::Vacant<'event, io::Event<'d>>,
+) -> Result<Option<slot::Occupied<'event, io::Event<'d>>>, Rejected<'d>> {
     let local = &mut root.local;
     let drain = flight::Drain::new(local.flights, local.driver);
     let done = match entry.decode::<Events, _>() {
@@ -41,7 +43,7 @@ pub(crate) fn resolve<'d, S>(
                 &drain,
             ) {
                 entry::Resolved::Public(done) => {
-                    return Ok(Some(done));
+                    return Ok(Some(output.insert(done)));
                 }
                 entry::Resolved::Rejected(done) => {
                     return reclaimed(root, done).map(|()| None);

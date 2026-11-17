@@ -10,7 +10,7 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
         vcall,
         vcoord1,
         vcoord,
-        vdisp,
+        vevent,
         vdriver,
         vfinish,
         vinstall,
@@ -26,7 +26,7 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
         "__call",
         "__coord_1",
         "__coord_cursor",
-        "__dispatch",
+        "__event",
         "__driver",
         "__finish",
         "__install",
@@ -49,6 +49,7 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
     let owned = app.brand.fresh("__owner");
     let end = app.brand.fresh("__finish");
     let epoch = app.brand.fresh("__epoch");
+    let event = app.brand.fresh("__event");
     let bound = app.brand.generics(&bounds::lifecycle(app));
     let (head, _, clause) = bound.split_for_impl();
     let layout = app.brand.generics(&bounds::layout(app));
@@ -191,11 +192,12 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
                 #exec::executor::raw::Install::new(#vapp, #vinstall)
             }
 
-            fn dispatch<#app_life, #driver, #turn>(
-                #vdisp: #exec::executor::raw::Dispatch<
-                    #app_life, #driver, #turn, #life, Self,
-                >,
-            ) -> ::core::ops::ControlFlow<#core::io::Event<#life>>
+            fn dispatch<#event>(
+                #vapp: ::core::pin::Pin<&mut Self>,
+                #vevent: #exec::executor::raw::Dispatch<#event, #life>,
+                #vturn: #core::driver::schedule::Turn<'_, #life>,
+                #vdriver: #core::driver::Context<'_, #life>,
+            ) -> ::core::ops::ControlFlow<#exec::executor::raw::Dispatch<#event, #life>>
             {
                 #routes
             }
@@ -215,9 +217,10 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
             }
 
             const COORDS: ::core::primitive::usize = #coords;
+            const PARK: ::core::primitive::bool = true;
 
-            fn select_park() -> ::core::option::Option<Self::ParkPlan> {
-                ::core::option::Option::Some(#select)
+            fn select_park() -> Self::ParkPlan {
+                #select
             }
 
             fn prepare_park(

@@ -67,7 +67,7 @@ pub enum Kind {
 
 pub(in crate::link::pool::change) enum Start<T> {
     Ready(T),
-    Terminal,
+    Terminal(bool),
 }
 
 impl<'a, 'w, 'd, ID: Identity + 'w, W, S, Q>
@@ -81,7 +81,7 @@ where
     ) -> Self {
         entry.get_mut().engine.operations.lifecycle.close();
         if entry.get().terminal.is_pending() {
-            return Self::Terminal;
+            return Self::Terminal(entry.get().send_status().is_waiting());
         }
         let ready = entry.get().engine.ready_handle().target();
         Registration::clear(ready);
@@ -243,9 +243,9 @@ pub struct Handler<'a, C, X, O, K, F> {
 }
 
 /// Exact authority returned by terminal close dispatch.
-pub enum Outcome<R, C> {
+pub enum Outcome<R, C, E> {
     Retired(R),
-    Pending(C),
-    Stale(C),
+    Pending(E, C),
+    Stale(E, C),
     Missing(C),
 }

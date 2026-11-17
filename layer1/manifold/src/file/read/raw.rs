@@ -1,4 +1,4 @@
-use std::{cell, mem, ops, os::fd::AsFd as _, pin};
+use std::{cell, mem, num::NonZero, ops, os::fd::AsFd as _, pin};
 
 use dope_core::{
     driver::{
@@ -11,9 +11,79 @@ use dope_core::{
 use dope_runtime::executor;
 use o3::{
     alloc,
-    buffer::bytes::bounded,
+    buffer::{bytes::bounded, pool},
     mem::{Lease, Rejected, Return, lease::Open},
 };
+
+/// Exclusive storage retained through native completion.
+/// # Safety
+/// Nonempty fixed capacity retains one stable allocation; its initialized prefix fits.
+/// Moves and shared access preserve the backing; `spare` exclusively covers its suffix.
+/// `truncate` keeps `min(len, current_len)`; `complete` extends by exactly `amount`.
+pub unsafe trait Output: AsRef<[u8]> {
+    fn capacity(&self) -> usize;
+    fn truncate(&mut self, len: usize);
+    /// # Safety
+    /// Writes may initialize bytes, but must never deinitialize the backing.
+    unsafe fn spare(&mut self) -> &mut [mem::MaybeUninit<u8>];
+
+    /// # Safety
+    /// Native access ended and initialized `amount` bytes of this unchanged suffix.
+    unsafe fn complete(&mut self, amount: usize);
+}
+
+// SAFETY: Owned retains its exclusive heap and initialized prefix across moves.
+unsafe impl Output for read::Buffer<'_> {
+    fn capacity(&self) -> usize {
+        self.capacity()
+    }
+
+    fn truncate(&mut self, len: usize) {
+        self.truncate(len);
+    }
+
+    #[inline]
+    unsafe fn spare(&mut self) -> &mut [mem::MaybeUninit<u8>] {
+        let prefix = self.len();
+        let remaining = self.capacity() - prefix;
+        // SAFETY: the exclusive heap retains this entire unpublished suffix.
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr().add(prefix).cast(), remaining) }
+    }
+
+    unsafe fn complete(&mut self, amount: usize) {
+        // SAFETY: the matching completion initialized this exact bounded suffix.
+        unsafe { self.set_len(self.len() + amount) };
+    }
+}
+
+// SAFETY: this unique slot retains fixed, initialized storage across moves.
+unsafe impl<L> Output for pool::Span<pool::owners::Plain<L>, pool::Owned, pool::state::Initialized>
+where
+    pool::owners::Plain<L>: o3::buffer::raw::Backing,
+{
+    fn capacity(&self) -> usize {
+        self.capacity().get() as usize
+    }
+
+    fn truncate(&mut self, len: usize) {
+        self.truncate(len);
+    }
+
+    unsafe fn spare(&mut self) -> &mut [mem::MaybeUninit<u8>] {
+        let mut output = self.output();
+        let bytes = output.as_mut_slice();
+        // SAFETY: Output only borrows this slot; dropping that view leaves the
+        // same exclusive suffix retained by self for the returned borrow.
+        unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr().cast(), bytes.len()) }
+    }
+
+    unsafe fn complete(&mut self, amount: usize) {
+        if let Some(amount) = NonZero::new(amount) {
+            // SAFETY: the matching completion proves this unchanged output's bound.
+            unsafe { self.output().complete(amount) };
+        }
+    }
+}
 
 pub struct Read<R: Return, F, O> {
     file: F,
@@ -79,7 +149,7 @@ impl Metadata {
     }
 }
 
-impl<'d, R: Return<Item = read::Buffer<'d>>> read::Read<R> {
+impl<R: Return<Item: Output>> read::Read<R> {
     /// Reuses the admitted allocation without filling or copying it.
     pub fn at(mut self, offset: fs::Offset) -> Self {
         self.offset = offset;
@@ -95,7 +165,7 @@ impl<'d, R: Return<Item = read::Buffer<'d>>> read::Read<R> {
         mut self,
         offset: fs::Offset,
     ) -> Result<Self, Rejected<Self, read::SizeError>> {
-        let remaining = self.output.item().capacity() - self.output.item().len();
+        let remaining = self.output.item().capacity() - self.output.item().as_ref().len();
         // SAFETY: the private owner retains try_new's admitted capacity and prefix.
         let remaining =
             transfer::Len::from(unsafe { o3::base::num::bounded::raw::u32(remaining as u32) });
@@ -108,7 +178,7 @@ impl<'d, R: Return<Item = read::Buffer<'d>>> read::Read<R> {
     }
 }
 
-impl<'d, R: Return<Item = read::Buffer<'d>>, F, O> Read<R, F, O> {
+impl<R: Return<Item: Output>, F, O> Read<R, F, O> {
     pub fn try_new(
         file: F,
         output: Lease<R, Open>,
@@ -135,15 +205,10 @@ impl<'d, R: Return<Item = read::Buffer<'d>>, F, O> Read<R, F, O> {
 
     pub(super) fn prepare(&mut self) {
         let prefix = self.output.item().capacity() - self.length.widen().get();
-        // SAFETY: new windows begin at zero or the owned initialized length;
-        // completion can only extend that prefix, and rejection cannot change it.
-        unsafe { self.output.item_mut().set_len(prefix) };
+        self.output.item_mut().truncate(prefix);
     }
 
-    pub fn output<'a>(&'a self) -> bounded::Value<&'a [u8]>
-    where
-        'd: 'a,
-    {
+    pub fn output(&self) -> bounded::Value<&[u8]> {
         // SAFETY: the private owner retains its admitted capacity, and initialized
         // length cannot exceed it. This borrow prevents resubmission or mutation.
         bounded::Value::from_raw(unsafe { bounded::raw::Input::new(self.output.item().as_ref()) })
@@ -151,14 +216,9 @@ impl<'d, R: Return<Item = read::Buffer<'d>>, F, O> Read<R, F, O> {
 
     fn borrow(&mut self) -> (&F, bounded::Value<&mut [mem::MaybeUninit<u8>]>, &O) {
         let output = self.output.item_mut();
-        // SAFETY: admission retains this positive window after the initialized prefix;
-        // the private owner cannot move or grow the heap during native access.
-        let output = bounded::Value::from_raw(unsafe {
-            bounded::raw::Input::new(std::slice::from_raw_parts_mut(
-                output.as_mut_ptr().add(output.len()).cast(),
-                self.length.widen().get(),
-            ))
-        });
+        // SAFETY: admission retains this positive suffix through native access;
+        // the read operation only initializes bytes and cannot change the backing.
+        let output = bounded::Value::from_raw(unsafe { bounded::raw::Input::new(output.spare()) });
         (&self.file, output, &self.offset)
     }
 
@@ -166,15 +226,12 @@ impl<'d, R: Return<Item = read::Buffer<'d>>, F, O> Read<R, F, O> {
         let output = self.output.item_mut();
         // SAFETY: the matching terminal CQ ended native access and initialized
         // this suffix within the exact admitted window.
-        unsafe { output.set_len(output.len() + amount.into_raw()) };
+        unsafe { output.complete(amount.into_raw()) };
     }
 }
 
-impl<'d, R: Return<Item = read::Buffer<'d>>> read::Batch<R> {
-    pub fn events<'a>(&'a self) -> fs::watch::raw::Events<'a>
-    where
-        'd: 'a,
-    {
+impl<R: Return<Item: Output>> read::Batch<R> {
+    pub fn events(&self) -> fs::watch::raw::Events<'_> {
         // SAFETY: private successful Outcome::Read follows the matching terminal
         // CQ. Watch preparation discards any prior prefix; errors never yield Batch.
         unsafe { fs::watch::raw::events(&self.0.file, self.0.output().into_inner()) }
@@ -316,7 +373,7 @@ impl<'d, R: Return> Entry<'d, R> {
     }
 }
 
-pub(super) fn submit<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>>(
+pub(super) fn submit<'d, ID: Identity, R: Return<Item: Output>>(
     entry: &Entry<'d, R>,
     slots: &flight::Slots<'d, ID>,
     free: &mut Option<Box<Scratch>>,
@@ -394,7 +451,7 @@ pub(super) fn submit<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>>(
 
 // SAFETY: installation retains the port's fixed request slots and the flight
 // group; neither cancellation nor shutdown releases submitted resources.
-unsafe impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> dispatch::raw::Manifold<'d>
+unsafe impl<'d, ID: Identity, R: Return<Item: Output>> dispatch::raw::Manifold<'d>
     for Reader<'_, 'd, ID, R>
 {
     type Route = ID;
@@ -427,7 +484,7 @@ unsafe impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> dispatch::raw:
 }
 
 // SAFETY: unit selection observes this exact installed Reader.
-unsafe impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> dispatch::raw::Probe<'d, Self>
+unsafe impl<'d, ID: Identity, R: Return<Item: Output>> dispatch::raw::Probe<'d, Self>
     for Reader<'_, 'd, ID, R>
 {
     type Plan = ();
@@ -448,7 +505,7 @@ unsafe impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> dispatch::raw:
 
 // SAFETY: the view only borrows this installed owner's request port. Admission
 // cannot access a submitted buffer or release its descriptor.
-unsafe impl<'p, 'd, ID: Identity, R: Return<Item = read::Buffer<'d>>> dispatch::raw::Control<'d>
+unsafe impl<'p, 'd, ID: Identity, R: Return<Item: Output>> dispatch::raw::Control<'d>
     for Reader<'p, 'd, ID, R>
 {
     type View<'step>
@@ -465,115 +522,119 @@ unsafe impl<'p, 'd, ID: Identity, R: Return<Item = read::Buffer<'d>>> dispatch::
     }
 }
 
-impl<'d, ID: Identity, R: Return<Item = read::Buffer<'d>>> event::Drive<'d>
-    for Reader<'_, 'd, ID, R>
-{
+impl<'d, ID: Identity, R: Return<Item: Output>> event::Drive<'d> for Reader<'_, 'd, ID, R> {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ops::ControlFlow<io::Event<'d>> {
-        let (mut app, (), (event, _)) = call.into_parts();
-        let this = app.as_mut().get_mut();
-        let port = this.port;
-        match event.into_kind() {
-            Kind::Read(done) => {
-                let Some(slot) = port.slots.get(done.token().slot().index().into_usize()) else {
-                    return ops::ControlFlow::Break(Kind::Read(done).into());
-                };
-                let entry = slot.state();
-                match entry.phase.take() {
-                    Some(Phase::Active {
-                        flight: Active::Read(flight),
-                        ..
-                    }) if flight.matches(done.token()) => {
-                        drop(flight);
-                        let result = done.outcome().map_err(Error::System);
-                        if let Ok(amount) = result {
-                            entry.with_request(|request| match request {
-                                Request::Read(request) => request.complete(amount),
-                                Request::Watch(request) => request.complete(amount),
+    fn dispatch<'event>(
+        mut app: pin::Pin<&mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+        _: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
+        use io::event::Selected;
+
+        let (event, vacant) = 'rejected: {
+            let this = app.as_mut().get_mut();
+            let port = this.port;
+            match event.select() {
+                Selected::Read(member) => {
+                    let (done, vacant) = member.take();
+                    let Some(slot) = port.slots.get(done.token().slot().index().into_usize())
+                    else {
+                        break 'rejected (Kind::Read(done).into(), vacant);
+                    };
+                    let entry = slot.state();
+                    match entry.phase.take() {
+                        Some(Phase::Active {
+                            flight: Active::Read(flight),
+                            ..
+                        }) if flight.matches(done.token()) => {
+                            drop(flight);
+                            let result = done.outcome().map_err(Error::System);
+                            if let Ok(amount) = result {
+                                entry.with_request(|request| match request {
+                                    Request::Read(request) => request.complete(amount),
+                                    Request::Watch(request) => request.complete(amount),
+                                    _ => unreachable!("operation"),
+                                });
+                            }
+                            port.settle(&slot, Outcome::Read(result));
+                        }
+                        phase => {
+                            entry.restore(phase);
+                            break 'rejected (Kind::Read(done).into(), vacant);
+                        }
+                    }
+                }
+                Selected::Open(member) => {
+                    let (done, vacant) = member.take();
+                    let Some(slot) = port.slots.get(done.token().slot().index().into_usize())
+                    else {
+                        break 'rejected (Kind::Open(done).into(), vacant);
+                    };
+                    let entry = slot.state();
+                    match entry.phase.take() {
+                        Some(Phase::Active {
+                            flight: Active::Open(flight),
+                            ..
+                        }) if flight.matches(done.token()) => {
+                            drop(flight);
+                            let result = match done.into_parts().1 {
+                                io::event::file::open::Outcome::Opened(fd) => {
+                                    Ok(fs::File::from(fd))
+                                }
+                                io::event::file::open::Outcome::Failed(cause) => Err(cause),
+                            };
+                            port.settle(&slot, Outcome::Open(result.map_err(Error::System)));
+                        }
+                        phase => {
+                            entry.restore(phase);
+                            break 'rejected (Kind::Open(done).into(), vacant);
+                        }
+                    }
+                }
+                Selected::Sync(member) => {
+                    let (done, vacant) = member.take();
+                    let Some(slot) = port.slots.get(done.token().slot().index().into_usize())
+                    else {
+                        break 'rejected (Kind::Sync(done).into(), vacant);
+                    };
+                    let entry = slot.state();
+                    match entry.phase.take() {
+                        Some(Phase::Active {
+                            flight: Active::Sync(flight),
+                            ..
+                        }) if flight.matches(done.token()) => {
+                            drop(flight);
+                            match entry.take() {
+                                request @ Request::Rename { .. } => {
+                                    entry.insert(request);
+                                    port.settle(
+                                        &slot,
+                                        Outcome::Rename(done.outcome().map_err(Error::System)),
+                                    );
+                                }
+                                Request::Metadata(request) => {
+                                    let (file, result) =
+                                        request.complete(done.outcome(), &mut this.free);
+                                    entry.insert(Request::Metadata(Metadata {
+                                        file,
+                                        state: MetadataState::Done(result),
+                                    }));
+                                    port.settle(&slot, Outcome::Metadata);
+                                }
                                 _ => unreachable!("operation"),
-                            });
+                            }
                         }
-                        port.settle(&slot, Outcome::Read(result));
-                    }
-                    phase => {
-                        entry.restore(phase);
-                        return ops::ControlFlow::Break(Kind::Read(done).into());
-                    }
-                }
-            }
-            Kind::Open(done) => {
-                let Some(slot) = port.slots.get(done.token().slot().index().into_usize()) else {
-                    return ops::ControlFlow::Break(Kind::Open(done).into());
-                };
-                let entry = slot.state();
-                match entry.phase.take() {
-                    Some(Phase::Active {
-                        flight: Active::Open(flight),
-                        ..
-                    }) if flight.matches(done.token()) => {
-                        drop(flight);
-                        let result = match done.into_parts().1 {
-                            io::event::file::open::Outcome::Opened(fd) => Ok(fs::File::from(fd)),
-                            io::event::file::open::Outcome::Failed(cause) => Err(cause),
-                        };
-                        port.settle(&slot, Outcome::Open(result.map_err(Error::System)));
-                    }
-                    phase => {
-                        entry.restore(phase);
-                        return ops::ControlFlow::Break(Kind::Open(done).into());
-                    }
-                }
-            }
-            Kind::Sync(done) => {
-                let Some(slot) = port.slots.get(done.token().slot().index().into_usize()) else {
-                    return ops::ControlFlow::Break(Kind::Sync(done).into());
-                };
-                let entry = slot.state();
-                match entry.phase.take() {
-                    Some(Phase::Active {
-                        flight: Active::Sync(flight),
-                        ..
-                    }) if flight.matches(done.token()) => {
-                        drop(flight);
-                        match entry.take() {
-                            request @ Request::Rename { .. } => {
-                                entry.insert(request);
-                                port.settle(
-                                    &slot,
-                                    Outcome::Rename(done.outcome().map_err(Error::System)),
-                                );
-                            }
-                            Request::Metadata(request) => {
-                                let (file, result) =
-                                    request.complete(done.outcome(), &mut this.free);
-                                entry.insert(Request::Metadata(Metadata {
-                                    file,
-                                    state: MetadataState::Done(result),
-                                }));
-                                port.settle(&slot, Outcome::Metadata);
-                            }
-                            _ => unreachable!("operation"),
+                        phase => {
+                            entry.restore(phase);
+                            break 'rejected (Kind::Sync(done).into(), vacant);
                         }
                     }
-                    phase => {
-                        entry.restore(phase);
-                        return ops::ControlFlow::Break(Kind::Sync(done).into());
-                    }
                 }
+                other => return ops::ControlFlow::Break(other.into_dispatch()),
             }
-            other => return ops::ControlFlow::Break(other.into()),
-        }
-        ops::ControlFlow::Continue(())
+            return ops::ControlFlow::Continue(());
+        };
+        ops::ControlFlow::Break(executor::raw::Dispatch::new(vacant.insert(event)))
     }
 }

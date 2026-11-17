@@ -19,7 +19,7 @@ pub(in crate::link::egress) use view::View;
 #[repr(C)]
 struct Cell<'p, 'd, T, P: data::position::State = ()> {
     value: mem::MaybeUninit<egress::NonEmpty<T>>,
-    entry: mem::MaybeUninit<credit::Stored<'p>>,
+    entry: mem::MaybeUninit<credit::Stored<'p, 'd>>,
     position: mem::MaybeUninit<cell::Cell<P>>,
     next: Option<Index<'d>>,
     occupied: bool,
@@ -28,10 +28,10 @@ struct Cell<'p, 'd, T, P: data::position::State = ()> {
 impl<T, P: data::position::State> Drop for Cell<'_, '_, T, P> {
     fn drop(&mut self) {
         if self.occupied {
-            // SAFETY: publication initializes both owners before setting occupied;
-            // every detached or discarded cell clears it before moving either owner.
+            // SAFETY: publication initializes both owners; detachment clears occupied
+            // and leaves the entry under its reserved front until restore or release.
             let entry = unsafe { self.entry.assume_init_read() };
-            entry.into_grant().release();
+            entry.release();
             unsafe { self.value.assume_init_drop() };
         }
     }
@@ -60,7 +60,7 @@ impl<'p, 'd, T, P: data::position::State> Node<'p, 'd, T, P> {
     fn discard(
         &self,
         token: &mut region::Token<region::Identity<'d>>,
-    ) -> (Option<Index<'d>>, credit::Stored<'p>) {
+    ) -> (Option<Index<'d>>, credit::Stored<'p, 'd>) {
         let cell = token.borrow_mut(&self.cell);
         let next = cell.next;
         cell.occupied = false;
@@ -99,8 +99,8 @@ pub(in crate::link::egress) enum Pairing<'a, 'token, 'p, 'd, T, P: data::positio
     Two(Pair<'a, 'token, 'p, 'd, T, P>),
 }
 
-struct Free<'a, 'd> {
-    token: &'a mut region::Token<region::Identity<'d>>,
+struct Free<'a, 'p, 'd, T, P: data::position::State> {
+    cell: &'a mut Cell<'p, 'd, T, P>,
     index: Index<'d>,
 }
 
@@ -144,12 +144,12 @@ unsafe impl<'a, 'p, 'd, T, P: data::position::State>
     }
 }
 
-unsafe impl<'a, 'p, 'd, T, P: data::position::State>
-    depot::raw::HeadPush<Option<Index<'d>>, Free<'a, 'd>> for &Slab<'p, 'd, T, P>
+unsafe impl<'p, 'd, T, P: data::position::State>
+    depot::raw::HeadPush<Option<Index<'d>>> for Free<'_, 'p, 'd, T, P>
 {
-    unsafe fn push(self, free: Free<'a, 'd>, head: Option<Index<'d>>) -> Index<'d> {
-        self.set_next(free.token, free.index, head);
-        free.index
+    unsafe fn push(self, (): (), head: Option<Index<'d>>) -> Index<'d> {
+        self.cell.next = head;
+        self.index
     }
 }
 
@@ -206,7 +206,7 @@ impl<'p, 'd, T, P: data::position::State> Slab<'p, 'd, T, P> {
         token: &mut region::Token<region::Identity<'d>>,
         slot: Index<'d>,
         value: egress::NonEmpty<T>,
-        entry: credit::Stored<'p>,
+        entry: credit::Stored<'p, 'd>,
     ) {
         let cell = token.borrow_mut(&self.node(slot).cell);
         cell.value = mem::MaybeUninit::new(value);
@@ -274,13 +274,12 @@ impl<'p, 'd, T, P: data::position::State> Slab<'p, 'd, T, P> {
         &self,
         token: &mut region::Token<region::Identity<'d>>,
         slot: Index<'d>,
-    ) -> (Option<Index<'d>>, egress::NonEmpty<T>, credit::Stored<'p>) {
+    ) -> (Option<Index<'d>>, egress::NonEmpty<T>) {
         let cell = token.borrow_mut(&self.node(slot).cell);
         let next = cell.next;
         cell.occupied = false;
         let value = unsafe { cell.value.assume_init_read() };
-        let entry = unsafe { cell.entry.assume_init_read() };
-        (next, value, entry)
+        (next, value)
     }
 
     pub(in crate::link::egress::metadata) fn consume(
@@ -304,30 +303,45 @@ impl<'p, 'd, T, P: data::position::State> Slab<'p, 'd, T, P> {
         slot: Index<'d>,
         value: egress::NonEmpty<T>,
         next: Option<Index<'d>>,
-        entry: credit::Stored<'p>,
     ) {
         let cell = token.borrow_mut(&self.node(slot).cell);
         cell.next = next;
         cell.value = mem::MaybeUninit::new(value);
-        cell.entry = mem::MaybeUninit::new(entry);
         cell.occupied = true;
     }
 
-    pub(in crate::link::egress::metadata) fn recycle(
+    pub(in crate::link::egress) fn recycle(
         &self,
         token: &mut region::Token<region::Identity<'d>>,
         slot: Index<'d>,
     ) {
-        let free = Free { token, index: slot };
-        // SAFETY: `slot` is detached and branded to this slab and token.
-        unsafe { depot::raw::HeadPush::apply(self, &self.free, free) }
+        let cell = token.borrow_mut(&self.node(slot).cell);
+        self.recycle_cell(cell, slot);
+    }
+
+    fn recycle_cell(&self, cell: &mut Cell<'p, 'd, T, P>, slot: Index<'d>) {
+        let free = Free { cell, index: slot };
+        // SAFETY: this exact detached cell and index belong to this slab.
+        unsafe { depot::raw::HeadPush::apply(free, &self.free, ()) }
+    }
+
+    pub(in crate::link::egress::metadata) fn release(
+        &self,
+        token: &mut region::Token<region::Identity<'d>>,
+        slot: Index<'d>,
+    ) {
+        let cell = token.borrow_mut(&self.node(slot).cell);
+        // SAFETY: the detached front retains this initialized entry in its reserved cell.
+        let entry = unsafe { cell.entry.assume_init_read() };
+        self.recycle_cell(cell, slot);
+        entry.release();
     }
 
     pub(in crate::link::egress::metadata) fn discard(
         &self,
         token: &mut region::Token<region::Identity<'d>>,
         chain: &mut ends::Exclusive<Option<Index<'d>>>,
-    ) -> Option<credit::Stored<'p>> {
+    ) -> Option<credit::Stored<'p, 'd>> {
         let front = chain.front()?;
         // SAFETY: this chain owns the initialized node and its original credit.
         Some(unsafe {
@@ -415,7 +429,7 @@ const _: () =
     assert!(mem::size_of::<head::Cell<Option<Index<'static>>>>() == mem::size_of::<u32>());
 
 const _: () = {
-    let tail = mem::size_of::<credit::Stored<'_>>() + mem::size_of::<[u32; 2]>();
+    let tail = mem::size_of::<credit::Stored<'_, '_>>() + mem::size_of::<[u32; 2]>();
     assert!(
         mem::size_of::<Cell<'_, '_, &[u8], data::position::Saved>>()
             == mem::size_of::<Cell<'_, '_, &[u8]>>() + mem::size_of::<data::position::Saved>()

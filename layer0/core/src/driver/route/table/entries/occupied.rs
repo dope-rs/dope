@@ -23,6 +23,10 @@ impl<'a, T, Tag: route::Tag> Entry<'a, T, Tag> {
         self.0.get_mut()
     }
 
+    pub fn into_mut(self) -> &'a mut T {
+        self.0.into_mut()
+    }
+
     pub fn remove(self) -> T {
         self.0.remove()
     }

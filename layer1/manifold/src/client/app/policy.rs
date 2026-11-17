@@ -3,7 +3,6 @@ use std::convert;
 use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::pool::{
-        self,
         recv::{delivery, input},
     },
     wire::{self, receive},
@@ -24,11 +23,10 @@ where
 {
     fn receive<'input, 'turn, 'driver, 'context, R>(
         recv: R,
-        key: pool::Key<'d, ID>,
         input: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
-    ) -> crate::Receiving<'w, 'd, A::Wire, Self>
+    ) -> (R::Remaining, crate::Receiving<'w, 'd, A::Wire, Self>)
     where
         'w: 'input,
         R: app::Receiver<'w, 'd, ID, A>;
@@ -42,16 +40,15 @@ where
 {
     fn receive<'input, 'turn, 'driver, 'context, R>(
         recv: R,
-        key: pool::Key<'d, ID>,
         input: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
-    ) -> Progress<convert::Infallible>
+    ) -> (R::Remaining, Progress<convert::Infallible>)
     where
         'w: 'input,
         R: app::Receiver<'w, 'd, ID, A>,
     {
-        recv.borrowed(key, input, turn, driver)
+        recv.borrowed(input, turn, driver)
     }
 }
 
@@ -63,15 +60,14 @@ where
 {
     fn receive<'input, 'turn, 'driver, 'context, R>(
         recv: R,
-        key: pool::Key<'d, ID>,
         input: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
-    ) -> Progress<convert::Infallible>
+    ) -> (R::Remaining, Progress<convert::Infallible>)
     where
         'w: 'input,
         R: app::Receiver<'w, 'd, ID, A>,
     {
-        recv.retained::<Receipt>(key, input.0, input.1, turn, driver)
+        recv.retained::<Receipt>(input.0, input.1, turn, driver)
     }
 }

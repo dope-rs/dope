@@ -46,9 +46,13 @@ impl Dir {
         use path::ConfineError;
 
         let path = name.try_to_owned().map_err(ConfineError::Allocation)?;
+        self.confine(path).map_err(ConfineError::Retain)
+    }
+
+    pub fn confine(&self, path: path::Owned) -> Result<path::Confined, mem::rc::Error> {
         Ok(path::Confined::new(
             Self {
-                inner: self.inner.try_clone().map_err(ConfineError::Retain)?,
+                inner: self.inner.try_clone()?,
             },
             path,
         ))

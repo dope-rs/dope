@@ -7,9 +7,7 @@ use crate::{
     stream,
 };
 use conn::{id, scope};
-use control::Control as _;
 use mux::{auth, handler, protocol, router};
-use protocol::control;
 use scope::path;
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
@@ -53,30 +51,13 @@ impl Sweep {
     }
 }
 
-pub(crate) trait Local<
-    A: auth::Mode<DOMAIN>,
-    H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
-    const DOMAIN: u8,
-    B: stream::Recv,
->
-{
-    fn rotate(
-        &mut self,
-        handle: id::Handle<A::Identity, DOMAIN>,
-        now: time::Instant,
-    ) -> Result<path::Rotation, errors::Access>;
-
-    fn sweep(&mut self, now: time::Instant, cursor: u16, budget: num::NonZero<u16>) -> Sweep;
-}
-
-impl<'a, 'tls, H, const DOMAIN: u8, B, A> Local<A, H, DOMAIN, B>
-    for protocol::Io<'a, 'tls, H, DOMAIN, B, A>
+impl<'a, 'tls, H, const DOMAIN: u8, B, A> protocol::Io<'a, 'tls, H, DOMAIN, B, A>
 where
     A: auth::Mode<DOMAIN>,
     H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
     B: stream::Recv,
 {
-    fn rotate(
+    pub(crate) fn rotate(
         &mut self,
         handle: id::Handle<A::Identity, DOMAIN>,
         now: time::Instant,
@@ -84,7 +65,7 @@ where
         self.with(handle, now, |mut scope| scope.path().rotate())
     }
 
-    fn sweep(&mut self, now: time::Instant, cursor: u16, budget: num::NonZero<u16>) -> Sweep {
+    pub(crate) fn sweep(&mut self, now: time::Instant, cursor: u16, budget: num::NonZero<u16>) -> Sweep {
         let capacity = self.mux.as_ref().get_ref().state.registry.capacity();
         let start = usize::from(cursor);
         if self.mux.as_ref().get_ref().state.registry.len() == 0 || start >= capacity {

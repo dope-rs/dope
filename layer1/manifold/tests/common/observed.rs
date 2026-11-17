@@ -1,4 +1,4 @@
-use std::{cell::Cell, convert::Infallible, ops::ControlFlow, pin::Pin, rc::Rc};
+use std::{cell::Cell, convert::Infallible, mem::MaybeUninit, ops::ControlFlow, pin::Pin, rc::Rc};
 
 use dope_core::{
     driver::{self, route::KeyTag, schedule, schedule::clock},
@@ -18,6 +18,7 @@ use dope_manifold::{
 use dope_runtime::executor;
 use dope_test::harness::signals::Gate;
 use o3::buffer::{bytes::TryRetain, resident};
+use o3::mem::slot;
 
 use crate::common::manifold::listener::finish::close::control::Control;
 
@@ -162,13 +163,17 @@ where
         let mut this = self.as_mut().project();
         if !this.state.hold.get()
             && let Some(done) = this.pending.take()
-            && let ControlFlow::Break(done) = M::dispatch(executor::raw::Call::new(
-                this.listener.as_mut(),
-                (),
-                (done, turn.reborrow(), driver.reborrow()),
-            ))
         {
-            *this.pending = Some(done);
+            let mut output = MaybeUninit::uninit();
+            let done = executor::raw::Dispatch::new(slot::Vacant::new(&mut output).insert(done));
+            if let ControlFlow::Break(done) = M::dispatch(
+                this.listener.as_mut(),
+                done,
+                turn.reborrow(),
+                driver.reborrow(),
+            ) {
+                *this.pending = Some(done.into_event().into_inner());
+            }
         }
         // SAFETY: this is the unchanged pinned listener of the installed wrapper.
         unsafe {
@@ -191,20 +196,14 @@ where
 impl<'d, M: event::Turn<'d, Access = dispatch::raw::Retained>> event::Turn<'d> for Observed<'d, M> {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ControlFlow<io::Event<'d>> {
-        let (owner, (), (done, turn, driver)) = call.into_parts();
+    fn dispatch<'event>(
+        owner: Pin<&mut Self>,
+        done: executor::raw::Dispatch<'event, 'd>,
+        turn: schedule::Turn<'_, 'd>,
+        driver: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         let this = owner.project();
+        let (done, vacant) = done.into_event().take();
         let kind = match done.into_kind() {
             io::event::Kind::Connect(done) if this.state.hold.get() => {
                 assert!(this.pending.is_none(), "one held native completion");
@@ -224,11 +223,12 @@ impl<'d, M: event::Turn<'d, Access = dispatch::raw::Retained>> event::Turn<'d> f
             kind => kind,
         };
         let received = matches!(&kind, io::event::Kind::Recv(_));
-        let result = event::Turn::dispatch(executor::raw::Call::new(
+        let result = event::Turn::dispatch(
             this.listener,
-            (),
-            (kind.into(), turn, driver),
-        ));
+            executor::raw::Dispatch::new(vacant.insert(kind.into())),
+            turn,
+            driver,
+        );
         if received && matches!(result, ControlFlow::Continue(())) {
             this.state.parked.set(true);
         }

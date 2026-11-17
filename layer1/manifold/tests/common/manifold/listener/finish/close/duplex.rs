@@ -67,12 +67,14 @@ impl<'d, ID: Identity> Application<'d, ID> for Fence {
         }
         .expect("EOF before input");
         *conn.state_mut() = Phase::Held(input);
-        let outcome = conn.write().try_bounded(driver, |state, mut prefix| {
-            assert!(matches!(state, Phase::Held(_)));
-            prefix.write_slice(REPLY).unwrap();
-            prefix.commit(None, ())
-        });
-        assert!(matches!(outcome, Ok(write::Outcome::Committed(()))));
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+        let (state, mut prefix) = output.get_mut().parts();
+        assert!(matches!(state, Phase::Held(_)));
+        prefix.write_slice(REPLY).unwrap();
+        write::Output::finish(output, write::End::Open)
+            .map_err(write::error::Mismatch::into_cause)
+            .expect("prefix publication");
     }
 
     fn close_gate(
@@ -182,18 +184,20 @@ impl<'d, ID: Identity> handler::Borrowed<'d, ID> for Duplex {
         match *conn.state() {
             Stage::Fresh => {
                 *conn.state_mut() = Stage::Seen;
-                let first = conn.write().try_bounded(driver, |state, mut prefix| {
-                    assert!(matches!(state, Stage::Seen));
-                    prefix.write_slice(REPLY).unwrap();
-                    prefix.commit(None, ())
-                });
-                assert!(matches!(first, Ok(write::Outcome::Committed(()))));
+                let mut output_slot = std::mem::MaybeUninit::uninit();
+                let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+                let (state, mut prefix) = output.get_mut().parts();
+                assert!(matches!(state, Stage::Seen));
+                prefix.write_slice(REPLY).unwrap();
+                write::Output::finish(output, write::End::Open)
+                    .map_err(write::error::Mismatch::into_cause)
+                    .expect("prefix publication");
                 conn.shutdown();
-                let sealed = conn.write().try_bounded(driver, |state, mut prefix| {
-                    assert!(matches!(state, Stage::Seen) && prefix.writer().remaining() != 0);
-                    prefix.commit(None, ())
-                });
-                assert!(matches!(sealed, Ok(write::Outcome::Closed)));
+                let mut output_slot = std::mem::MaybeUninit::uninit();
+                assert!(matches!(
+                    conn.write().try_prefix(driver, &mut output_slot),
+                    Err(write::error::Admission::Closed)
+                ));
             }
             Stage::Seen => conn.close_after(),
         }

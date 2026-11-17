@@ -66,12 +66,11 @@ impl<'queue, 'token, 'p, 'd, T, D: demand::Mode> Front<'queue, 'token, 'p, 'd, T
         queue: metadata::Queue<'queue, 'p, 'd, T, metadata::Local, D>,
         value: egress::NonEmpty<T>,
         slot: Index<'d>,
-        stored: credit::Stored<'p>,
         token: &'token mut region::Token<region::Identity<'d>>,
     ) -> Self {
         Self {
             value,
-            vacant: Vacant::new(queue, slot, token, stored),
+            vacant: Vacant::new(queue, slot, token),
         }
     }
 
@@ -129,11 +128,10 @@ pub(in crate::link::egress) fn take<'p, 'd, T, D: demand::Mode, P: position::Sta
     queue: metadata::Queue<'_, 'p, 'd, T, credit::Ready<'p, 'd>, D, P>,
     token: &mut region::Token<region::Identity<'d>>,
 ) -> Option<egress::NonEmpty<T>> {
-    let (value, slot, stored) = head::detach(queue, token)?;
+    let (value, slot) = head::detach(queue, token)?;
     vacant::Parts {
         queue,
         slot,
-        stored,
     }
     .rollback(token);
     Some(value)
@@ -150,14 +148,13 @@ pub(in crate::link::egress) fn advance<'p, 'd, T, D: demand::Mode, P: position::
     else {
         return (Consumed::Partial, None);
     };
-    let (((value, slot), stored), next) = prefix.advance(|slot| {
-        let (next, value, entry) = queue.pool.store.detach(token, slot);
-        (next, (value, slot), entry)
+    let ((value, slot), next) = prefix.advance(|slot| {
+        let (next, value) = queue.pool.store.detach(token, slot);
+        (next, (value, slot))
     });
     vacant::Parts {
         queue,
         slot,
-        stored,
     }
     .rollback(token);
     (

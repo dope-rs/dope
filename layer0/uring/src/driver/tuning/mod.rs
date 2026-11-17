@@ -73,6 +73,8 @@ enum Phase {
     Options,
     /// Scalar options in flight, then one deferred CONNECT held in `connect`.
     OptionsConnect,
+    /// One native peer-credential query owns the scalar storage.
+    Peer,
 }
 
 mod progress;
@@ -216,6 +218,13 @@ impl<E: Copy, const N: usize> tuning::Occupied<E> for Occupied<'_, E, N> {
 
     fn option_failed(&self) -> bool {
         self.state.status.error.is_some()
+    }
+
+    fn output(&self) -> (usize, u32) {
+        match self.state.status.phase {
+            Phase::Peer => (mem::size_of::<libc::ucred>(), self.state.values[1] as u32),
+            _ => (0, 0),
+        }
     }
 
     /// Only the aggregated option terminal or the later CONNECT terminal reaches

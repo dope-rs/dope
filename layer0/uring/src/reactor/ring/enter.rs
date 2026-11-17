@@ -58,8 +58,7 @@ impl TryFrom<time::Duration> for Timeout {
 
 impl<'a, T> Enter<'a, T> {
     pub(crate) fn new(queue: &'a mut sq::raw::State, binding: ring::ffi::Binding<'a>) -> Self {
-        queue.publish();
-        let submit = queue.pending();
+        let submit = publish(queue);
         let sq_flags = queue.flags();
         Self {
             owner: marker::PhantomData,
@@ -75,30 +74,11 @@ impl<T> enter::Enter for Enter<'_, T> {
     type Timeout = Timeout;
 
     fn try_submit(self) -> Result<(), Self::Error> {
-        self.try_enter(0, 0, ptr::null(), mem::size_of::<libc::sigset_t>())
+        self.try_enter(0)
     }
 
     fn try_wait(self, timeout: Option<Self::Timeout>) -> Result<(), Self::Error> {
-        use crate::reactor::ring::ffi;
-
-        match timeout {
-            Some(timeout) => {
-                let timespec = timeout.into_raw();
-                let args = Arguments {
-                    signal_mask: 0,
-                    signal_mask_size: 0,
-                    minimum_wait_microseconds: 0,
-                    timespec: ptr::from_ref(&timespec) as u64,
-                };
-                self.try_enter(
-                    1,
-                    ffi::ENTER_EXT_ARG,
-                    ptr::from_ref(&args).cast(),
-                    mem::size_of::<Arguments>(),
-                )
-            }
-            None => self.try_enter(1, 0, ptr::null(), mem::size_of::<libc::sigset_t>()),
-        }
+        wait(self.binding, self.submit, timeout)
     }
 
     fn try_commit(self) -> Result<enter::Progress, Self::Error> {
@@ -109,7 +89,7 @@ impl<T> enter::Enter for Enter<'_, T> {
             return Ok(enter::Progress::Idle);
         }
         let flags = if progress { ffi::ENTER_GETEVENTS } else { 0 };
-        self.try_enter(0, flags, ptr::null(), mem::size_of::<libc::sigset_t>())?;
+        self.try_enter(flags)?;
         Ok(enter::Progress::Entered)
     }
 }
@@ -121,19 +101,62 @@ impl<T> Enter<'_, T> {
         self.sq_flags & ffi::SQ_CQ_OVERFLOW != 0
     }
 
-    fn try_enter(
-        self,
-        complete: u32,
-        mut flags: u32,
-        args: *const libc::c_void,
-        size: usize,
-    ) -> Result<(), kernel::Errno<error::Enter>> {
+    fn try_enter(self, mut flags: u32) -> Result<(), kernel::Errno<error::Enter>> {
         use crate::reactor::ring::ffi;
 
-        if complete != 0 || self.has_overflow() {
+        if self.has_overflow() {
             flags |= ffi::ENTER_GETEVENTS;
         }
-        ffi::Fd::try_enter(self.binding, self.submit, complete, flags, args, size)
+        ffi::Fd::try_enter(
+            self.binding,
+            self.submit,
+            0,
+            flags,
+            ptr::null(),
+            mem::size_of::<libc::sigset_t>(),
+        )
+    }
+}
+
+pub(crate) fn publish(queue: &mut sq::raw::State) -> sq::Pending {
+    queue.publish();
+    queue.pending()
+}
+
+#[inline(always)]
+pub(crate) fn wait(
+    binding: ring::ffi::Binding<'_>,
+    submit: sq::Pending,
+    timeout: Option<Timeout>,
+) -> Result<(), kernel::Errno<error::Enter>> {
+    use crate::reactor::ring::ffi;
+
+    match timeout {
+        Some(timeout) => {
+            let timespec = timeout.into_raw();
+            let args = Arguments {
+                signal_mask: 0,
+                signal_mask_size: 0,
+                minimum_wait_microseconds: 0,
+                timespec: ptr::from_ref(&timespec) as u64,
+            };
+            ffi::Fd::try_enter(
+                binding,
+                submit,
+                1,
+                ffi::ENTER_GETEVENTS | ffi::ENTER_EXT_ARG,
+                ptr::from_ref(&args).cast(),
+                mem::size_of::<Arguments>(),
+            )
+        }
+        None => ffi::Fd::try_enter(
+            binding,
+            submit,
+            1,
+            ffi::ENTER_GETEVENTS,
+            ptr::null(),
+            mem::size_of::<libc::sigset_t>(),
+        ),
     }
 }
 

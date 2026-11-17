@@ -2,42 +2,40 @@ use std::{cell, marker, mem::size_of, ptr};
 
 use o3::{
     base::marker::ThreadBound,
-    mem,
-    mem::{Rejected, credit::fair},
+    mem::{credit::fair, raw::Balance},
 };
 
-use crate::reply::retain::grant::{self, entries, payload};
+use crate::reply::retain::grant;
 
-pub(in crate::reply) struct Pools(Pool<1, entries::Tag>, Pool<3, payload::Tag>);
+pub(in crate::reply) struct Pools {
+    capacity: cell::Cell<[usize; 1]>,
+    payload: cell::Cell<[usize; 3]>,
+    thread: marker::PhantomData<ThreadBound>,
+}
 
 /// A lane and its immutable backlink, initialized together in one tail allocation.
 pub(in crate::reply) struct State {
-    capacity: mem::raw::State<1, entries::Tag>,
-    payload: mem::raw::State<3, payload::Tag>,
+    capacity: Account<1>,
+    payload: Account<3>,
     pools: ptr::NonNull<Pools>,
 }
 
-struct Pool<const N: usize, Tag> {
-    shared: cell::Cell<[usize; N]>,
-    thread: marker::PhantomData<ThreadBound>,
-    domain: marker::PhantomData<fn(Tag) -> Tag>,
+struct Account<const N: usize> {
+    reserve: [usize; N],
+    held: cell::Cell<[usize; N]>,
 }
-
-pub(in crate::reply) struct Lane<'credits, const N: usize, Tag> {
-    state: &'credits State,
-    domain: marker::PhantomData<fn(Tag) -> Tag>,
-}
-
-type Grant<'credits, const N: usize, Tag, A = [usize; N]> =
-    mem::raw::Grant<Lane<'credits, N, Tag>, N, A>;
 
 impl Pools {
     pub(in crate::reply) fn shared(&self) -> [usize; 1] {
-        self.0.shared()
+        self.capacity.get()
     }
 
     pub(in crate::reply) fn new(capacity: grant::Plan<1>, payload: grant::Plan<3>) -> Self {
-        Self(Pool::new(capacity), Pool::new(payload))
+        Self {
+            capacity: cell::Cell::new(capacity.shared),
+            payload: cell::Cell::new(payload.shared),
+            thread: marker::PhantomData,
+        }
     }
 }
 
@@ -51,24 +49,52 @@ impl State {
         pools: &Pools,
     ) -> Self {
         Self {
-            capacity: mem::raw::State::new(capacity.reserve),
-            payload: mem::raw::State::new(payload.reserve),
+            capacity: Account::new(capacity.reserve),
+            payload: Account::new(payload.reserve),
             pools: ptr::NonNull::from(pools),
         }
     }
 
-    pub(in crate::reply) fn capacity(&self) -> Lane<'_, 1, entries::Tag> {
-        Lane {
-            state: self,
-            domain: marker::PhantomData,
-        }
+    pub(in crate::reply) fn has_reserve(&self) -> bool {
+        self.capacity.held.get()[0] < self.capacity.reserve[0]
     }
 
-    pub(in crate::reply) fn payload(&self) -> Lane<'_, 3, payload::Tag> {
-        Lane {
-            state: self,
-            domain: marker::PhantomData,
-        }
+    pub(in crate::reply) fn is_reserved(&self) -> bool {
+        self.capacity.held.get() == self.capacity.reserve
+    }
+
+    pub(in crate::reply) fn can_admit(&self, amount: [usize; 1]) -> bool {
+        self.capacity.can_acquire(&self.pools().capacity, amount)
+    }
+
+    pub(in crate::reply) fn try_admit(
+        &self,
+        amount: [usize; 1],
+    ) -> Result<(), fair::Cause<usize, 1>> {
+        self.capacity.try_acquire(&self.pools().capacity, amount)
+    }
+
+    /// # Safety
+    /// The consuming Payload owns this state's original entry admission.
+    pub(in crate::reply) unsafe fn release_slot(&self) {
+        unsafe { self.capacity.release(&self.pools().capacity, [1]) };
+    }
+
+    pub(in crate::reply) fn can_acquire(&self, amount: [usize; 3]) -> bool {
+        self.payload.can_acquire(&self.pools().payload, amount)
+    }
+
+    pub(in crate::reply) fn try_acquire(
+        &self,
+        amount: [usize; 3],
+    ) -> Result<(), fair::Cause<usize, 3>> {
+        self.payload.try_acquire(&self.pools().payload, amount)
+    }
+
+    /// # Safety
+    /// The private owner consumes this state's exact outstanding amount once.
+    pub(in crate::reply) unsafe fn release(&self, amount: [usize; 3]) {
+        unsafe { self.payload.release(&self.pools().payload, amount) };
     }
 
     fn pools(&self) -> &Pools {
@@ -77,66 +103,47 @@ impl State {
     }
 }
 
-impl<const N: usize, Tag> Pool<N, Tag> {
-    pub(in crate::reply) fn new(plan: grant::Plan<N>) -> Self {
+impl<const N: usize> Account<N> {
+    const fn new(reserve: [usize; N]) -> Self {
         Self {
-            shared: cell::Cell::new(plan.shared),
-            thread: marker::PhantomData,
-            domain: marker::PhantomData,
+            reserve,
+            held: cell::Cell::new([0; N]),
         }
     }
 
-    pub(in crate::reply) fn shared(&self) -> [usize; N] {
-        self.shared.get()
+    fn can_acquire(&self, shared: &cell::Cell<[usize; N]>, amount: [usize; N]) -> bool {
+        Balance::new(self.held.get(), shared.get())
+            .try_acquire(self.reserve, amount)
+            .is_ok()
     }
-}
 
-impl<const N: usize, Tag> Clone for Lane<'_, N, Tag> {
-    fn clone(&self) -> Self {
-        *self
+    fn try_acquire(
+        &self,
+        shared: &cell::Cell<[usize; N]>,
+        amount: [usize; N],
+    ) -> Result<(), fair::Cause<usize, N>> {
+        let next = Balance::new(self.held.get(), shared.get()).try_acquire(self.reserve, amount)?;
+        self.commit(shared, next);
+        Ok(())
     }
-}
 
-impl<const N: usize, Tag> Copy for Lane<'_, N, Tag> {}
-
-// SAFETY: State's immutable backlink was written from the fixed tail header;
-// every Lane borrows a state in that same allocation, keeping both accounts live.
-unsafe impl mem::raw::Source<1> for Lane<'_, 1, entries::Tag> {
-    type Tag = entries::Tag;
-    type Word = usize;
-
-    unsafe fn accounts(&self) -> mem::raw::Accounts<'_, 1, entries::Tag> {
-        (&self.state.pools().0.shared, &self.state.capacity)
+    unsafe fn release(&self, shared: &cell::Cell<[usize; N]>, amount: [usize; N]) {
+        // SAFETY: the owning State consumes a disjoint outstanding acquisition;
+        // conserved shared capacity bounds the refund in every return order.
+        let next = unsafe {
+            Balance::new(self.held.get(), shared.get()).release_raw(self.reserve, amount)
+        };
+        self.commit(shared, next);
     }
-}
 
-// SAFETY: the same immutable allocation binding above projects its payload axis;
-// the validated layout bounds each reserve plus surplus by usize.
-unsafe impl mem::raw::Source<3> for Lane<'_, 3, payload::Tag> {
-    type Tag = payload::Tag;
-    type Word = usize;
-
-    unsafe fn accounts(&self) -> mem::raw::Accounts<'_, 3, payload::Tag> {
-        (&self.state.pools().1.shared, &self.state.payload)
-    }
-}
-
-impl<'credits, const N: usize, Tag> Lane<'credits, N, Tag>
-where
-    Self: mem::raw::Source<N, Tag = Tag, Word = usize>,
-{
-    pub(in crate::reply) fn try_acquire<A: mem::raw::Amount<N, usize>>(
-        self,
-        amount: A,
-    ) -> Result<Grant<'credits, N, Tag, A>, Rejected<A, fair::Cause<usize, N>>> {
-        Ok(mem::raw::Grant::from(mem::raw::Charge::try_new(
-            self, amount,
-        )?))
+    fn commit(&self, shared: &cell::Cell<[usize; N]>, next: Balance<N, usize>) {
+        let (held, returned) = next.into_parts();
+        self.held.set(held);
+        shared.set(returned);
     }
 }
 
 const _: () = {
-    assert!(size_of::<Pool<1, ()>>() == size_of::<usize>());
-    assert!(size_of::<Pool<3, ()>>() == 3 * size_of::<usize>());
+    assert!(size_of::<Pools>() == 4 * size_of::<usize>());
     assert!(size_of::<State>() == 9 * size_of::<usize>());
 };

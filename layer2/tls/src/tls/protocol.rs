@@ -8,7 +8,7 @@ use dope::net::{
 };
 use send::reclaim;
 
-use crate::tls;
+use crate::{state, tls};
 use crate::tls::{
     endpoint,
     receive::{self, policy},
@@ -239,7 +239,7 @@ const _: () = {
         'w: 'a,
     {
         let flushed = match send.as_mut() {
-            Some(send) => wire.emit_into(send.buffer_mut()),
+            Some(send) => state::drain(&mut wire.native, send.buffer_mut()),
             None => Ok(()),
         };
         let closed = wire.peer_closed;

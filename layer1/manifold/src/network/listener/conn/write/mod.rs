@@ -1,18 +1,16 @@
 pub mod body;
-mod commit;
 mod context;
 pub mod error;
-mod outcome;
-mod prefix;
+mod output;
 
-pub use commit::Commit;
 pub use context::Context;
 use dope_net::link::egress::reserve::error::Full;
-pub use outcome::Outcome;
-pub use prefix::Prefix;
+pub use output::Output;
+
+pub const HEADER_CAPACITY: usize = crate::network::listener::writer::memory::WRITE_BUF_CAP;
 
 /// Retryable cause whose exact wake authority is already registered.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Deferred {
     Turn,

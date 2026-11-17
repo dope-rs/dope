@@ -13,86 +13,13 @@ use life::{options, tls::clients};
 use mux::{auth, handler, protocol};
 use protocol::dial::{self, setup};
 
-pub(crate) trait Direct<
-    A: auth::Mode<DOMAIN>,
-    H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
-    const DOMAIN: u8,
-    B: stream::Recv,
->
-{
-    fn connect(
-        &mut self,
-        peer: net::SocketAddr,
-        auth: &clients::Authority,
-        options: options::Options,
-        dcid: Vec<u8>,
-        now: time::Instant,
-    ) -> Result<id::Handle<A::Identity, DOMAIN>, errors::Connect>;
-
-    fn connect_id(
-        &mut self,
-        peer: net::SocketAddr,
-        auth: &clients::Authority,
-        options: options::Options,
-        dcid: cid::Id,
-        now: time::Instant,
-    ) -> Result<id::Handle<A::Identity, DOMAIN>, errors::Connect>;
-
-    fn connect_in(
-        &mut self,
-        scope: brand::Token<'_>,
-        peer: net::SocketAddr,
-        auth: &clients::Authority,
-        options: options::Options,
-        dcid: cid::Id,
-        now: time::Instant,
-    ) -> Result<id::Handle<A::Identity, DOMAIN>, errors::Connect>;
-
-    fn connect_with<R: routing::PeerRoute>(
-        &mut self,
-        peer: net::SocketAddr,
-        auth: &clients::Authority,
-        options: options::Options,
-        route: R,
-        now: time::Instant,
-    ) -> Result<id::Handle<A::Identity, DOMAIN>, errors::Connect>;
-
-    fn route_in<R: routing::PeerRoute>(
-        &mut self,
-        scope: brand::Token<'_>,
-        peer: net::SocketAddr,
-        auth: &clients::Authority,
-        options: options::Options,
-        route: R,
-        now: time::Instant,
-    ) -> Result<id::Handle<A::Identity, DOMAIN>, errors::Connect>;
-
-    fn reconnect<R: routing::PeerRoute>(
-        &mut self,
-        options: options::Options,
-        again: life::Reconnect,
-        route: R,
-        now: time::Instant,
-    ) -> Result<id::Handle<A::Identity, DOMAIN>, errors::Reconnect>;
-
-    fn reconnect_in<R: routing::PeerRoute>(
-        &mut self,
-        scope: brand::Token<'_>,
-        options: options::Options,
-        again: life::Reconnect,
-        route: R,
-        now: time::Instant,
-    ) -> Result<id::Handle<A::Identity, DOMAIN>, errors::Reconnect>;
-}
-
-impl<'a, 'tls, H, const DOMAIN: u8, B, A> Direct<A, H, DOMAIN, B>
-    for protocol::Io<'a, 'tls, H, DOMAIN, B, A>
+impl<'a, 'tls, H, const DOMAIN: u8, B, A> protocol::Io<'a, 'tls, H, DOMAIN, B, A>
 where
     A: auth::Mode<DOMAIN>,
     H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
     B: stream::Recv,
 {
-    fn connect(
+    pub(crate) fn connect(
         &mut self,
         peer: net::SocketAddr,
         auth: &clients::Authority,
@@ -101,21 +28,10 @@ where
         now: time::Instant,
     ) -> Result<id::Handle<A::Identity, DOMAIN>, errors::Connect> {
         let dcid = cid::Id::try_from(dcid)?;
-        self.connect_id(peer, auth, options, dcid, now)
-    }
-
-    fn connect_id(
-        &mut self,
-        peer: net::SocketAddr,
-        auth: &clients::Authority,
-        options: options::Options,
-        dcid: cid::Id,
-        now: time::Instant,
-    ) -> Result<id::Handle<A::Identity, DOMAIN>, errors::Connect> {
         brand::Token::with(|scope| self.connect_in(scope, peer, auth, options, dcid, now))
     }
 
-    fn connect_in(
+    pub(crate) fn connect_in(
         &mut self,
         scope: brand::Token<'_>,
         peer: net::SocketAddr,
@@ -145,7 +61,7 @@ where
         })
     }
 
-    fn connect_with<R: routing::PeerRoute>(
+    pub(crate) fn connect_with<R: routing::PeerRoute>(
         &mut self,
         peer: net::SocketAddr,
         auth: &clients::Authority,
@@ -156,7 +72,7 @@ where
         brand::Token::with(|scope| self.route_in(scope, peer, auth, options, route, now))
     }
 
-    fn route_in<R: routing::PeerRoute>(
+    pub(crate) fn route_in<R: routing::PeerRoute>(
         &mut self,
         scope: brand::Token<'_>,
         peer: net::SocketAddr,
@@ -183,7 +99,7 @@ where
         })
     }
 
-    fn reconnect<R: routing::PeerRoute>(
+    pub(crate) fn reconnect<R: routing::PeerRoute>(
         &mut self,
         options: options::Options,
         again: life::Reconnect,
@@ -193,7 +109,7 @@ where
         brand::Token::with(|scope| self.reconnect_in(scope, options, again, route, now))
     }
 
-    fn reconnect_in<R: routing::PeerRoute>(
+    pub(crate) fn reconnect_in<R: routing::PeerRoute>(
         &mut self,
         scope: brand::Token<'_>,
         options: options::Options,

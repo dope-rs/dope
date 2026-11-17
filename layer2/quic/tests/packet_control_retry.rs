@@ -17,7 +17,7 @@ fn full_journal_sends_before_retry() {
     use dope_quic::errors::Code;
     use peer::Scope as _;
 
-    let config = peer::Config::new(1024, 65536, 0, 33);
+    let config = peer::Config::new(1024, 33, 0, 33);
     let server = config
         .try_build()
         .expect("server options")
@@ -59,6 +59,26 @@ fn full_journal_sends_before_retry() {
             .filter(|event| matches!(event, peer::Event::Stopped { error_code, .. } | peer::Event::Reset { error_code, .. } if *error_code == Code::ZERO))
             .count(),
         34
+    );
+    drop(events);
+    let stream = pair
+        .client
+        .send_streams()
+        .open_uni()
+        .expect("returned slot");
+    pair.client
+        .send_streams()
+        .send(stream, &[0x5a; 33])
+        .expect("returned connection credit");
+    now += Duration::from_millis(30);
+    pair.exchange(now, 2).expect("deferred credit progress");
+    assert_eq!(
+        pair.server
+            .recv()
+            .recv_owned(stream.id())
+            .expect("new stream")
+            .as_deref(),
+        Some(&[0x5a; 33][..])
     );
 }
 

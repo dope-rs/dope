@@ -54,7 +54,7 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
     A::Continuation: liveness::Inspection<'d, ID, A>,
-    engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
+    engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>,
 {
     pub(in crate::client::conn::engine) fn new(
         this: pin::Pin<&'a mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
@@ -156,7 +156,7 @@ where
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
-    engine::Machine<'p, 'w, 'd, ID, A, S, E>: close::ClosePhase<'d, ID, A, S, E>,
+    engine::Machine<'p, 'w, 'd, ID, A, S, E>: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, side::Disabled>,
 {
     pub(in crate::client::conn::engine) fn poll(
         mut self,
@@ -186,7 +186,7 @@ where
     E::Transport: dope_net::Transport,
     I: registry::Intent<'d, ID>,
     engine::Machine<'p, 'w, 'd, ID, A, S, E, side::Enabled<&'r registry::Registry<'d, I, ID>>>:
-        close::ClosePhase<'d, ID, A, S, E>,
+        close::ClosePhase<'p, 'w, 'd, ID, A, S, E, side::Enabled<&'r registry::Registry<'d, I, ID>>>,
 {
     pub(in crate::client::conn::engine) fn poll(
         mut self,

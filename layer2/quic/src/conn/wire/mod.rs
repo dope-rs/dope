@@ -6,7 +6,7 @@ pub(in crate::conn) mod crypto;
 pub mod ingress;
 pub mod packet;
 pub mod path;
-pub(in crate::conn) mod permits;
+pub(crate) mod permits;
 pub(in crate::conn) mod scratch;
 mod storage;
 pub(crate) mod tls;

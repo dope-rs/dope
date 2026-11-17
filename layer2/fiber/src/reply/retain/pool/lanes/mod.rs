@@ -12,7 +12,7 @@ use o3::{
     alloc::tail,
     depot::{arena::linked::fifo::ends, array::init},
     mem,
-    mem::{credit::fair, raw::Source as _},
+    mem::credit::fair,
 };
 use wake::{Wait, Wake};
 
@@ -94,7 +94,7 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
         &self,
         lane: LaneIndex,
         key: Index,
-        sum: &mut payload::raw::Sum<'credits>,
+        source: &retain::raw::State,
         amount: A,
         acceptance: recv::Acceptance,
     ) -> Result<(), Acquire>
@@ -102,7 +102,7 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
         A: mem::raw::Amount<3, usize> + Into<payload::Requested>,
     {
         let wake = self.credits.waiters.state(lane);
-        match sum.try_acquire(amount) {
+        match source.try_acquire(amount.get()) {
             Ok(()) => {
                 wake.cancel(key);
                 Ok(())
@@ -135,27 +135,17 @@ impl<'credits, 'region> Lanes<'credits, 'region> {
         }
     }
 
-    pub(super) fn try_reserve(
+    /// # Safety
+    /// The consuming owner carries this source and its exact outstanding amount.
+    pub(super) unsafe fn release_data<A>(
         &self,
-        lane: LaneIndex,
-        usage: usage::Usage,
-    ) -> Result<payload::Grant<'credits, payload::Failure>, usage::Capacity> {
-        self.credits
-            .payload(lane)
-            .try_acquire(payload::Failure::new(usage))
-            .map_err(|rejected| match Acquire::new(rejected.discard()) {
-                Acquire::Capacity(cause) => cause,
-                Acquire::Backpressure(cause) => usage::Capacity::Unavailable(cause),
-            })
-    }
-
-    pub(super) fn release_data<A>(&self, grant: payload::Grant<'credits, A>)
-    where
+        source: &retain::raw::State,
+        amount: A,
+    ) where
         A: mem::raw::Amount<3, usize>,
     {
-        let returned = grant.amount();
-        grant.release();
-        self.returned(returned);
+        unsafe { source.release(amount.get()) };
+        self.returned(amount);
     }
 
     pub(super) fn returned<A: mem::raw::Amount<3, usize>>(&self, amount: A) {
@@ -279,7 +269,8 @@ pub(in crate::reply) struct Registration<
     A: mem::raw::Amount<1, usize>,
 > {
     lane: pool::Lane<'arena, 'credits, 'region>,
-    grant: entries::Grant<'credits, A>,
+    source: &'credits retain::raw::State,
+    amount: A,
 }
 
 pub(super) struct Waiters<'credits, 'region> {
@@ -360,13 +351,11 @@ impl<'credits, 'region> Credits<'credits, 'region> {
     where
         A: mem::raw::Amount<1, usize>,
     {
-        self.capacity(lane)
-            .can_acquire(mem::raw::Amount::get(request))
+        self.state(lane).can_admit(mem::raw::Amount::get(request))
     }
 
     fn can_take(&self, lane: LaneIndex, request: payload::Requested) -> bool {
-        self.payload(lane)
-            .can_acquire(mem::raw::Amount::get(request))
+        self.state(lane).can_acquire(mem::raw::Amount::get(request))
     }
 
     fn can_satisfy(&self, lane: LaneIndex, demand: Demand) -> bool {
@@ -375,7 +364,7 @@ impl<'credits, 'region> Credits<'credits, 'region> {
             Demand::Values(values) => mem::raw::Amount::get(values),
             Demand::Bytes(bytes) => mem::raw::Amount::get(bytes),
         };
-        self.payload(lane).can_acquire(amount)
+        self.state(lane).can_acquire(amount)
     }
 
     pub(in crate::reply::retain::pool) fn shared_slots(&self) -> [usize; 1] {
@@ -386,22 +375,21 @@ impl<'credits, 'region> Credits<'credits, 'region> {
         Length::new(self.entries.get().get())
     }
 
-    pub(in crate::reply::retain::pool) fn capacity(
+    pub(in crate::reply::retain::pool) fn state(
         &self,
         lane: LaneIndex,
-    ) -> retain::raw::Lane<'credits, 1, entries::Tag> {
-        let state = &self.waiters.slot(lane).credit;
-        // SAFETY: the borrowed slot belongs to this pool's original credit layout.
-        state.capacity()
+    ) -> &'credits retain::raw::State {
+        &self.waiters.slot(lane).credit
     }
 
-    pub(in crate::reply::retain::pool) fn payload(
+    /// # Safety
+    /// The consumed Payload owns this source's one original counted admission.
+    pub(in crate::reply::retain::pool) unsafe fn release_slot(
         &self,
-        lane: LaneIndex,
-    ) -> retain::raw::Lane<'credits, 3, payload::Tag> {
-        let state = &self.waiters.slot(lane).credit;
-        // SAFETY: the borrowed slot belongs to this pool's original credit layout.
-        state.payload()
+        source: &retain::raw::State,
+    ) {
+        unsafe { source.release_slot() };
+        self.entries.set(self.entries.get().release(entries::Unit));
     }
 }
 
@@ -413,10 +401,10 @@ impl<'arena, 'credits, 'region, A: mem::raw::Amount<1, usize>>
         request: A,
     ) -> Result<Self, fair::Cause<usize, 2>> {
         let credits = &lane.pool().lanes().credits;
-        let grant = credits
-            .capacity(lane.index())
-            .try_acquire(request)
-            .map_err(|error| match error.discard() {
+        let source = credits.state(lane.index());
+        source
+            .try_admit(request.get())
+            .map_err(|error| match error {
                 fair::Cause::Overflow {
                     held, requested, ..
                 } => fair::Cause::Overflow {
@@ -435,55 +423,11 @@ impl<'arena, 'credits, 'region, A: mem::raw::Amount<1, usize>>
                 },
             })?;
         credits.entries.set(credits.entries.get().admit(request));
-        Ok(Self { lane, grant })
-    }
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct Remaining(NonZero<usize>);
-
-struct Expand;
-
-// SAFETY: Remaining stores the exact nonzero entry count.
-unsafe impl mem::raw::Amount<1, usize> for Remaining {
-    fn get(self) -> [usize; 1] {
-        [self.0.get()]
-    }
-}
-
-// SAFETY: expansion preserves the complete N-command-plus-terminal acquisition.
-unsafe impl<const N: usize> mem::raw::ExactRebind<1, usize, entries::Group<N>> for Expand {
-    type Output = Remaining;
-
-    fn rebind(self, _: entries::Group<N>) -> Remaining {
-        const { assert!(N > 0 && N < usize::MAX) };
-        Remaining(NonZero::<usize>::MIN.saturating_add(N))
-    }
-}
-
-// SAFETY: Group's const domain proves this expansion for every source value.
-unsafe impl<const N: usize> mem::raw::Rebind<1, usize, entries::Group<N>> for Expand {}
-
-// SAFETY: map_group splits Unit only for the N command positions of an N+1
-// acquisition, so one terminal unit always remains after this exact partition.
-unsafe impl mem::raw::Exact<1, usize, Remaining> for entries::Unit {
-    type Input = ();
-    type Left = Remaining;
-    type Right = entries::Unit;
-
-    fn parts(self, source: Remaining, (): ()) -> (Remaining, entries::Unit) {
-        // SAFETY: the bound command position leaves at least the terminal unit.
-        let rest = unsafe { NonZero::new_unchecked(source.0.get() - 1) };
-        (Remaining(rest), entries::Unit)
-    }
-}
-
-// SAFETY: map_group rebinds Unit only after all N command units were removed.
-unsafe impl mem::raw::ExactRebind<1, usize, Remaining> for entries::Unit {
-    type Output = entries::Unit;
-
-    fn rebind(self, _: Remaining) -> Self::Output {
-        self
+        Ok(Self {
+            lane,
+            source,
+            amount: request,
+        })
     }
 }
 
@@ -497,18 +441,27 @@ impl<'arena, 'credits, 'region, const N: usize>
         outputs: &mut [V; N],
         mut map: impl FnMut(usize, T, Registration<'arena, 'credits, 'region, entries::Unit>, U, &mut V),
     ) -> Registration<'arena, 'credits, 'region, entries::Unit> {
-        let lane = self.lane;
-        let mut rest = self.grant.map(Expand);
+        let Self {
+            lane,
+            source,
+            amount: entries::Group,
+        } = self;
         for (index, ((command, value), output)) in
             commands.into_iter().zip(values).zip(outputs).enumerate()
         {
-            // SAFETY: Full and both arrays have exactly N positions, leaving the terminal unit.
-            let grant = unsafe { rest.bind_mut(entries::Unit) }.split(());
-            map(index, command, Registration { lane, grant }, value, output);
+            // Full and both arrays transfer exactly N of the admitted N+1 units.
+            let admitted = Registration {
+                lane,
+                source,
+                amount: entries::Unit,
+            };
+            map(index, command, admitted, value, output);
         }
-        // SAFETY: all N command units were transferred from this exact source.
-        let grant = unsafe { rest.bind(entries::Unit) }.map();
-        Registration { lane, grant }
+        Registration {
+            lane,
+            source,
+            amount: entries::Unit,
+        }
     }
 }
 
@@ -517,18 +470,14 @@ impl<'arena, 'credits, 'region> Registration<'arena, 'credits, 'region, entries:
         self,
     ) -> (
         pool::Lane<'arena, 'credits, 'region>,
-        entries::Grant<'credits, entries::Unit>,
+        &'credits retain::raw::State,
     ) {
-        (self.lane, self.grant)
-    }
-}
-
-// SAFETY: release consumes the caller's original counted acquisition exactly
-// once. The private Payload owner captures its issuing key and grant together.
-unsafe impl<'credits> pool::raw::Release<'credits> for Credits<'credits, '_> {
-    unsafe fn release_slot(&self, grant: entries::Grant<'credits, entries::Unit>) {
-        grant.release();
-        self.entries.set(self.entries.get().release(entries::Unit));
+        let Self {
+            lane,
+            source,
+            amount: entries::Unit,
+        } = self;
+        (lane, source)
     }
 }
 

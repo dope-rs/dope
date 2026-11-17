@@ -170,6 +170,11 @@ impl<'r, S, W> From<signal::Error<'r, Error<'r, S, W>>> for Error<'r, S, W> {
     fn from(error: signal::Error<'r, Error<'r, S, W>>) -> Self {
         match error {
             signal::Error::Acquire(error) => Self::failed(Cause::Signal(error), None, Vec::new()),
+            signal::Error::AcquireRelease { acquire, release } => {
+                let mut error = Self::failed(Cause::Signal(acquire), None, Vec::new());
+                error.release = Some(release);
+                error
+            }
             signal::Error::Run(error) => error,
             signal::Error::Release { run, cause } => {
                 let mut error = run.unwrap_or(Self {

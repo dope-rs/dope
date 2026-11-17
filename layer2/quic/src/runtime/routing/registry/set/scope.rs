@@ -242,9 +242,9 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
             counts.retained -= 1;
         }
         counts.active -= 1;
-        let (app, entry, _tls) = {
-            let (mut slot, entry) = entry.take();
-            let mut app = slot.connection;
+        let (app, _tls) = {
+            let slot = entry.get_mut();
+            let mut app = slot.connection.take();
             if let Some(app) = app.as_mut() {
                 <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Closing::notify(
                     sink.as_mut(),
@@ -260,8 +260,9 @@ impl<'storage, 'id, C, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segmen
                     handle,
                 );
             }
-            (app, entry, slot.tls)
+            (app, slot.tls.take())
         };
+        let entry = entry.clear();
         if let Some(app) = app {
             <H::Events as Dispatch<H, DOMAIN, B, D, I>>::Close::close(
                 sink.as_mut(),

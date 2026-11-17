@@ -341,7 +341,7 @@ impl<T> inspect::Inspect for Ring<T> {
             files::UNLINK,
             sockets::SHUTDOWN,
             sockets::CREATE,
-            sockets::SET_OPTION,
+            sockets::OPTION,
         ] {
             probe.require(*required).map_err(Unsupported::Opcode)?;
         }

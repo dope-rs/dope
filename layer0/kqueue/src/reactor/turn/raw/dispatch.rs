@@ -2,6 +2,8 @@ use dope_sys::{
     Budget as _,
     io::reactor::ready::{Backend as _, Source as _},
 };
+use o3::mem::slot;
+use std::mem::MaybeUninit;
 
 use crate::reactor::turn::{
     Admission, Completion, Dispatch, Engine, Kqueue, Resume, Work, delivery, engine, ops, ready,
@@ -20,7 +22,10 @@ where
 
     fn dispatch(
         self,
-        mut emit: impl FnMut(C::Event, &mut H) -> ops::ControlFlow<C::Event>,
+        mut emit: impl for<'event> FnMut(
+            slot::Occupied<'event, C::Event>,
+            &mut H,
+        ) -> ops::ControlFlow<slot::Occupied<'event, C::Event>>,
     ) -> C::Dispatch {
         let result = (|| -> Result<C::Dispatch, <Engine<C> as ready::Backend<C>>::Failure> {
             let Self { host, quota } = self;
@@ -91,7 +96,14 @@ where
                         }
                         3 => {
                             let mut budget = quota.budget::<Completion>(quota.remaining());
-                            while let Admission::Item(item) = budget.admit(|| C::resolve(host)) {
+                            loop {
+                                let mut output = MaybeUninit::uninit();
+                                let output = slot::Vacant::new(&mut output);
+                                let Admission::Item(item) =
+                                    budget.admit(|| C::resolve(host, output))
+                                else {
+                                    break;
+                                };
                                 resume = true;
                                 let event = match item {
                                     Ok(Some(event)) => event,
@@ -102,7 +114,7 @@ where
                                     }
                                 };
                                 if let ops::ControlFlow::Break(event) = emit(event, host) {
-                                    held = Some(event);
+                                    held = Some(event.into_inner());
                                     break 'turn;
                                 }
                             }

@@ -82,7 +82,7 @@ impl<
         if mux.outgoing.cache.recycled.pop().is_some() {
             return Step::Advanced;
         }
-        if mux.outgoing.cache.batch.take().is_some() {
+        if mux.outgoing.cache.gso.take().is_some() {
             return Step::Advanced;
         }
         Step::Idle

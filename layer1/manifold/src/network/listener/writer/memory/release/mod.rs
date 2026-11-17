@@ -43,13 +43,8 @@ impl<'p, 's, 'd, T, ID: Identity> Source<'p, 's, 'd, T, ID> {
     ) -> Claim<Lease<'p, 's, 'd, T, ID>> {
         let Self { gate, proof } = self;
         let key = target.key();
-        let queued = proof.has_queued();
         // SAFETY: this synchronous claim exclusively consumes the exact retained slot.
         match staged::Entry::from_source(unsafe { depot::raw::Proof::new(proof) }) {
-            staged::Entry::Vacant(entry) if queued => {
-                entry.insert(key, ());
-                Claim::Waiting
-            }
             staged::Entry::Vacant(entry) => match gate.store.take() {
                 Some(lease) => Claim::Acquired(Lease::new(lease, gate)),
                 None => {

@@ -68,10 +68,7 @@ pub struct WakeProbe<'slot, 'd> {
 
 use std::{ops::ControlFlow, pin::Pin};
 
-use dope::{
-    core::{driver::settings, io},
-    runtime::executor,
-};
+use dope::{core::driver::settings, runtime::executor};
 
 impl<'d> executor::raw::Layout<'d> for WakeProbe<'_, 'd> {
     type ParkPlan = Selected;
@@ -81,9 +78,12 @@ impl<'d> executor::raw::Layout<'d> for WakeProbe<'_, 'd> {
 unsafe impl<'d> executor::raw::App<'d> for WakeProbe<'_, 'd> {
     const ROUTES: settings::Routes = Routes::singleton::<KeyTag<0>>();
     const WAKE_ROUTES: settings::Routes = Self::ROUTES;
-    fn dispatch<'app, 'driver, 'turn>(
-        _: executor::raw::Dispatch<'app, 'driver, 'turn, 'd, Self>,
-    ) -> ControlFlow<io::Event<'d>> {
+    fn dispatch<'event>(
+        _: Pin<&mut Self>,
+        _: executor::raw::Dispatch<'event, 'd>,
+        _: schedule::Turn<'_, 'd>,
+        _: dope_core::driver::Context<'_, 'd>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         ControlFlow::Continue(())
     }
     fn progress(app: Pin<&Self>, _: executor::raw::Progress<'_, '_, 'd>) -> schedule::Progress<'d> {
@@ -104,8 +104,9 @@ unsafe impl<'d> executor::raw::App<'d> for WakeProbe<'_, 'd> {
         }
     }
     const COORDS: usize = 0;
-    fn select_park() -> Option<Selected> {
-        Some(Selected)
+    const PARK: bool = true;
+    fn select_park() -> Selected {
+        Selected
     }
     /// # Safety
     /// The root, prepared plan, and park authority belong to this installed owner.

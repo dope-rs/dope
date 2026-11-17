@@ -1,37 +1,23 @@
 use std::pin;
 
 use data::{compose, exec};
-use dope_core::{
-    driver::{self, result::SubmitCause, route::Identity, schedule, schedule::clock},
-    io::event::net::send::Completion,
-};
+use dope_core::driver::{self, result::SubmitCause, route::Identity, schedule, schedule::clock};
 use dope_net::link::{
     egress::data,
-    event::SendOutcome,
     pool,
     pool::{
         change::{close, drain},
         recv::input,
-        send,
     },
     slot::transmit,
 };
 pub(in crate::network::listener) use egress::Egress;
 use handler::retire;
-use o3::{
-    base::{cell::region, time::Positive},
-    depot,
-    depot::heap,
-};
+use o3::{base::time::Positive, depot, depot::heap};
 use retire::Policy as _;
 
 use crate::{
-    network::listener::{
-        self, conn, handler,
-        runtime::accept,
-        writer,
-        writer::{deadline::Slot, phase::Sender},
-    },
+    network::listener::{self, conn, handler, runtime::accept, writer, writer::deadline::Slot},
     timing,
 };
 
@@ -71,8 +57,22 @@ type Connections<'n, 'p, 's, 'w, 'd, ID, T, A> = pool::Pool<
     { listener::IOV_CAP },
     Reserve<'d, <A as handler::Application<'d, ID>>::Egress>,
 >;
+pub(in crate::network::listener) type Entry<'a, 'n, 'p, 's, 'w, 'd, ID, T, A> = pool::Entry<
+    'a,
+    'n,
+    'w,
+    'd,
+    ID,
+    T,
+    <A as handler::Application<'d, ID>>::Wire,
+    Record<'p, 's, 'd, ID, A>,
+    <A as handler::Application<'d, ID>>::Input,
+    Payload<'p, 's, 'd, ID, <A as handler::Application<'d, ID>>::Egress>,
+    { listener::IOV_CAP },
+    Reserve<'d, <A as handler::Application<'d, ID>>::Egress>,
+>;
 /// Retirement borrows each participant independently throughout all three phases.
-type Closing<'app, 'accept, 'deadline, 'p, 'd, ID, A> = (
+pub(in crate::network::listener) type Closing<'app, 'accept, 'deadline, 'p, 'd, ID, A> = (
     pin::Pin<&'app mut A>,
     pin::Pin<&'accept mut accept::Accept<'p, 'd, ID>>,
     &'deadline mut deadline::Schedule<'d, ID>,
@@ -114,9 +114,9 @@ where
     T: dope_net::Transport,
     A: handler::Application<'d, ID>,
 {
-    pool: Connections<'n, 'p, 's, 'w, 'd, ID, T, A>,
-    writes: &'p memory::Arena<'s, 'd, ID, A::Egress>,
-    deadlines: deadline::Schedule<'d, ID>,
+    pub(in crate::network::listener) pool: Connections<'n, 'p, 's, 'w, 'd, ID, T, A>,
+    pub(in crate::network::listener) writes: &'p memory::Arena<'s, 'd, ID, A::Egress>,
+    pub(in crate::network::listener) deadlines: deadline::Schedule<'d, ID>,
 }
 
 impl<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, T, A> Owner<'n, 'p, 's, 'w, 'd, ID, T, A>
@@ -151,21 +151,6 @@ where
         &mut self.pool
     }
 
-    pub(in crate::network::listener) fn cancel_wait(
-        &mut self,
-        token: &mut region::Token<region::Identity<'d>>,
-        key: pool::Key<'d, ID>,
-    ) {
-        let Self { pool, writes, .. } = self;
-        let Some(egress) = pool.egress_mut(key) else {
-            return;
-        };
-        let lane = pool::raw::Physical::bind(key);
-        let target = egress.connection.io().wake_target();
-        memory::Retention::new(*writes, lane).cancel_wait(target);
-        egress.queue.cancel_wait(token);
-    }
-
     pub(in crate::network::listener) fn egress_mut(
         &mut self,
         key: pool::Key<'d, ID>,
@@ -175,24 +160,7 @@ where
             writes,
             deadlines: book,
         } = self;
-        let pool::EgressMut {
-            flights: slots,
-            connection: conn,
-            pending: wait,
-            queue,
-            ..
-        } = pool.egress_mut(key)?;
-        let lane = pool::raw::Physical::bind(key);
-        Some(writer::Egress {
-            flights: slots,
-            // SAFETY: `egress_mut` lent the initialized connection recorded for
-            // this exact key, and the deadline schedule spans every key of that
-            // pool's canonical lane capacity.
-            connection: Slot::from(unsafe { depot::raw::Proof::new(((conn, book), key)) }),
-            pending: wait,
-            queue: queue.reborrow(),
-            retention: memory::Retention::new(*writes, lane),
-        })
+        Some(writer::Egress::new(pool.egress_mut(key)?, *writes, book))
     }
     pub(in crate::network::listener) fn earliest(&self) -> Option<clock::Deadline<'d>> {
         self.deadlines.earliest()
@@ -203,196 +171,189 @@ where
     pub(in crate::network::listener) fn pop(
         &mut self,
         now: clock::Moment<'d>,
-    ) -> Option<(pool::Key<'d, ID>, deadline::Kind)> {
+    ) -> Option<deadline::Event<'d, ID>> {
         self.deadlines.pop(now)
     }
+}
 
-    fn sender(&mut self, key: pool::Key<'d, ID>) -> Option<Sender<'_, 'n, 'p, 's, 'w, 'd, ID, A>> {
-        let source = self.pool.sender(key)?;
-        // SAFETY: `sender` lent the initialized transmit record for this exact
-        // key, and the retained schedule covers that same lane.
-        Some(Sender::from(unsafe {
-            depot::raw::Proof::new(((source, &mut self.deadlines), key))
-        }))
-    }
+pub(in crate::network::listener) fn close<
+    'a,
+    'n,
+    'p,
+    's,
+    'w,
+    'd: 'w,
+    ID: Identity,
+    A,
+    T: dope_net::Transport,
+>(
+    mut entry: Result<
+        Entry<'a, 'n, 'p, 's, 'w, 'd, ID, T, A>,
+        pool::Missing<'a, 'n, 'w, 'd, ID, A::Wire>,
+    >,
+    writes: &'p memory::Arena<'s, 'd, ID, A::Egress>,
+    ctx: &mut Closing<'_, '_, '_, 'p, 'd, ID, A>,
+    turn: schedule::Turn<'_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
+) -> Option<Entry<'a, 'n, 'p, 's, 'w, 'd, ID, T, A>>
+where
+    A: handler::Application<'d, ID>,
+    <A::Input as input::Mode<A::Wire>>::Ingress: drain::Policy<A::Wire>,
+{
+    let key = match &entry {
+        Ok(entry) => entry.get().key(),
+        Err(missing) => missing.key(),
+    };
+    if let Ok(admitted) = &mut entry {
+        let slot = admitted.get();
+        slot.io().close();
+        if slot.terminal.is_pending() {
+            if slot.terminal.has_send() {
+                admitted.pending().wake();
+            }
+            return entry.ok();
+        }
+        if let Some(mut sender) = admitted.sender() {
+            let egress = sender.view();
+            let lane = pool::raw::Physical::bind(key);
+            memory::Retention::new(writes, lane).cancel_wait(egress.connection.io().wake_target());
+            egress.queue.cancel_wait(driver.region_token());
+        }
+    };
+    let outcome = <<A::Input as input::Mode<A::Wire>>::Ingress as drain::Policy<A::Wire>>::close(
+        entry,
+        turn.reborrow().maint(),
+        driver,
+        close::Handler {
+            claim: (),
+            context: ctx,
+            owner: |scope: close::Owner<
+                '_,
+                '_,
+                '_,
+                '_,
+                '_,
+                '_,
+                'w,
+                'd,
+                ID,
+                _,
+                Record<'p, 's, 'd, ID, A>,
+                (),
+                Closing<'_, '_, '_, 'p, 'd, ID, A>,
+            >| {
+                use close::{Decision, Phase};
 
-    fn settle<O>(
-        &mut self,
-        done: Completion<'d>,
-        driver: &mut driver::Context<'_, 'd>,
-        direct: impl for<'a> FnOnce(send::Direct<'a, Record<'p, 's, 'd, ID, A>>) -> O,
-        free: impl FnMut(pool::Key<'d, ID>, Payload<'p, 's, 'd, ID, A::Egress>),
-    ) -> SendOutcome<'d, ID, O> {
-        self.pool
-            .settle(done)
-            .settle(driver, direct, free, |conn, outcome| {
-                if !matches!(outcome, SendOutcome::Drop) {
-                    let key = conn.key();
-                    // SAFETY: `settle` hands back the initialized connection it
-                    // just retired for this exact key, and the deadline schedule
-                    // spans that same lane.
-                    Slot::from(unsafe {
-                        depot::raw::Proof::new(((conn, &mut self.deadlines), key))
-                    })
-                    .cancel_send();
-                }
-            })
-    }
+                let ((app, accept, due), claim, phase, slots, conn, driver) = scope;
+                let key = conn.key();
+                // SAFETY: the retirement scope lends the initialized slot for
+                // this exact key together with the schedule covering it.
+                let mut slot =
+                    Slot::from(unsafe { depot::raw::Proof::new(((&mut *conn, &mut **due), key)) });
+                let () = *claim;
 
-    pub(in crate::network::listener) fn close(
-        &mut self,
-        app: pin::Pin<&mut A>,
-        accept: pin::Pin<&mut accept::Accept<'p, 'd, ID>>,
-        key: pool::Key<'d, ID>,
-        turn: schedule::Turn<'_, 'd>,
-        driver: &mut driver::Context<'_, 'd>,
-    ) where
-        <A::Input as input::Mode<A::Wire>>::Ingress: drain::Policy<A::Wire>,
-    {
-        self.cancel_wait(driver.region_token(), key);
-        let mut ctx = (app, accept, &mut self.deadlines);
-        <<A::Input as input::Mode<A::Wire>>::Ingress as drain::Policy<A::Wire>>::close(
-            &mut self.pool,
-            key,
-            turn.reborrow().maint(),
-            driver,
-            close::Handler {
-                claim: (),
-                context: &mut ctx,
-                owner: |scope: close::Owner<
-                    '_,
-                    '_,
-                    '_,
-                    '_,
-                    '_,
-                    '_,
-                    'w,
-                    'd,
-                    ID,
-                    _,
-                    Record<'p, 's, 'd, ID, A>,
-                    (),
-                    Closing<'_, '_, '_, 'p, 'd, ID, A>,
-                >| {
-                    use close::{Decision, Phase};
-
-                    let ((app, accept, due), claim, phase, slots, conn, driver) = scope;
-                    let key = conn.key();
-                    // SAFETY: the retirement scope lends the initialized slot for
-                    // this exact key together with the schedule covering it.
-                    let mut slot = Slot::from(unsafe {
-                        depot::raw::Proof::new(((&mut *conn, &mut **due), key))
-                    });
-                    let () = *claim;
-
-                    match phase {
-                        Phase::Prepare => {
-                            let live = slot.is_connected();
-                            if live && !slot.is_discarded() && !slot.terminal.is_done() {
-                                slot.closing(driver.driver_ref().clock().now());
-                                match slot.sending().seal(slots, driver) {
-                                    transmit::Finalize::Armed(wait) => Decision::External(wait),
-                                    transmit::Finalize::Rejected(failure) => {
-                                        if matches!(failure.into_error().cause(), SubmitCause::Full)
-                                        {
-                                            return Decision::runnable(&slot);
-                                        }
-                                        let egress =
-                                            slot.state.send.fail(conn::Transmit::Rejected(failure));
-                                        if let Some(egress) = egress {
-                                            writer::release_egress(
-                                                app.as_mut(),
-                                                key,
-                                                egress,
-                                                handler::Disposition::Closed,
-                                            );
-                                        }
-                                        Decision::Ready
+                match phase {
+                    Phase::Prepare => {
+                        let live = slot.is_connected();
+                        if live && !slot.is_discarded() && !slot.terminal.is_done() {
+                            slot.closing(driver.driver_ref().clock().now());
+                            match slot.sending().seal(slots, driver) {
+                                transmit::Finalize::Armed(wait) => Decision::External(wait),
+                                transmit::Finalize::Rejected(failure) => {
+                                    if matches!(failure.into_error().cause(), SubmitCause::Full) {
+                                        return Decision::runnable(&slot);
                                     }
-                                    transmit::Finalize::Settled | transmit::Finalize::Abandoned => {
-                                        Decision::Ready
+                                    let egress =
+                                        slot.state.send.fail(conn::Transmit::Rejected(failure));
+                                    if let Some(egress) = egress {
+                                        writer::release_egress(
+                                            app.as_mut(),
+                                            key,
+                                            egress,
+                                            handler::Disposition::Closed,
+                                        );
                                     }
+                                    Decision::Ready
                                 }
-                            } else {
-                                Decision::Ready
+                                transmit::Finalize::Settled | transmit::Finalize::Abandoned => {
+                                    Decision::Ready
+                                }
                             }
-                        }
-                        Phase::Release => {
-                            slot.clear();
-                            if slot.is_connected() {
-                                use conn::Ctx;
-
-                                A::close(
-                                    app.as_mut(),
-                                    Ctx::sealed(slot.sealed(), turn.reborrow().app()),
-                                );
-                            }
-                            if let Some(admit) = conn.state.admission.take() {
-                                accept.as_mut().release(admit);
-                            }
+                        } else {
                             Decision::Ready
                         }
                     }
-                },
-                commit: |scope: close::Commit<
-                    '_,
-                    '_,
-                    '_,
-                    '_,
-                    'd,
-                    (),
-                    Closing<'_, '_, '_, 'p, 'd, ID, A>,
-                    Record<'p, 's, 'd, ID, A>,
-                >| {
-                    close::Approval::Ready(conn::Retired::take(key, scope.2, scope.3))
-                },
-                failed: |scope: close::Failed<
-                    '_,
-                    '_,
-                    '_,
-                    '_,
-                    '_,
-                    'n,
-                    'w,
-                    'd,
-                    ID,
-                    _,
-                    Record<'p, 's, 'd, ID, A>,
-                    _,
-                    { listener::IOV_CAP },
-                    _,
-                    (),
-                    Closing<'_, '_, '_, 'p, 'd, ID, A>,
-                >| {
-                    let (_, claim, io, _) = scope;
-                    let error = io.failure();
-                    let () = *claim;
-                    io.connection().state.fail(conn::Failure::Receive(error));
-                },
-            },
-            |(app, _accept, _due): &mut (pin::Pin<&mut A>, _, _), data, _| {
-                writer::release_payload(app.as_mut(), key, data, handler::Disposition::Closed);
-            },
-            |_, (app, _accept, _due), _driver, outcome| match outcome {
-                close::Outcome::Retired((egress, retired)) => {
-                    if let Some(egress) = egress {
-                        writer::release_egress(
-                            app.as_mut(),
-                            key,
-                            egress,
-                            handler::Disposition::Closed,
-                        );
-                    }
-                    if let Some(retired) = retired
-                        && let Some(policy) = <A::Retirement as retire::Policy<'d, A, ID>>::select()
-                    {
-                        policy.retire(app.as_mut(), retired);
+                    Phase::Release => {
+                        slot.clear();
+                        if slot.is_connected() {
+                            use conn::Ctx;
+
+                            A::close(
+                                app.as_mut(),
+                                Ctx::sealed(slot.sealed(), turn.reborrow().app()),
+                            );
+                        }
+                        if let Some(admit) = conn.state.admission.take() {
+                            accept.as_mut().release(admit);
+                        }
+                        Decision::Ready
                     }
                 }
-                close::Outcome::Pending(())
-                | close::Outcome::Stale(())
-                | close::Outcome::Missing(()) => {}
             },
-        );
+            commit: |scope: close::Commit<
+                '_,
+                '_,
+                '_,
+                '_,
+                'd,
+                (),
+                Closing<'_, '_, '_, 'p, 'd, ID, A>,
+                Record<'p, 's, 'd, ID, A>,
+            >| {
+                close::Approval::Ready(conn::Retired::take(key, scope.2, scope.3))
+            },
+            failed: |scope: close::Failed<
+                '_,
+                '_,
+                '_,
+                '_,
+                '_,
+                'n,
+                'w,
+                'd,
+                ID,
+                _,
+                Record<'p, 's, 'd, ID, A>,
+                _,
+                { listener::IOV_CAP },
+                _,
+                (),
+                Closing<'_, '_, '_, 'p, 'd, ID, A>,
+            >| {
+                let (_, claim, io, _) = scope;
+                let error = io.failure();
+                let () = *claim;
+                io.connection().state.fail(conn::Failure::Receive(error));
+            },
+        },
+        |(app, _accept, _due): &mut (pin::Pin<&mut A>, _, _), data, _| {
+            writer::release_payload(app.as_mut(), key, data, handler::Disposition::Closed);
+        },
+    );
+    let (app, _accept, _due) = ctx;
+    match outcome {
+        close::Outcome::Retired((egress, retired)) => {
+            if let Some(egress) = egress {
+                writer::release_egress(app.as_mut(), key, egress, handler::Disposition::Closed);
+            }
+            if let Some(retired) = retired
+                && let Some(policy) = <A::Retirement as retire::Policy<'d, A, ID>>::select()
+            {
+                policy.retire(app.as_mut(), retired);
+            }
+            None
+        }
+        close::Outcome::Pending(entry, ()) | close::Outcome::Stale(entry, ()) => Some(entry),
+        close::Outcome::Missing(()) => None,
     }
 }

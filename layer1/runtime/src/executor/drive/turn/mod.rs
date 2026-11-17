@@ -4,15 +4,21 @@ use dope_core::io::Event;
 
 mod idle;
 pub(super) mod modes;
-mod parked;
 pub(crate) mod ready;
 pub(crate) mod routes;
 pub(crate) mod scope;
 
 pub(crate) use idle::Idle;
-pub(crate) use parked::{Parked, Status};
+
+#[must_use]
+pub(crate) enum Status {
+    Active,
+    Shutdown,
+}
 
 const _: () = {
+    assert!(mem::size_of::<Status>() == mem::size_of::<bool>());
+    assert!(mem::align_of::<Status>() == mem::align_of::<bool>());
     assert!(mem::size_of::<Option<Event<'static>>>() == mem::size_of::<Event<'static>>());
     assert!(mem::align_of::<Option<Event<'static>>>() == mem::align_of::<Event<'static>>());
 };

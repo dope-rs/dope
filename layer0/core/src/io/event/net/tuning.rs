@@ -6,7 +6,7 @@ use crate::{
 
 /// A terminal socket-option transaction completion.
 #[repr(transparent)]
-pub struct Completion<'d>(Entry<'d, kind::Tuning, Result<(), Errno>>);
+pub struct Completion<'d>(Entry<'d, kind::Tuning, Result<u32, Errno>>);
 
 impl<'d> Completion<'d> {
     pub const fn token(&self) -> route::Erased<'d, kind::Tuning> {
@@ -14,14 +14,24 @@ impl<'d> Completion<'d> {
     }
 
     pub const fn outcome(&self) -> Result<(), Errno> {
-        *self.0.value()
+        match *self.0.value() {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     pub(in crate::io) fn resolve(
         self,
         expected: route::Erased<'d, kind::Tuning>,
-    ) -> Result<Result<(), Errno>, Self> {
+    ) -> Result<Result<u32, Errno>, Self> {
         self.0.resolve(expected).map_err(Self)
+    }
+
+    pub(crate) fn from_value(
+        bound: flight::Complete<'_, 'd, kind::Tuning>,
+        value: Result<u32, Errno>,
+    ) -> Self {
+        Self(Entry::new(bound.complete(), value))
     }
 }
 
@@ -29,7 +39,6 @@ impl<'q, 'd> From<(flight::Complete<'q, 'd, kind::Tuning>, Result<(), Errno>)> f
     fn from(
         (target, outcome): (flight::Complete<'q, 'd, kind::Tuning>, Result<(), Errno>),
     ) -> Self {
-        let target = target.complete();
-        Self(Entry::new(target, outcome))
+        Self::from_value(target, outcome.map(|()| 0))
     }
 }

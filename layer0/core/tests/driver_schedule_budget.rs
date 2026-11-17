@@ -81,7 +81,7 @@ fn resume_refunds_delivery() {
                         let mut count = 0;
                         let result =
                             driver::Context::dispatch(&mut driver, turn.reactor(), |event, _| {
-                                let done = match event.into_kind() {
+                                let done = match event.into_inner().into_kind() {
                                     Kind::Send(done) => Ok(done),
                                     event => Err(mem::discriminant(&event)),
                                 }

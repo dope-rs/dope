@@ -380,6 +380,7 @@ fn run<W>(
                             inner: host,
                             state: terminal.clone(),
                             renewal: None,
+                            batch: None,
                             pending: None,
                         });
                         let result = runtime.with_quiesce(

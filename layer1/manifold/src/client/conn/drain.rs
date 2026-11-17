@@ -1,11 +1,6 @@
 use dope_core::driver::{self, route::Identity};
 use dope_net::{
-    Transport,
-    link::{
-        egress::reserve::demand,
-        pool::{self, change, recv::input},
-        slot::types,
-    },
+    link::{pool::{self, change}, slot::types},
     wire,
 };
 
@@ -128,30 +123,14 @@ impl<'d, ID: Identity> Drain<'d, ID> {
         Self { conn }
     }
 
-    pub(in crate::client) fn release<
-        'w,
-        T,
-        W,
-        C,
-        O,
-        M,
-        B: dope_net::link::egress::data::raw::Payload<'d>,
-        const IOV: usize,
-        D,
-    >(
+    pub(in crate::client) fn release<'w, W, C, O>(
         self,
-        pool: &mut pool::Connections<'_, 'w, 'd, ID, T, W, State<'d, C, O>, M, B, IOV, D>,
+        slot: &mut types::Connection<'w, 'd, ID, W, State<'d, C, O>>,
     ) -> Recovery<'d, ID>
     where
         'd: 'w,
-        T: Transport,
         W: wire::Spec,
-        M: input::Mode<W>,
-        D: demand::Mode,
     {
-        let Some(slot) = pool.get_mut(self.key()) else {
-            return Recovery::Obsolete(Obsolete(self));
-        };
         match slot.state.closing.restore() {
             Restore::Current(Resume::Restored) => Recovery::Restored,
             Restore::Current(Resume::Pending) => {

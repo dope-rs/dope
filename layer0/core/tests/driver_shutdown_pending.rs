@@ -66,7 +66,10 @@ fn reports_pending() {
                                 let mut delivered = 0;
                                 assert!(matches!(
                                     driver.dispatch(turn.reactor(), |event, _| {
-                                        assert!(matches!(event.into_kind(), Kind::Shutdown));
+                                        assert!(matches!(
+                                            event.into_inner().into_kind(),
+                                            Kind::Shutdown
+                                        ));
                                         delivered += 1;
                                         ControlFlow::Continue(())
                                     }),

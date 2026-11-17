@@ -4,8 +4,6 @@ use std::time;
 use crate::runtime::mux;
 use crate::stream;
 use mux::{auth, handler, protocol};
-use protocol::rotation;
-use rotation::Local as _;
 
 /// Endpoint-wide policy for bounded rotation of live local connection IDs.
 /// It retains no connection handle, packet owner, borrow, or side table.

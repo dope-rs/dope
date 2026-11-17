@@ -56,6 +56,7 @@ pub(crate) const RESOURCE_REGISTER_SPARSE: u32 = 1 << 0;
 pub(crate) const RECEIVE_MULTISHOT: u16 = 1 << 1;
 pub(crate) const ACCEPT_MULTISHOT: u16 = 1 << 0;
 pub(crate) const FILE_INDEX_ALLOC: u32 = u32::MAX;
+pub(crate) const SOCKET_GETSOCKOPT: u32 = 2;
 pub(crate) const SOCKET_SETSOCKOPT: u32 = 3;
 
 pub(crate) const REGISTER_FILES_UPDATE: Register<FilesUpdate, Exact<1>, 1, 6> = Register::new();

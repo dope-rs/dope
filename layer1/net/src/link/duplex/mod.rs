@@ -1,9 +1,6 @@
 use std::mem;
 
-use dope_core::{
-    driver::route::{Identity, KeyTag},
-    io::socket::option::Tuning,
-};
+use dope_core::driver::route::{Identity, KeyTag};
 
 mod ops;
 mod receive;
@@ -21,7 +18,7 @@ use dope_core::{
     io::{
         event::net::{connect, tuning},
         fd::handles,
-        socket::{self, option, pending},
+        socket::{self, option},
     },
 };
 pub(in crate::link) use ops::{Cancel, QueueError, Shutdown};
@@ -29,22 +26,12 @@ pub(in crate::link) use receive::Rearm;
 use send::reclaim;
 
 use crate::{
-    link::{self, pool, setup},
+    link::{self, setup},
     wire::{
         receive::{discard, mode},
         send, terminal,
     },
 };
-
-#[must_use = "accepted descriptor must be installed or reclaimed"]
-#[repr(transparent)]
-pub(in crate::link) struct Accepted<'d>(handles::Descriptor<'d>);
-
-pub(in crate::link) enum Tuned {
-    Ready,
-    Pending,
-    Failed(pending::Cause),
-}
 
 pub(in crate::link) struct Duplex<
     'd,
@@ -159,14 +146,7 @@ impl<'d, ID: Identity, D: discard::Policy, P: reclaim::Policy> Duplex<'d, ID, D,
         }
     }
 
-    pub(in crate::link) fn targeted(
-        socket: handles::Creation<'d>,
-        stored: pool::Stored<'d, ID>,
-    ) -> Self {
-        Self::new(link::Setup::targeted(socket, stored))
-    }
-
-    fn new(setup: link::Setup<'d, ID>) -> Self {
+    pub(in crate::link) fn new(setup: link::Setup<'d, ID>) -> Self {
         Self {
             operations: ops::State::new(),
             discard: D::STATE,
@@ -183,41 +163,6 @@ impl<'d, ID: Identity, D: discard::Policy, P: reclaim::Policy> Duplex<'d, ID, D,
     }
 }
 
-impl<'d> Accepted<'d> {
-    pub(in crate::link) fn new(fd: handles::Descriptor<'d>) -> Self {
-        Self(fd)
-    }
-
-    pub(in crate::link) fn into_fd(self) -> handles::Descriptor<'d> {
-        self.0
-    }
-
-    pub(in crate::link) fn tune<ID: Identity, D: discard::Policy, P: reclaim::Policy>(
-        self,
-        flights: &flight::Slots<'d, ID>,
-        driver: &mut driver::Context<'_, 'd>,
-        opts: option::Set,
-        target: route::Target<'d, ID>,
-    ) -> (Duplex<'d, ID, D, P>, Tuned) {
-        let Self(fd) = self;
-        let (setup, state) =
-            match Tuning::try_new(&mut driver.reborrow(), flights, target, fd, opts) {
-                Ok(option::Tuning::Applied(fd)) => (link::Setup::Done(fd), Tuned::Ready),
-                Ok(option::Tuning::Pending(tune)) => (link::Setup::Tuning(tune), Tuned::Pending),
-                Err(rejected) => {
-                    let (fd, cause) = rejected.into_parts();
-                    (link::Setup::Idle(fd), Tuned::Failed(cause))
-                }
-            };
-        (Duplex::<ID, D, P>::new(setup), state)
-    }
-}
-
-const _: () =
-    assert!(mem::size_of::<Accepted<'static>>() == mem::size_of::<handles::Descriptor<'static>>());
-const _: () = assert!(
-    mem::align_of::<Accepted<'static>>() == mem::align_of::<handles::Descriptor<'static>>()
-);
 const _: () = {
     let setup = mem::size_of::<link::Setup<'_, KeyTag<0>>>();
     let disabled = mem::size_of::<ops::State<'_>>()

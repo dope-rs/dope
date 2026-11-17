@@ -10,7 +10,7 @@ use crate::{
     },
     wire::{self, send, terminal},
 };
-pub(super) fn submit_pending<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w>(
+pub(in crate::link) fn submit_pending<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w>(
     context: send::Context<'a, 'w, ID, W, send::Storage<'a, W::SendStorage<'w>>>,
     submit: sending::Submission<'_, 'd, <W::Send as send::Policy<W>>::Reclaim>,
     fd: &handles::Descriptor<'d>,

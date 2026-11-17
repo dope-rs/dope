@@ -12,19 +12,14 @@ use dope_manifold::{
         handler::{self, Application, failures, retire, send},
     },
 };
-use dope_net::{
-    link::egress::{self, load::Value},
-    wire::Identity,
-};
+use dope_net::{link::egress, wire::Identity};
 use dope_test::harness::observe::VecCellExt as _;
 use dope_test::{alloc::Tracker, harness::signals::Gate};
 use o3::buffer::{bytes::TryRetain, resident};
 
-use crate::common::manifold::listener::pipeline::prefix::Error;
-
 pub enum Event {
     Chunk(usize),
-    Write(Option<(usize, u8)>, Result<write::Outcome<()>, Error>),
+    Write(Option<u8>, Result<(), write::error::Admission>),
 }
 
 pub struct Wake {
@@ -46,30 +41,55 @@ impl Wake {
             let commits = self.commits.clone();
             let mut callback = None;
             let result = if self.changed.replace(false) {
-                let body = egress::NonEmpty::from_array(b"C");
-                let body = Value::Checked(body);
-                conn.write().try_bounded(driver, |state, mut prefix| {
-                    callback = Some((prefix.writer().remaining(), *state));
-                    *state += 1;
-                    commits.set(commits.get() + 1);
-                    prefix.commit(Some(body), ()).close_after()
-                })
+                match conn
+                    .write()
+                    .admit(egress::NonEmpty::from_array(b"C"), driver)
+                {
+                    write::body::Admit::Committed => {
+                        let state = conn.state_mut();
+                        callback = Some(*state);
+                        *state += 1;
+                        commits.set(commits.get() + 1);
+                        conn.close_after();
+                        Ok(())
+                    }
+                    write::body::Admit::Deferred { cause, .. } => {
+                        Err(write::error::Admission::Deferred(cause))
+                    }
+                    write::body::Admit::Closed(_) => Err(write::error::Admission::Closed),
+                    write::body::Admit::Rejected { cause, .. } => {
+                        Err(write::error::Admission::Rejected(cause))
+                    }
+                    write::body::Admit::Unavailable(cause) => {
+                        Err(write::error::Admission::Rejected(write::Reject::Geometry(
+                            egress::reserve::error::Full::Reserve(cause.into_parts().1),
+                        )))
+                    }
+                }
             } else {
-                conn.write().try_bounded(driver, move |state, mut prefix| {
-                    prefix.write_byte(b'A' + *state).unwrap();
-                    *state += 1;
-                    commits.set(commits.get() + 1);
-                    prefix.commit(None, ())
-                })
+                let mut output_slot = std::mem::MaybeUninit::uninit();
+                match conn.write().try_prefix(driver, &mut output_slot) {
+                    Ok(mut output) => {
+                        let (state, mut prefix) = output.get_mut().parts();
+                        prefix.write_byte(b'A' + *state).unwrap();
+                        *state += 1;
+                        commits.set(commits.get() + 1);
+                        write::Output::finish(output, write::End::Open)
+                            .map_err(write::error::Mismatch::into_cause)
+                            .expect("prefix publication");
+                        Ok(())
+                    }
+                    Err(cause) => Err(cause),
+                }
             };
-            let ready = matches!(&result, Ok(write::Outcome::Committed(())));
-            if matches!(&result, Ok(write::Outcome::Deferred(_))) {
+            let ready = matches!(&result, Ok(()));
+            if matches!(&result, Err(write::error::Admission::Deferred(_))) {
                 self.defers.set(self.defers.get() + 1);
                 self.changed.set(true);
             } else if !ready {
                 conn.close_after();
             }
-            let event = Event::Write(callback, result.map_err(Error::from));
+            let event = Event::Write(callback, result);
             self.events.push(event);
             if !ready {
                 return;
@@ -139,13 +159,13 @@ pub enum ZeroEvent {
         input: usize,
         before: usize,
         capacity: Option<usize>,
-        result: Result<write::Outcome<u8>, Error>,
+        result: Result<u8, write::error::Admission>,
         allocations: (usize, usize),
         remaining: usize,
         pending: egress::Pending,
     },
     Sent {
-        result: Result<write::Outcome<()>, Error>,
+        result: Result<(), write::error::Admission>,
         allocations: (usize, usize),
         remaining: usize,
     },
@@ -188,28 +208,42 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Zero {
         let before = conn.work().remaining();
         let mut capacity = None;
         let measure = Tracker::begin();
-        let zero = conn.write().try_bounded(driver, |&mut (), mut prefix| {
-            capacity = Some(prefix.writer().remaining());
-            prefix.commit(None, 7)
-        });
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let zero = match conn.write().try_prefix(driver, &mut output_slot) {
+            Ok(mut output) => {
+                capacity = Some(output.get_mut().parts().1.remaining());
+                write::Output::finish(output, write::End::Open)
+                    .map_err(write::error::Mismatch::into_cause)
+                    .expect("empty publication");
+                Ok(7)
+            }
+            Err(cause) => Err(cause),
+        };
         let activity = measure.finish();
         let zero = ZeroEvent::Zero {
             input: chunk.as_ref().len(),
             before,
             capacity,
-            result: zero.map_err(Error::from),
+            result: zero,
             allocations: (activity.allocations, activity.allocated_bytes),
             remaining: conn.work().remaining(),
             pending: conn.write().pending(),
         };
         let measure = Tracker::begin();
-        let sent = conn.write().try_bounded(driver, |&mut (), mut prefix| {
-            prefix.write_byte(b'Z').unwrap();
-            prefix.commit(None, ()).close_after()
-        });
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let sent = match conn.write().try_prefix(driver, &mut output_slot) {
+            Ok(mut output) => {
+                output.get_mut().parts().1.write_byte(b'Z').unwrap();
+                write::Output::finish(output, write::End::Close)
+                    .map_err(write::error::Mismatch::into_cause)
+                    .expect("prefix publication");
+                Ok(())
+            }
+            Err(cause) => Err(cause),
+        };
         let activity = measure.finish();
         let sent = ZeroEvent::Sent {
-            result: sent.map_err(Error::from),
+            result: sent,
             allocations: (activity.allocations, activity.allocated_bytes),
             remaining: conn.work().remaining(),
         };

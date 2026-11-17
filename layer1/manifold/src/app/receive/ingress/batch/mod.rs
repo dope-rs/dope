@@ -11,21 +11,28 @@ mod grant;
 
 pub(crate) use grant::Grant;
 
-pub(crate) fn drive<'input, W, F>(
+pub(crate) fn drive<'input, W, S, F>(
     mut items: Items<'input, W>,
+    mut state: S,
     mut recv: F,
-) -> Progress<convert::Infallible>
+) -> (Option<S>, Progress<convert::Infallible>)
 where
     W: wire::Spec,
     F: FnMut(
+        S,
         <<W::Receive as receive::Policy<W>>::Batch<'input> as receive::raw::Batch<'input>>::Item,
-    ) -> Outcome,
+    ) -> (Option<S>, Outcome),
 {
     for item in &mut items {
-        match recv(item) {
+        let (next, outcome) = recv(state, item);
+        let Some(next) = next else { return (None, Progress::Done(outcome)) };
+        state = next;
+        match outcome {
             Outcome::Continue => {}
-            done @ (Outcome::CloseAfter | Outcome::Failed(_)) => return Progress::Done(done),
+            done @ (Outcome::CloseAfter | Outcome::Failed(_)) => {
+                return (Some(state), Progress::Done(done));
+            }
         }
     }
-    Progress::Done(Outcome::Continue)
+    (Some(state), Progress::Done(Outcome::Continue))
 }

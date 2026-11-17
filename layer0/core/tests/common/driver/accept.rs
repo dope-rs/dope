@@ -44,7 +44,7 @@ pub fn connect<'d>(
             let mut turn = schedule.begin();
             driver.wait(turn.reactor(), Some(left)).expect("accept");
             let dispatched = driver.dispatch(turn.reactor(), |event, _| {
-                let done = match event.into_kind() {
+                let done = match event.into_inner().into_kind() {
                     Kind::Accept(done) => Some(done),
                     _ => None,
                 }

@@ -31,7 +31,7 @@ use crate::{
     },
     io::{
         fd::handles,
-        socket::{install::slot, option, pending},
+        socket::{install::slot, option, peer, pending},
     },
 };
 
@@ -190,7 +190,7 @@ impl AsMut<Engine> for Access<'_, '_> {
 }
 
 /// Owns the routed option request throughout native application and settlement.
-pub(crate) struct Apply<'a, 'd, Tag>
+pub(crate) struct Apply<'a, 'd, Tag, V: Value = ()>
 where
     Tag: route::Tag + route::Select<kind::Tuning>,
     'd: 'a,
@@ -199,10 +199,64 @@ where
     slots: &'a flight::Slots<'d, Tag>,
     target: route::Target<'d, Tag>,
     fd: handles::Descriptor<'d>,
-    opts: option::Set,
+    opts: V::Options,
 }
 
-impl<'a, 'd, Tag> Apply<'a, 'd, Tag>
+pub(crate) trait Value: Sized {
+    type Options;
+    type Output<'d>;
+
+    fn options(value: &Self::Options) -> Option<option::NonEmpty<'_>>;
+    fn finish<'d>(
+        value: device::Finish<
+            handles::Descriptor<'d>,
+            flight::Reserved<'d, kind::Tuning>,
+            <Engine as engine::Cancel<indices::SlotIndex>>::Permit,
+            Self,
+        >,
+    ) -> Self::Output<'d>;
+}
+
+impl Value for () {
+    type Options = option::Set;
+    type Output<'d> = option::Tuning<'d>;
+
+    fn options(value: &Self::Options) -> Option<option::NonEmpty<'_>> {
+        value.non_empty()
+    }
+
+    fn finish<'d>(
+        value: device::Finish<
+            handles::Descriptor<'d>,
+            flight::Reserved<'d, kind::Tuning>,
+            <Engine as engine::Cancel<indices::SlotIndex>>::Permit,
+        >,
+    ) -> Self::Output<'d> {
+        pending::Tuning::from_native(value)
+    }
+}
+
+impl Value for u32 {
+    type Options = ();
+    type Output<'d> = peer::Query<'d>;
+
+    fn options(_: &Self::Options) -> Option<option::NonEmpty<'_>> {
+        None
+    }
+
+    fn finish<'d>(
+        value: device::Finish<
+            handles::Descriptor<'d>,
+            flight::Reserved<'d, kind::Tuning>,
+            <Engine as engine::Cancel<indices::SlotIndex>>::Permit,
+            Self,
+        >,
+    ) -> Self::Output<'d> {
+        peer::Query::from_native(value)
+    }
+}
+
+impl<'a, 'd, Tag, V: Value> Apply<'a, 'd, Tag, V>
 where
     Tag: route::Tag + route::Select<kind::Tuning>,
     'd: 'a,
@@ -212,7 +266,7 @@ where
         slots: &'a flight::Slots<'d, Tag>,
         target: route::Target<'d, Tag>,
         fd: handles::Descriptor<'d>,
-        opts: option::Set,
+        opts: V::Options,
     ) -> Self {
         Self {
             native,
@@ -232,8 +286,8 @@ where
 // Domain retirement queued while Engine::retire waits for that state's terminal;
 // only then may close completion recycle the slot. Readiness options are applied
 // synchronously. Local retains the backend throughout both native paths.
-unsafe impl<'a, 'd, Tag, B> device::raw::Host<B, { option::MAX_STREAM_OPTIONS }>
-    for Apply<'a, 'd, Tag>
+unsafe impl<'a, 'd, Tag, B, V: Value> device::raw::Host<B, { option::MAX_STREAM_OPTIONS }>
+    for Apply<'a, 'd, Tag, V>
 where
     Tag: route::Tag + route::Select<kind::Tuning>,
     'd: 'a,
@@ -245,7 +299,8 @@ where
     type Reserve = flight::Request<'a, 'd, Tag, kind::Tuning>;
     type Options<'o> = option::NonEmpty<'o>;
     type Permit = <Engine as engine::Cancel<indices::SlotIndex>>::Permit;
-    type Output = option::Tuning<'d>;
+    type Value = V;
+    type Output = V::Output<'d>;
     type Error = pending::Rejection<'d>;
 
     fn direct(
@@ -255,13 +310,13 @@ where
             Self::File,
             Self::Slot,
             Option<Self::Options<'o>>,
-        ) -> Result<Self::File, (Self::File, dope_sys::Errno)>,
+        ) -> Result<(Self::File, V), (Self::File, dope_sys::Errno)>,
     ) -> Result<Self::Output, Self::Error> {
         let slot = <crate::Backend as Source<request::Context>>::target(self.fd.slot());
-        let options = self.opts.non_empty();
-        let fd = run(self.native.as_mut(), self.fd, slot, options)
+        let options = V::options(&self.opts);
+        let (fd, value) = run(self.native.as_mut(), self.fd, slot, options)
             .map_err(|(fd, errno)| device::Failure::<_, Vacancy>::Option(fd, errno))?;
-        Ok(option::Tuning::Applied(fd))
+        Ok(V::finish(device::Finish::Applied(fd, value)))
     }
 
     fn with(
@@ -274,7 +329,7 @@ where
             Option<Self::Options<'o>>,
             Self::Reserve,
         ) -> Result<
-            device::Finish<Self::File, flight::Reserved<'d, kind::Tuning>, Self::Permit>,
+            device::Finish<Self::File, flight::Reserved<'d, kind::Tuning>, Self::Permit, V>,
             device::Failure<Self::File, Vacancy>,
         >,
     ) -> Result<Self::Output, Self::Error> {
@@ -288,9 +343,9 @@ where
         let slot = <crate::Backend as Source<request::Context>>::target(fd.slot());
         let index = fd.index();
         let reserve = flight::Request::new(slots, target.operation::<kind::Tuning>());
-        let opts = opts.non_empty();
+        let opts = V::options(&opts);
         let result = run(native.as_mut(), fd, slot, index, opts, reserve);
-        Ok(pending::Tuning::from_native(native.submitted(result)?))
+        Ok(V::finish(native.submitted(result)?))
     }
 }
 

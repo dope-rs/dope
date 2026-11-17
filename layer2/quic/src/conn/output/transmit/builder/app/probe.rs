@@ -108,9 +108,8 @@ impl<'a, 'conn, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
                     {
                         return Ok(log::Append::Skip);
                     }
-                    let room = limit
-                        .saturating_sub(frames.len().saturating_add(conn::STREAM_FRAME_OVERHEAD));
-                    if record.range.len_usize() > room {
+                    let room = limit.saturating_sub(frames.len());
+                    if usize::from(record.wire_len.get()) > room {
                         return Ok(log::Append::Full);
                     }
                     let Some(mut resolved) = map.occupied(sender) else {

@@ -175,7 +175,7 @@ impl<S: Store> ops::DerefMut for Storage<'_, S> {
 /// Borrowed send representation with an exact bounded byte count.
 /// Retaining its addresses past this borrow requires the raw submission contract.
 pub trait Payload<'a> {
-    fn select(&self) -> Option<impl raw::Ready<'a>>;
+    fn select(self) -> Option<impl raw::Ready<'a>>;
 }
 
 /// Whether an operation returned shared wire send storage.

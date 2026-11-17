@@ -84,75 +84,9 @@ fn queued_writes_survive() {
         .expect("listener run");
     assert!(matches!(events.take().as_slice(), [
         admit::Event::Chunk(len),
-        admit::Event::Write(Ok(write::Outcome::Committed(())), egress::Pending::Present),
+        admit::Event::Write(Ok(()), egress::Pending::Present),
         writes @ ..,
-    ] if *len != 0 && writes.len() == 4 && writes.iter().all(|event| matches!(event, admit::Event::Write(Ok(write::Outcome::Committed(())), _)))));
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
-}
-
-#[test]
-fn bounded_reports_attempt() {
-    let mut finish = Completion::new();
-    let called = Rc::new(Cell::new(false));
-    let attempts = Rc::new(Cell::new(Vec::new()));
-    let gate = Gate::new();
-    let prepared = Listener::new::<1>(Default::default())
-        .direct(0)
-        .egress(egress::Config::shared(egress::Credit::fixed::<
-            1,
-            { write::Prefix::CAPACITY as u32 },
-        >()))
-        .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>((
-            admit::Bounded {
-                called: called.clone(),
-                gate: gate.clone(),
-                attempts: Rc::clone(&attempts),
-            },
-            Identity,
-        ))
-        .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .exchange(b"GO\n".to_vec(), |peer| {
-                        reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                        assert!(
-                            peer.finish()
-                                .expect("finish client peer")
-                                .expect("client peer failed")
-                                .is_empty()
-                        );
-                        assert!(called.get());
-                    })
-                    .expect("spawn admission peer");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    let attempts = attempts.take();
-    assert!(
-        !attempts.is_empty()
-            && attempts
-                .iter()
-                .all(|attempt| matches!(attempt, admit::Attempt {
-        input,
-        state: 9,
-        outcome: admit::BoundedWrite::Draft {
-            cause: write::error::Bounded::Geometry(egress::reserve::error::Full::Lane(_)),
-            written: 1,
-            body: Some(body),
-            end: write::End::Open,
-        },
-    } if *input != 0 && body == admit::FIRST_BODY))
-    );
+    ] if *len != 0 && writes.len() == 4 && writes.iter().all(|event| matches!(event, admit::Event::Write(Ok(()), _)))));
     assert!(
         reports.events().expect("reclaimed events").is_empty(),
         "unexpected reclaimed operations: {reports:?}"
@@ -218,18 +152,18 @@ fn direct_recycles_bodies() {
             Event::Submit(State::First),
             Event::Failed(Some(7), State::First, before, after),
             Event::Write(
-                Some(write::Prefix::CAPACITY),
-                Ok(write::Outcome::Committed(()))
+                Some(write::HEADER_CAPACITY),
+                Ok(())
             ),
             Event::Submit(State::Second),
             Event::Write(
-                Some(write::Prefix::CAPACITY),
-                Ok(write::Outcome::Committed(()))
+                Some(write::HEADER_CAPACITY),
+                Ok(())
             ),
             Event::Submit(State::Third),
             Event::Write(
-                Some(write::Prefix::CAPACITY),
-                Ok(write::Outcome::Committed(()))
+                Some(write::HEADER_CAPACITY),
+                Ok(())
             ),
             Event::Close(State::Done),
         ] if before == after
@@ -298,12 +232,8 @@ fn changed_body_commits() {
                 match event {
                     wake::Event::Chunk(len) => *len != 0,
                     wake::Event::Write(callback, result) => {
-                        callback.is_none_or(|(capacity, state)| {
-                            capacity == write::Prefix::CAPACITY && state == 2
-                        }) && matches!(
-                            result,
-                            Ok(write::Outcome::Committed(()) | write::Outcome::Deferred(_))
-                        )
+                        callback.is_none_or(|state| state == 2)
+                            && matches!(result, Ok(()) | Err(write::error::Admission::Deferred(_)))
                     }
                 }
             })
@@ -357,12 +287,12 @@ fn bounded_zero_rolls_back() {
             !attempts.is_empty()
                 && attempts.chunks(2).all(|events| matches!(events, [
         ZeroEvent::Zero {
-            input, before, capacity: Some(write::Prefix::CAPACITY),
-            result: Ok(write::Outcome::Committed(7)), allocations: (0, 0),
+            input, before, capacity: Some(write::HEADER_CAPACITY),
+            result: Ok(7), allocations: (0, 0),
             remaining, pending: egress::Pending::Absent,
         },
         ZeroEvent::Sent {
-            result: Ok(write::Outcome::Committed(())), allocations: (0, 0),
+            result: Ok(()), allocations: (0, 0),
             remaining: after,
         },
     ] if *input != 0 && *before != 0 && remaining == before && after + 1 == *before))
@@ -390,7 +320,7 @@ fn prefix_waiters_preserve_grants() {
         })
         .egress(egress::Config::shared(egress::Credit::fixed::<
             1,
-            { 2 * write::Prefix::CAPACITY as u32 },
+            { 2 * write::HEADER_CAPACITY as u32 },
         >()))
         .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>((
             Prefix {
@@ -468,12 +398,12 @@ fn prefix_waiters_preserve_grants() {
             callback: Some(State::Queued),
             state: State::Done,
             allocations: (0, 0),
-            result: Ok(write::Outcome::Committed(())),
+            result: Ok(()),
         } | Attempt {
             callback: None,
             state: State::Queued,
             allocations: (0, 0),
-            result: Ok(write::Outcome::Deferred(write::Deferred::Capacity)),
+            result: Err(write::error::Admission::Deferred(write::Deferred::Capacity)),
         }
     )));
     assert_eq!(seen.closed, Some(State::Done));

@@ -316,7 +316,7 @@ impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a, const FIRST: bool>
         slot: &mut reply::Slot<'_, 's, 'arena, 'credits, 'region, Counted<'a>>,
     ) -> Option<Self::Output> {
         match slot.terminal()? {
-            Terminal::Complete(done) => done.try_retain().map_err(Error::Retain).transpose(),
+            Terminal::Complete(done) => done.try_retain(|| {}).map_err(Error::Retain).transpose(),
             Terminal::Failed(fault) => Some(Err(Error::Failed(fault.into_error().failure))),
         }
     }
@@ -395,10 +395,9 @@ unsafe impl<'region> executor::raw::App<'region> for Maintenance<'_, '_, '_, '_,
         }
     }
     const COORDS: usize = 0;
+    const PARK: bool = true;
 
-    fn select_park() -> Option<Self::ParkPlan> {
-        Some(())
-    }
+    fn select_park() -> Self::ParkPlan {}
 
     /// # Safety
     /// The root, prepared plan, and park authority belong to this installed owner.

@@ -1,5 +1,5 @@
 use dope_core::driver::{self, life::finish, receive::credit, route::Identity, schedule::maint};
-use o3::base::cell::region;
+use o3::{base::cell::region, depot::raw::Proof};
 
 use crate::{
     link::{
@@ -13,10 +13,8 @@ use crate::{
                 },
                 drain::{Branch, Call, Plan, Storage, Strategy, Turn},
             },
-            recv::{
-                input,
-                storage::{tail, tail::Slot},
-            },
+            pending,
+            recv::{self, input, storage::tail},
         },
         setup,
         slot::recv::Capture,
@@ -26,9 +24,11 @@ use crate::{
 
 /// Statically selected teardown of connections owned by a pool.
 pub trait Policy<W: wire::Spec>: Sized {
-    fn close<'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, R, C, X, F>(
-        pool: &mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-        key: pool::Key<'d, ID>,
+    fn close<'a, 'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, R, C, X>(
+        entry: Result<
+            pool::Entry<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
+            pool::Missing<'a, 'p, 'w, 'd, ID, W>,
+        >,
         work: maint::Work<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
         handler: Handler<
@@ -44,13 +44,7 @@ pub trait Policy<W: wire::Spec>: Sized {
             ),
         >,
         release: impl FnMut(&mut X, B, &mut region::Token<region::Identity<'d, 1>>),
-        complete: impl FnOnce(
-            &mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-            &mut X,
-            &mut driver::Context<'_, 'd>,
-            Outcome<C::Output, C>,
-        ) -> F,
-    ) -> F
+    ) -> Outcome<C::Output, C, pool::Entry<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>>
     where
         'd: 'w,
         T: crate::Transport,
@@ -93,9 +87,11 @@ where
     I: Strategy<W>,
     <W::Receive as receive::Policy<W>>::Eof: Capture<W>,
 {
-    fn close<'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, R, C, X, F>(
-        pool: &mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-        key: pool::Key<'d, ID>,
+    fn close<'a, 'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, R, C, X>(
+        entry: Result<
+            pool::Entry<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
+            pool::Missing<'a, 'p, 'w, 'd, ID, W>,
+        >,
         work: maint::Work<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
         handler: Handler<
@@ -111,13 +107,7 @@ where
             ),
         >,
         mut release: impl FnMut(&mut X, B, &mut region::Token<region::Identity<'d, 1>>),
-        complete: impl FnOnce(
-            &mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-            &mut X,
-            &mut driver::Context<'_, 'd>,
-            Outcome<C::Output, C>,
-        ) -> F,
-    ) -> F
+    ) -> Outcome<C::Output, C, pool::Entry<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>>
     where
         'd: 'w,
         T: crate::Transport,
@@ -134,21 +124,41 @@ where
             mut commit,
             mut failed,
         } = handler;
-        let branch = 'close: {
-            let Some((entry, storage)) =
-                Slot::receive::<M::Ingress, _>(&mut pool.prepared.slab, key.parts())
-            else {
-                break 'close Branch::Missing;
-            };
-            let resident = match Start::begin(entry) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(pool::Missing {
+                key,
+                runtime,
+                pending,
+            }) => {
+                settle::<ID, W>(pending, runtime, key, false, false);
+                return Outcome::Missing(claim);
+            }
+        };
+        let key = entry.key;
+        let pool::change::raw::Prepared {
+            slab,
+            egress,
+            runtime,
+            flights,
+            pending,
+            ..
+        } = &mut *entry.root;
+        // SAFETY: consumption retains the original initialized slot and all paired owners.
+        let (slot, recv) = tail::Slot::from_live(unsafe { Proof::new((slab, key.parts().slot())) });
+        let (branch, waiting) = 'close: {
+            let resident = match Start::begin(slot) {
                 Start::Ready(resident) => resident,
-                Start::Terminal => break 'close Branch::Pending,
+                Start::Terminal(waiting) => break 'close (Branch::Pending, waiting),
             };
+            // SAFETY: selection retains the resident and its paired receive storage.
+            let storage: recv::Borrow<'_, 'd, ID, M::Ingress, input::Receipt<W, M>> =
+                unsafe { Proof::new((recv, key)) }.into();
             let target = resident.get().key.target();
             let id = credit::Id::new(target.dispatch());
             <Self as Strategy<W>>::cancel::<ID, input::Receipt<W, M>>(
                 &storage.storage,
-                &mut pool.prepared.runtime,
+                runtime,
                 id,
             );
             let mut entry = tail::Store::clear(resident);
@@ -156,22 +166,22 @@ where
             match stop {
                 setup::Cancellation::Ready => {}
                 setup::Cancellation::Pending => {
-                    break 'close Branch::Pending;
+                    break 'close (Branch::Pending, entry.get().send_status().is_waiting());
                 }
                 setup::Cancellation::Retry => {
                     let next = Resume::new(entry.get());
-                    break 'close Branch::Resume(next);
+                    break 'close (Branch::Resume(next), entry.get().send_status().is_waiting());
                 }
                 setup::Cancellation::Rejected(cause) => {
                     driver.rejected(cause);
-                    break 'close Branch::Pending;
+                    break 'close (Branch::Pending, entry.get().send_status().is_waiting());
                 }
             }
             let plan = Plan {
                 storage: Storage::<ID, W, S, M, B, IOV, D> {
                     entry,
-                    egress: &mut pool.prepared.egress,
-                    runtime: &mut pool.prepared.runtime,
+                    egress,
+                    runtime: &mut *runtime,
                     recv: storage,
                 },
                 turn: Turn {
@@ -180,7 +190,7 @@ where
                     driver,
                 },
                 call: Call {
-                    flights: &pool.prepared.flights,
+                    flights,
                     claim: &claim,
                     ctx,
                     owner: &mut owner,
@@ -190,46 +200,33 @@ where
             };
             <Self as Strategy<W>>::close(plan)
         };
-        let waiting = if let Some(handle) = pool.prepared.pending.handle(key) {
-            let waiting = pool
-                .prepared
-                .slab
-                .get(key.parts())
-                .is_some_and(|slot| slot.send_status().is_waiting());
-            if !waiting || matches!(&branch, Branch::Owner(_)) {
-                handle.wait_send(waiting);
-            }
-            waiting
-        } else {
-            false
-        };
-        if pool.prepared.pending.has_waiting()
-            && <W::Send as send::Policy<W>>::has_capacity(&pool.prepared.runtime)
-        {
-            pool.prepared.pending.release_send();
-        }
-        let outcome = match branch {
+        let waiting = settle::<ID, W>(
+            pending,
+            runtime,
+            key,
+            waiting,
+            matches!(&branch, Branch::Owner(_)),
+        );
+        match branch {
             Branch::Retired(proof) => Outcome::Retired(claim.finalize(proof)),
-            Branch::Pending => Outcome::Pending(claim),
+            Branch::Pending => Outcome::Pending(entry, claim),
             Branch::Owner(wait) => {
                 if !waiting {
                     wait.reschedule();
                 }
-                Outcome::Pending(claim)
+                Outcome::Pending(entry, claim)
             }
             Branch::Resume(next) => {
                 next.reschedule();
-                Outcome::Pending(claim)
+                Outcome::Pending(entry, claim)
             }
             Branch::Released { payload, resume } => {
                 release(ctx, payload, driver.state_token());
                 resume.reschedule();
-                Outcome::Pending(claim)
+                Outcome::Pending(entry, claim)
             }
-            Branch::Stale => Outcome::Stale(claim),
-            Branch::Missing => Outcome::Missing(claim),
-        };
-        complete(pool, ctx, driver, outcome)
+            Branch::Stale => Outcome::Stale(entry, claim),
+        }
     }
 
     fn finish<'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, F>(
@@ -263,4 +260,25 @@ where
     {
         pool.prepared.keyed(finish, free);
     }
+}
+
+fn settle<'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd>(
+    pending: &pending::Queue<'d, ID>,
+    runtime: &W::Runtime<'w, 'd, ID>,
+    key: pool::Key<'d, ID>,
+    waiting: bool,
+    owner: bool,
+) -> bool {
+    let waiting = if let Some(handle) = pending.handle(key) {
+        if !waiting || owner {
+            handle.wait_send(waiting);
+        }
+        waiting
+    } else {
+        false
+    };
+    if pending.has_waiting() && <W::Send as send::Policy<W>>::has_capacity(runtime) {
+        pending.release_send();
+    }
+    waiting
 }

@@ -14,7 +14,7 @@ use dope_manifold::{
     },
 };
 use dope_net::{
-    link::egress::{self, load::Value},
+    link::egress,
     wire::{self, Identity, domain, failure, open, receive as input, receive::scoped, terminal},
 };
 use dope_test::harness::{observe::Trace, signals::Gate};
@@ -90,13 +90,11 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for App {
         match mem::replace(&mut this.state, State::Done) {
             State::First(body) => {
                 this.state = State::Second;
-                let body = Value::Checked(body);
-                let done = conn.write().try_bounded(driver, |_, mut prefix| {
-                    assert!(matches!(this.state, State::Second));
-                    assert_eq!(prefix.writer().remaining(), write::Prefix::CAPACITY);
-                    prefix.commit(Some(body), ())
-                });
-                assert!(matches!(done, Ok(write::Outcome::Committed(()))));
+                assert!(matches!(this.state, State::Second));
+                assert!(matches!(
+                    conn.write().admit(body, driver),
+                    write::body::Admit::Committed
+                ));
                 this.first.hit();
             }
             State::Second => {
@@ -289,13 +287,11 @@ impl<'w, 'd: 'w, ID: route::Identity, const DRAIN: bool> handler::Scoped<'w, 'd,
             0 => {
                 conn.state_mut().phase = 1;
                 let body = egress::NonEmpty::from_array(&QUEUED_BODY);
-                let body = Value::Checked(body);
-                let done = conn.write().try_bounded(driver, |state, mut prefix| {
-                    assert_eq!(state.phase, 1);
-                    assert_eq!(prefix.writer().remaining(), write::Prefix::CAPACITY);
-                    prefix.commit(Some(body), ())
-                });
-                assert!(matches!(done, Ok(write::Outcome::Committed(()))));
+                assert_eq!(conn.state().phase, 1);
+                assert!(matches!(
+                    conn.write().admit(body, driver),
+                    write::body::Admit::Committed
+                ));
                 this.first.hit();
                 if this.gated {
                     return Outcome::Continue;
@@ -511,12 +507,10 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for BorrowedApp {
         }
         match chunk.as_ref() {
             b"A" => {
-                let body = Value::Checked(egress::NonEmpty::from_array(&QUEUED_BODY));
-                let done = conn
-                    .write()
-                    .try_bounded(driver, |_, prefix| prefix.commit(Some(body), ()));
+                let body = egress::NonEmpty::from_array(&QUEUED_BODY);
+                let done = conn.write().admit(body, driver);
                 self.written
-                    .record(matches!(done, Ok(write::Outcome::Committed(()))));
+                    .record(matches!(done, write::body::Admit::Committed));
                 self.first.hit();
             }
             b"B" => self.second.hit(),

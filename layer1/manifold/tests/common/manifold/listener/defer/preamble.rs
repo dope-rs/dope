@@ -38,7 +38,7 @@ pub const HANDSHAKE: &[u8] = b"hellohello";
 pub const PREFIX: u8 = 0xa5;
 pub const FRAMES: &[&[u8]] = &[b"PREAMBLE", b"SETTINGS"];
 
-pub enum Event<'a, 'd> {
+pub enum Event<'a> {
     Write(Result<(), consume::Error>),
     Input {
         expected: &'a [u8],
@@ -48,9 +48,7 @@ pub enum Event<'a, 'd> {
         expected: usize,
         actual: usize,
     },
-    Enqueued(
-        Result<write::Outcome<()>, error::Error<resident::Shared<'d>, (), convert::Infallible>>,
-    ),
+    Enqueued(Result<(), error::Admission>),
     Chunk(&'a [u8]),
     Eof(End),
 }
@@ -63,7 +61,7 @@ pub struct Preamble<F> {
 
 impl<F> Preamble<F>
 where
-    F: for<'a, 'd> Fn(Event<'a, 'd>) + Clone + Unpin,
+    F: for<'a> Fn(Event<'a>) + Clone + Unpin,
 {
     pub(crate) fn is_ready(&self) -> bool {
         self.pending == HANDSHAKE.len()
@@ -109,7 +107,7 @@ pub struct Runtime<F>(F, bool);
 
 impl<'w, 'd: 'w, ID: Identity + 'w, F> open::Runtime<'w, 'd, Preamble<F>, ID> for Runtime<F>
 where
-    F: for<'a, 'scope> Fn(Event<'a, 'scope>) + Clone + Unpin + 'w,
+    F: for<'a> Fn(Event<'a>) + Clone + Unpin + 'w,
 {
     fn open<C, T>(
         &mut self,
@@ -134,7 +132,7 @@ where
 
 impl<F> receive::Policy<Preamble<F>> for Recv
 where
-    F: for<'a, 'd> Fn(Event<'a, 'd>) + Clone + Unpin,
+    F: for<'a> Fn(Event<'a>) + Clone + Unpin,
 {
     type Batch<'a>
         = batch::One<&'a [u8]>
@@ -210,7 +208,7 @@ pub struct Send;
 
 impl<F> Policy<Preamble<F>> for Send
 where
-    F: for<'a, 'd> Fn(Event<'a, 'd>) + Clone + Unpin,
+    F: for<'a> Fn(Event<'a>) + Clone + Unpin,
 {
     type Reclaim = reclaim::OnSubmit;
 
@@ -299,7 +297,7 @@ where
 
 impl<F> wire::Spec for Preamble<F>
 where
-    F: for<'a, 'd> Fn(Event<'a, 'd>) + Clone + Unpin,
+    F: for<'a> Fn(Event<'a>) + Clone + Unpin,
 {
     type Connection<'d, ID: Identity + 'd>
         = Self
@@ -328,7 +326,7 @@ where
 
 impl<F> domain::Init<Preamble<F>> for Preamble<F>
 where
-    F: for<'a, 'd> Fn(Event<'a, 'd>) + Clone + Unpin,
+    F: for<'a> Fn(Event<'a>) + Clone + Unpin,
 {
     fn runtime<'w, 'd, ID: Identity + 'w>(
         _: domain::Limits,
@@ -350,7 +348,7 @@ pub struct App<'a, F> {
 
 impl<'d, ID: Identity, F> Application<'d, ID> for App<'_, F>
 where
-    F: for<'a, 'scope> Fn(Event<'a, 'scope>) + Clone + Unpin + 'd,
+    F: for<'a> Fn(Event<'a>) + Clone + Unpin + 'd,
 {
     type Conn = u8;
     type Build = convert::Infallible;
@@ -388,11 +386,19 @@ where
     ) {
         let this = self.get_mut();
         for frame in this.frames.iter().skip(usize::from(*conn.state())) {
-            let result = conn.write().try_bounded(driver, |state, mut prefix| {
-                prefix.write_slice(frame).unwrap();
-                *state += 1;
-                prefix.commit(None, ())
-            });
+            let mut output_slot = std::mem::MaybeUninit::uninit();
+            let result = match conn.write().try_prefix(driver, &mut output_slot) {
+                Ok(mut output) => {
+                    let (state, mut prefix) = output.get_mut().parts();
+                    prefix.write_slice(frame).unwrap();
+                    *state += 1;
+                    write::Output::finish(output, write::End::Open)
+                        .map_err(error::Mismatch::into_cause)
+                        .expect("prefix publication");
+                    Ok(())
+                }
+                Err(cause) => Err(cause),
+            };
             (this.observe)(Event::Enqueued(result));
         }
     }
@@ -413,7 +419,7 @@ where
 
 impl<'d, ID: Identity, F> send::Drive<'d, ID> for App<'_, F>
 where
-    F: for<'a, 'scope> Fn(Event<'a, 'scope>) + Clone + Unpin + 'd,
+    F: for<'a> Fn(Event<'a>) + Clone + Unpin + 'd,
 {
     fn send(
         self: Pin<&mut Self>,
@@ -429,7 +435,7 @@ where
 
 impl<'d, ID: Identity, F> handler::Borrowed<'d, ID> for App<'_, F>
 where
-    F: for<'a, 'scope> Fn(Event<'a, 'scope>) + Clone + Unpin + 'd,
+    F: for<'a> Fn(Event<'a>) + Clone + Unpin + 'd,
 {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,

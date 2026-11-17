@@ -2,7 +2,7 @@
 
 use std::mem::size_of;
 
-use o3::mem::{self, raw::Source as _, rc};
+use o3::mem::{self, rc};
 
 use crate::reply::{
     LaneIndex,
@@ -25,15 +25,14 @@ pub(in crate::reply) struct Owner<'arena, 'credits, 'region> {
 pub(in crate::reply) struct Payload<'arena, 'credits, 'region> {
     key: Key<'arena, 'credits, 'region>,
     lane: LaneIndex,
-    sum: payload::raw::Sum<'credits>,
-    entry: entries::Grant<'credits, entries::Unit>,
+    sum: payload::raw::Sum,
+    source: &'credits retain::raw::State,
 }
 
-/// One removed member and its exact source owner, kept inseparable until
-/// retention commits or the original acquisition is returned.
+/// One unchanged member and its source owner, retained until removal commits.
 pub(in crate::reply) struct Removal<'a, 'arena, 'credits, 'region, A: mem::raw::Amount<3, usize>> {
     owner: &'a mut Payload<'arena, 'credits, 'region>,
-    grant: payload::Grant<'credits, A>,
+    amount: A,
 }
 
 impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
@@ -43,11 +42,11 @@ impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
         entry_index: Index,
         acceptance: recv::Acceptance,
     ) -> Self {
-        let (lane, entry) = admitted.into_parts();
+        let (lane, source) = admitted.into_parts();
         let pool = lane.pool();
         let index = lane.index();
-        let sum = payload::raw::Sum::new(pool.lanes().credits.payload(index));
-        let key = pool.bind(entry_index);
+        let sum = payload::raw::Sum::new();
+        let key = pool.bind(entry_index, source);
         Self {
             order: order::State::Linked,
             acceptance: Some(acceptance),
@@ -55,7 +54,7 @@ impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
                 key,
                 lane: index,
                 sum,
-                entry,
+                source,
             },
         }
     }
@@ -97,16 +96,14 @@ impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
 impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
     fn release_slot(self) -> Release {
         let parts = self.key.parts();
-        let credit = parts.core.lanes.credits.capacity(self.lane);
-        let release = if credit.held()[0] == credit.reserve()[0] {
+        let release = if self.source.is_reserved() {
             Release::Reserved
         } else {
             Release::Shared
         };
-        // SAFETY: Registration minted the original lane and acquisition together;
-        // Owner stores their key and grant in this private Payload without any
-        // independent rebinding API. Consuming it returns that exact count once.
-        unsafe { pool::raw::Release::release_slot(&parts.core.lanes.credits, self.entry) };
+        // SAFETY: Registration bound this source before publishing the entry;
+        // consuming its Payload returns that original counted admission once.
+        unsafe { parts.core.lanes.credits.release_slot(self.source) };
         release
     }
 
@@ -185,36 +182,75 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
             lanes.wait_local(self.lane, key);
             return Err(Acquire::Backpressure(cause));
         }
-        lanes.take_waiting(self.lane, key, &mut self.sum, amount, acceptance)
+        lanes.take_waiting(self.lane, key, self.source, amount, acceptance)?;
+        // SAFETY: the same State just admitted this disjoint member; its checked
+        // total bounds the sum, and no user code runs before this commit.
+        unsafe { self.sum.add(amount) };
+        Ok(())
     }
 
-    fn restore<A: mem::raw::Amount<3, usize>>(&mut self, grant: payload::Grant<'credits, A>) {
-        // SAFETY: only Removal's rollback returns pieces of its captured source.
-        unsafe { self.sum.merge(grant) };
+    fn release_data<A: mem::raw::Amount<3, usize>>(&self, amount: A) {
+        let lanes = &self.key.parts().core.lanes;
+        // SAFETY: only a consumed Removal returns its member through this owner.
+        unsafe { lanes.release_data(self.source, amount) };
+        lanes.wake_local(self.lane, self.key.state().index());
     }
 
     fn try_lease<A: mem::raw::Amount<3, usize>>(
-        &mut self,
-        data: payload::Grant<'credits, payload::Data>,
-        grant: payload::Grant<'credits, A>,
+        &self,
+        amount: A,
     ) -> Result<mem::Lease<LeaseEdge<'arena, 'credits, 'region, A>>, rc::Error> {
-        let edge = match LeaseEdge::try_new(self.activate()) {
-            Ok(edge) => edge,
-            Err(error) => {
-                self.restore(data);
-                self.restore(grant);
-                return Err(error);
+        let edge = LeaseEdge::try_new(self.activate(), self.source)?;
+        Ok(mem::Lease::new(edge, amount))
+    }
+
+    fn try_hold(
+        &self,
+        amount: payload::Failure,
+    ) -> Result<retain::Held<'arena, 'credits, 'region>, rc::Error> {
+        Ok(match amount.split() {
+            payload::Class::Zero => retain::Held::empty(),
+            payload::Class::Values(amount) => {
+                let active = self.activate();
+                let credit = active.try_values()?;
+                // SAFETY: the new edge and unchanged member share this entry's source.
+                unsafe { active.state().values.activate(amount) };
+                retain::Held {
+                    bytes: None,
+                    values: Some(credit),
+                }
             }
-        };
-        self.key.release_data(self.lane, data);
-        Ok(mem::Lease::new(edge, grant))
+            payload::Class::Bytes(amount) => {
+                let active = self.activate();
+                let credit = active.try_bytes()?;
+                // SAFETY: the new edge and unchanged member share this entry's source.
+                unsafe { active.state().bytes.activate(amount) };
+                retain::Held {
+                    bytes: Some(credit),
+                    values: None,
+                }
+            }
+            payload::Class::Both(values, bytes) => {
+                let active = self.activate();
+                let held = retain::Held {
+                    values: Some(active.try_values()?),
+                    bytes: Some(active.try_bytes()?),
+                };
+                // SAFETY: both holds succeeded before either amount is transferred.
+                unsafe {
+                    active.state().values.activate(values);
+                    active.state().bytes.activate(bytes);
+                }
+                held
+            }
+        })
     }
 
     pub(in crate::reply) fn try_batch(
         &mut self,
     ) -> Result<retain::Batch<'arena, 'credits, 'region>, rc::Error> {
         Ok(retain::Batch {
-            edge: LeaseEdge::try_new(self.activate())?,
+            edge: LeaseEdge::try_new(self.activate(), self.source)?,
             sum: self.sum.drain(),
         })
     }
@@ -229,118 +265,49 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
     where
         A: mem::raw::Amount<3, usize>,
     {
-        // SAFETY: the owning slot/removal proves membership in this exact source;
-        // take splits it under the exclusive borrow, then Removal retains it.
-        let grant = unsafe { self.sum.take(amount) };
-        Removal { owner: self, grant }
-    }
-}
-
-impl<'arena, 'credits, 'region> Removal<'_, 'arena, 'credits, 'region, payload::Failure> {
-    fn try_hold(self) -> Result<retain::Held<'arena, 'credits, 'region>, rc::Error> {
-        let Self { owner, grant } = self;
-        let held = match payload::Failure::split(grant) {
-            payload::Class::Zero => retain::Held::empty(),
-            payload::Class::Values(grant) => {
-                let active = owner.activate();
-                let credit = match active.try_values() {
-                    Ok(credit) => credit,
-                    Err(error) => {
-                        owner.restore(grant);
-                        return Err(error);
-                    }
-                };
-                // SAFETY: the captured owner binds this held edge and grant to the same entry.
-                unsafe { active.state().values.activate(grant) };
-                retain::Held {
-                    bytes: None,
-                    values: Some(credit),
-                }
-            }
-            payload::Class::Bytes(grant) => {
-                let active = owner.activate();
-                let credit = match active.try_bytes() {
-                    Ok(credit) => credit,
-                    Err(error) => {
-                        owner.restore(grant);
-                        return Err(error);
-                    }
-                };
-                // SAFETY: the captured owner binds this held edge and grant to the same entry.
-                unsafe { active.state().bytes.activate(grant) };
-                retain::Held {
-                    bytes: Some(credit),
-                    values: None,
-                }
-            }
-            payload::Class::Both(values, bytes) => {
-                let active = owner.activate();
-                let held = (|| {
-                    Ok(retain::Held {
-                        values: Some(active.try_values()?),
-                        bytes: Some(active.try_bytes()?),
-                    })
-                })();
-                let held = match held {
-                    Ok(held) => held,
-                    Err(error) => {
-                        owner.restore(values);
-                        owner.restore(bytes);
-                        return Err(error);
-                    }
-                };
-                // SAFETY: both live edges and disjoint grants belong to this captured owner.
-                unsafe {
-                    active.state().values.activate(values);
-                    active.state().bytes.activate(bytes);
-                }
-                held
-            }
-        };
-        Ok(held)
+        Removal { owner: self, amount }
     }
 }
 
 impl<A: mem::raw::Amount<3, usize>> Removal<'_, '_, '_, '_, A> {
     pub(in crate::reply) fn release(self) {
-        self.owner.key.release_data(self.owner.lane, self.grant);
+        // SAFETY: Removal retains the original unremoved member and its sum.
+        let amount = unsafe { self.owner.sum.take(self.amount) };
+        self.owner.release_data(amount);
     }
 }
 
 impl<'arena, 'credits, 'region> Removal<'_, 'arena, 'credits, 'region, payload::Value> {
-    pub(in crate::reply) fn try_retain(
+    pub(in crate::reply) fn try_retain<T>(
         self,
-    ) -> Result<retain::Held<'arena, 'credits, 'region>, rc::Error> {
-        let Self { owner, grant } = self;
-        let (data, grant) = payload::Value::split(grant);
-        let held = match (Removal {
-            owner: &mut *owner,
-            grant,
-        })
-        .try_hold()
-        {
-            Ok(held) => held,
-            Err(error) => {
-                owner.restore(data);
-                return Err(error);
-            }
-        };
-        owner.key.release_data(owner.lane, data);
-        Ok(held)
+        before: impl FnOnce(),
+        take: impl FnOnce() -> T,
+    ) -> Result<retain::Retained<'arena, 'credits, 'region, T>, rc::Error> {
+        let Self { owner, amount } = self;
+        let (data, retained) = amount.split();
+        let held = owner.try_hold(retained);
+        before();
+        let held = held?;
+        let value = take();
+        // SAFETY: every hold succeeded; this unchanged member now transfers once.
+        unsafe { owner.sum.take(amount) };
+        owner.release_data(data);
+        Ok(retain::Retained::new(value, held))
     }
 
     pub(in crate::reply) fn try_value(
         self,
     ) -> Result<Option<mem::Lease<LeaseEdge<'arena, 'credits, 'region>>>, rc::Error> {
-        let Self { owner, grant } = self;
-        let (data, grant) = payload::Value::split(grant);
-        match payload::Failure::claim(grant) {
-            None => {
-                owner.key.release_data(owner.lane, data);
-                Ok(None)
-            }
-            Some(grant) => owner.try_lease(data, grant).map(Some),
-        }
+        let Self { owner, amount } = self;
+        let (data, retained) = amount.split();
+        let lease = match retained.claim() {
+            None => None,
+            Some(retained) => Some(owner.try_lease(retained)?),
+        };
+        // SAFETY: the lease was admitted without removing this original member.
+        unsafe { owner.sum.take(amount) };
+        owner.release_data(data);
+        Ok(lease)
     }
 }
 
@@ -354,13 +321,17 @@ impl<'arena, 'credits, 'region>
         mem::Lease<LeaseEdge<'arena, 'credits, 'region, payload::Failure<usage::Bytes>>>,
         rc::Error,
     > {
-        let Self { owner, grant } = self;
-        let (data, grant) = payload::Value::split(grant);
-        owner.try_lease(data, grant)
+        let Self { owner, amount } = self;
+        let (data, retained) = amount.split();
+        let lease = owner.try_lease(retained)?;
+        // SAFETY: the lease was admitted without removing this original member.
+        unsafe { owner.sum.take(amount) };
+        owner.release_data(data);
+        Ok(lease)
     }
 }
 
 const _: () = {
-    assert!(size_of::<Payload<'static, 'static, 'static>>() == 7 * size_of::<usize>());
-    assert!(size_of::<Owner<'static, 'static, 'static>>() == size_of::<[usize; 8]>());
+    assert!(size_of::<Payload<'static, 'static, 'static>>() == 6 * size_of::<usize>());
+    assert!(size_of::<Owner<'static, 'static, 'static>>() == size_of::<[usize; 7]>());
 };

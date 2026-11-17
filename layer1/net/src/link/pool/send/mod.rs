@@ -1,24 +1,20 @@
 use dope_core::{
     driver::{self, route::Identity},
-    io::event::net::send::Completion,
+    io::event::net::send::Completion as Native,
 };
-use send::reclaim;
+use o3::base::cell::region;
+use send::{Store as _, reclaim};
 
 use crate::{
     link::{
         Consumed,
-        egress::{
-            self, data,
-            reserve::{demand, error},
-        },
-        event::{DirectStatus, SendFailure, SendOutcome},
+        duplex::sending,
+        egress::{self, data, reserve::{demand, error}},
+        event::{DirectStatus, SendFailure, SendOutcome, SendSource},
         pool::{self, recv::input},
-        slot::{
-            transmit::{self, outcome::Data},
-            types,
-        },
+        slot::{transmit::{self, graceful, outcome}, types},
     },
-    wire::{self, send},
+    wire::{self, send, terminal},
 };
 
 #[must_use]
@@ -28,280 +24,263 @@ pub enum Rejected<B> {
     Egress(error::Capacity<B>),
 }
 
-/// Exclusive state access after queued and acknowledgement ownership is clear.
-pub struct Direct<'a, S> {
-    state: &'a mut S,
+#[must_use = "publish the observed send completion"]
+pub enum Completion<P> {
+    Direct(Direct<P>),
+    Ready(P, SendOutcome),
+}
+
+/// Direct retirement authority after queue and acknowledgement clearance.
+pub struct Direct<P> {
+    owner: P,
     status: DirectStatus,
 }
 
-impl<'a, S> Direct<'a, S> {
-    const fn new(state: &'a mut S, status: DirectStatus) -> Self {
-        Self { state, status }
-    }
-
-    pub fn into_parts(self) -> (&'a mut S, DirectStatus) {
-        (self.state, self.status)
+impl<P> Direct<P> {
+    pub fn into_parts(self) -> (P, DirectStatus) {
+        (self.owner, self.status)
     }
 }
 
-const _: () = {
-    assert!(
-        std::mem::size_of::<Direct<'static, ()>>()
-            == std::mem::size_of::<usize>() + std::mem::size_of::<DirectStatus>()
-    );
-};
+#[must_use = "publish completion before dispatching the admitted sender"]
+pub struct Publication<
+    'a, 'p, 'w, 'd: 'w, ID: Identity + 'w, T: crate::Transport,
+    W: wire::Spec + 'w + 'd, S, M: input::Mode<W>,
+    B: data::raw::Payload<'d>, const IOV: usize, D: demand::Mode,
+> {
+    sender: transmit::Sender<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
+    space: send::Availability,
+}
 
-pub struct Settlement<
-    'a,
-    'p,
-    'w,
-    'd,
-    ID: Identity + 'w,
+impl<'a, 'p, 'w, 'd: 'w, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+    Publication<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
+where
     T: crate::Transport,
     W: wire::Spec + 'w + 'd,
-    S,
     M: input::Mode<W>,
     B: data::raw::Payload<'d>,
-    const IOV: usize,
-    D: demand::Mode = demand::Fallible,
-> where
-    'd: 'w,
+    D: demand::Mode,
 {
-    pool: &'a mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-    done: Completion<'d>,
+    pub fn connection(&mut self) -> &mut types::Connection<'w, 'd, ID, W, S> {
+        self.sender.entry.get_mut()
+    }
+
+    pub fn publish(
+        mut self,
+        before: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>),
+    ) -> transmit::Sender<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
+        {
+            let (_, connection, pending, _) = self.sender.entry.reborrow().into_transmit();
+            pending.wait_send(connection.send_status().is_waiting());
+            before(connection);
+        }
+        <M::Ingress as input::Dispatch<W>>::release::<ID>(
+            self.space, &mut self.sender.entry.root.runtime,
+        );
+        if self.space == send::Availability::Released {
+            self.sender.entry.root.pending.release_send();
+        }
+        self.sender
+    }
 }
 
-impl<'a, 'p, 'w, 'd, ID: Identity + 'w, T, W, S, M, B: data::raw::Payload<'d>, const IOV: usize, D>
-    Settlement<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
+impl<'p, 'w, 'd: 'w, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+    pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
-    'd: 'w,
     T: crate::Transport,
     W: wire::Spec + 'w + 'd,
     M: input::Mode<W>,
+    B: data::raw::Payload<'d>,
     D: demand::Mode,
 {
-    pub(in crate::link::pool) fn new(
-        pool: &'a mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-        done: Completion<'d>,
-    ) -> Self {
-        Self { pool, done }
-    }
-
-    pub fn settle<O>(
-        self,
+    pub fn settle<C>(
+        &mut self,
+        done: Native<'d>,
         driver: &mut driver::Context<'_, 'd>,
-        direct: impl for<'scope> FnOnce(Direct<'scope, S>) -> O,
-        free: impl FnMut(pool::Key<'d, ID>, B),
-        complete: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>, &SendOutcome<'d, ID, O>),
-    ) -> SendOutcome<'d, ID, O> {
-        self.run(
-            driver,
-            |_| {},
-            move |egress, result| {
-                if egress.queue.is_active() || egress.connection.sending().has_ack() {
-                    Self::close(egress, result)
-                } else {
-                    Self::direct(egress, result, direct)
-                }
-            },
-            free,
-            complete,
-        )
-    }
-
-    pub fn settle_owned(
-        self,
-        driver: &mut driver::Context<'_, 'd>,
-        before: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>),
-        complete: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>, &SendOutcome<'d, ID, ()>),
-    ) -> SendOutcome<'d, ID, ()> {
-        self.run(driver, before, Self::close, |_, body| drop(body), complete)
-    }
-
-    fn close<O>(
-        egress: &mut transmit::Sender<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>,
-        result: Data,
-    ) -> SendOutcome<'d, ID, O> {
-        let key = egress.connection.key();
-        egress.connection.sending().abort_queue(&mut egress.queue);
-        match result {
-            Data::Sent(sent) => {
-                egress.connection.discard();
-                SendOutcome::CloseSent {
-                    key,
-                    acknowledged: sent.into_len(),
-                }
-            }
-            Data::Rejected(error) => SendOutcome::Rejected {
-                key,
-                failure: SendFailure::Direct(error),
-            },
-            Data::Failed(error) => SendOutcome::Failed {
-                key,
-                failure: SendFailure::Direct(error),
-            },
-            Data::Closed => {
-                egress.connection.discard();
-                SendOutcome::Close(key)
-            }
-        }
-    }
-
-    fn direct<O>(
-        egress: &mut transmit::Sender<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>,
-        result: Data,
-        settle: impl for<'scope> FnOnce(Direct<'scope, S>) -> O,
-    ) -> SendOutcome<'d, ID, O> {
-        let status = match result {
-            Data::Sent(sent) => {
-                let len = sent.into_len();
-                let ack = match <<W::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::direct()
-                {
-                    reclaim::Direct::Independent => None,
-                    reclaim::Direct::Retained => Some(Consumed::proven(len)),
-                };
-                DirectStatus::Sent(ack)
-            }
-            Data::Rejected(error) => DirectStatus::Rejected(error),
-            Data::Failed(error) => DirectStatus::Failed(error),
-            Data::Closed => DirectStatus::Closed,
-        };
-        SendOutcome::Direct {
-            key: egress.connection.key(),
-            settled: settle(Direct::new(&mut egress.connection.state, status)),
-        }
-    }
-
-    fn run<O>(
-        self,
-        driver: &mut driver::Context<'_, 'd>,
-        before: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>),
-        mode: impl FnOnce(
-            &mut transmit::Sender<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>,
-            Data,
-        ) -> SendOutcome<'d, ID, O>,
-        release: impl FnMut(pool::Key<'d, ID>, B),
-        complete: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>, &SendOutcome<'d, ID, O>),
-    ) -> SendOutcome<'d, ID, O> {
-        let Self { pool, done } = self;
+        context: &mut C,
+        before: impl FnOnce(&mut C, &mut types::Connection<'w, 'd, ID, W, S>),
+        mut release: impl FnMut(
+            &mut C, pool::Key<'d, ID>, B, &mut region::Token<region::Identity<'d, 1>>,
+        ),
+        complete: impl FnOnce(
+            &mut C,
+            Completion<Publication<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>>,
+            &mut driver::Context<'_, 'd>,
+        ),
+    ) {
         let (token, result) = done.into_parts();
-        let key = match pool.keys.parse(token) {
-            Ok(key) => key,
-            Err(_) => return SendOutcome::Drop,
-        };
-        let (result, space) = {
-            let Some(mut egress) = pool.sender(key.connection()) else {
-                return SendOutcome::Drop;
+        let Ok(key) = self.keys.parse(token) else { return };
+        let Some(mut sender) = self.sender(key.connection()) else { return };
+        let (event, space) = {
+            let (flights, connection, _, mut queue) = sender.entry.reborrow().into_transmit();
+            let Some(inflight) = connection.observe_send(token, |slot| before(context, slot)) else {
+                return;
             };
-            if !egress
-                .connection
-                .control
-                .engine
-                .operations
-                .sending
-                .matches(token)
-            {
-                return SendOutcome::Drop;
-            }
-            before(egress.connection);
-            let (end, space) = {
-                use crate::wire::send::Availability;
-
-                match result {
-                    Ok(bytes) => {
-                        egress
-                            .connection
-                            .sending()
-                            .sent(egress.flights, driver, bytes, key)
+            let origin = inflight.origin();
+            let conn = &mut connection.control;
+            let (result, space) = 'native: {
+                let bytes = match result {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        conn.discard();
+                        break 'native (Err(SendOutcome::Failed {
+                            failure: origin.failure(error),
+                        }), send::Availability::Unchanged);
                     }
-                    Err(error) => (
-                        egress.connection.sending().failed(error),
-                        Availability::Unchanged,
-                    ),
+                };
+                let Some(fd) = conn.engine.establish.fd() else {
+                    conn.discard();
+                    break 'native (Err(SendOutcome::Close), send::Availability::Unchanged);
+                };
+                let sent = match inflight.try_complete(&mut conn.engine.operations.lifecycle, bytes) {
+                    Ok(done) => done,
+                    Err(error) => {
+                        conn.discard();
+                        break 'native (Err(SendOutcome::Invalid { error: error.into() }),
+                            send::Availability::Unchanged);
+                    }
+                };
+                let source = match origin {
+                    SendSource::Direct => sending::Source::Direct,
+                    SendSource::Queued => sending::Source::Queued,
+                    SendSource::Terminal => sending::Source::Terminal,
+                    SendSource::WriteShutdown => {
+                        wake(conn, origin);
+                        break 'native (Ok(sent), send::Availability::Unchanged);
+                    }
+                };
+                let done = send::Completion::from_sent(send::Storage::new(&mut conn.send), sent);
+                let wire = send::Context::new(&mut conn.wire, done);
+                let (submit, avail, captured) = match conn.engine.send(&mut conn.terminal) {
+                    terminal::Admission::Open(end) => {
+                        let done = <W::Send as send::Policy<W>>::after_send::<ID>(wire, end);
+                        let (next, captured) = done.into_parts();
+                        let (ready, avail) = next.into_parts();
+                        let op = conn.engine.operations.submission(source);
+                        let submit = op.submit(fd, flights, driver, key.target(), ready.resolve(captured));
+                        (submit, avail, captured)
+                    }
+                    terminal::Admission::Closed => {
+                        let next = <W::Send as send::Policy<W>>::settle::<ID>(wire, conn.terminal.drain());
+                        let (ready, avail) = next.into_parts();
+                        if conn.engine.operations.lifecycle.close.is_discarded() {
+                            break 'native (Err(SendOutcome::Close), avail);
+                        }
+                        let op = conn.engine.operations.submission(source);
+                        let submit = op.submit(fd, flights, driver, key.target(), ready.close_after());
+                        (submit, avail, terminal::Captured::None)
+                    }
+                };
+                let handoff = outcome::Handoff::from_attempt(submit);
+                conn.engine.captured(captured);
+                if let outcome::Progress::Rejected(error) = handoff.progress() {
+                    conn.discard();
+                    break 'native (Err(SendOutcome::Rejected { failure: origin.failure(error) }), avail);
                 }
+                if let terminal::Admission::Open(end) = conn.engine.send(&mut conn.terminal) {
+                    let Some(fd) = conn.engine.establish.fd() else {
+                        conn.discard();
+                        break 'native (Err(SendOutcome::Close), avail);
+                    };
+                    let op = conn.engine.operations.submission(source);
+                    let (captured, handoff) = graceful::submit_pending(
+                        send::Context::new(&mut conn.wire, send::Storage::new(&mut conn.send)),
+                        op, fd, flights, driver, key.target(), terminal::Admission::Open(end),
+                    );
+                    conn.engine.captured(captured);
+                    if let outcome::Progress::Rejected(error) = handoff.progress() {
+                        conn.discard();
+                        break 'native (Err(SendOutcome::Rejected { failure: origin.failure(error) }), avail);
+                    }
+                }
+                if conn.engine.operations.sending.is_inflight()
+                    || conn.engine.operations.lifecycle.is_waiting()
+                {
+                    break 'native (Err(SendOutcome::Pending), avail);
+                }
+                wake(conn, origin);
+                (Ok(sent), avail)
             };
-            let key = key.connection();
-            let result = {
-                use crate::link::slot::transmit::outcome::{Data, End, Terminal};
-
-                match end {
-                    Terminal::Pending | Terminal::Drop => SendOutcome::Drop,
-                    Terminal::Queued(Data::Sent(sent)) => {
-                        match egress.connection.sending().settle(
-                            &mut egress.queue,
-                            driver.region_token(),
-                            key,
-                            sent,
-                            release,
-                        ) {
-                            Ok(used) => SendOutcome::Queued {
-                                key,
-                                acknowledged: used,
-                            },
-                            Err(error) => {
-                                egress.connection.sending().abort_queue(&mut egress.queue);
-                                egress.connection.discard();
-                                SendOutcome::Invalid { key, error }
+            let event = match result {
+                Err(SendOutcome::Pending) => Ok(SendOutcome::Pending),
+                Err(SendOutcome::Invalid { error }) => {
+                    connection.sending().abort_queue(&mut queue);
+                    Ok(SendOutcome::Invalid { error })
+                }
+                result if origin == SendSource::Direct => {
+                    if queue.is_active() || connection.sending().has_ack() {
+                        connection.sending().abort_queue(&mut queue);
+                        Ok(match result {
+                            Ok(_) | Err(SendOutcome::Close) => {
+                                connection.discard();
+                                SendOutcome::Close
                             }
-                        }
-                    }
-                    Terminal::Queued(Data::Rejected(error)) => {
-                        egress.connection.sending().abort_queue(&mut egress.queue);
-                        SendOutcome::Rejected {
-                            key,
-                            failure: SendFailure::Queued(error),
-                        }
-                    }
-                    Terminal::Queued(Data::Failed(error)) => {
-                        egress.connection.sending().abort_queue(&mut egress.queue);
-                        SendOutcome::Failed {
-                            key,
-                            failure: SendFailure::Queued(error),
-                        }
-                    }
-                    Terminal::Queued(Data::Closed) => {
-                        egress.connection.sending().abort_queue(&mut egress.queue);
-                        SendOutcome::Close(key)
-                    }
-                    Terminal::Direct(result) => mode(&mut egress, result),
-                    Terminal::Control(End::Sent | End::Closed) => SendOutcome::Terminal { key },
-                    Terminal::Control(End::Rejected(error)) => SendOutcome::Rejected {
-                        key,
-                        failure: SendFailure::Terminal(error),
-                    },
-                    Terminal::Write(End::Rejected(error)) => SendOutcome::Rejected {
-                        key,
-                        failure: SendFailure::WriteShutdown(error),
-                    },
-                    Terminal::Control(End::Failed(error)) => SendOutcome::Failed {
-                        key,
-                        failure: SendFailure::Terminal(error),
-                    },
-                    Terminal::Write(End::Failed(error)) => SendOutcome::Failed {
-                        key,
-                        failure: SendFailure::WriteShutdown(error),
-                    },
-                    Terminal::Write(End::Sent) => SendOutcome::WriteShutdown { key },
-                    Terminal::Write(End::Closed) => SendOutcome::Close(key),
-                    Terminal::Invalid(error) => {
-                        egress.connection.sending().abort_queue(&mut egress.queue);
-                        SendOutcome::Invalid {
-                            key,
-                            error: error.into(),
-                        }
+                            Err(error) => error,
+                        })
+                    } else {
+                        Err(match result {
+                            Ok(sent) => DirectStatus::Sent(
+                                match <<W::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::direct() {
+                                    reclaim::Direct::Independent => None,
+                                    reclaim::Direct::Retained => Some(Consumed::proven(sent.into_len())),
+                                },
+                            ),
+                            Err(SendOutcome::Rejected { failure: SendFailure::Direct(error) }) => DirectStatus::Rejected(error),
+                            Err(SendOutcome::Failed { failure: SendFailure::Direct(error) }) => DirectStatus::Failed(error),
+                            Err(SendOutcome::Close) => DirectStatus::Closed,
+                            _ => unreachable!("direct"),
+                        })
                     }
                 }
+                Ok(sent) if origin == SendSource::Queued => {
+                    let (native, state) = driver.reborrow().into_regions();
+                    Ok(match connection.sending().settle(
+                        &mut queue, native, key.connection(), sent,
+                        |key, body| release(context, key, body, state),
+                    ) {
+                        Ok(acknowledged) => SendOutcome::Queued { acknowledged },
+                        Err(error) => {
+                            connection.sending().abort_queue(&mut queue);
+                            connection.discard();
+                            SendOutcome::Invalid { error }
+                        }
+                    })
+                }
+                Ok(_) => Ok(match origin {
+                    SendSource::Terminal => SendOutcome::Terminal,
+                    SendSource::WriteShutdown => SendOutcome::WriteShutdown,
+                    SendSource::Direct | SendSource::Queued => unreachable!("origin"),
+                }),
+                Err(error) => {
+                    if origin == SendSource::Queued {
+                        connection.sending().abort_queue(&mut queue);
+                    }
+                    Ok(match (origin, error) {
+                        (SendSource::Terminal, SendOutcome::Close) => SendOutcome::Terminal,
+                        (_, error) => error,
+                    })
+                }
             };
-            egress
-                .pending
-                .wait_send(egress.connection.send_status().is_waiting());
-            complete(egress.connection, &result);
-            (result, space)
+            (event, space)
         };
-        <M::Ingress as input::Dispatch<W>>::release::<ID>(space, &mut pool.prepared.runtime);
-        if space == send::Availability::Released {
-            pool.prepared.pending.release_send();
+        let owner = Publication { sender, space };
+        complete(context, match event {
+            Ok(outcome) => Completion::Ready(owner, outcome),
+            Err(status) => Completion::Direct(Direct { owner, status }),
+        }, driver);
+    }
+}
+
+fn wake<'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec>(
+    conn: &mut types::Control<'w, 'd, ID, W>, origin: SendSource,
+) {
+    if origin == SendSource::Terminal {
+        if !conn.send.as_slice().is_empty() {
+            conn.engine.ready_handle().activate();
+        } else {
+            transmit::Sending::finish_end(conn);
         }
-        result
+    } else if conn.terminal.has_send() {
+        conn.engine.ready_handle().activate();
     }
 }

@@ -53,6 +53,10 @@ use crate::common::fiber::{Connect, Peer};
 type Wire = Tls<Server>;
 
 pub const LEN: usize = 50_000;
+pub const CAPACITY_BODY: &[u8] = b"direct reply after ciphertext release";
+type Payload<'d, G> = dope::net::link::egress::data::Bound<resident::Shared<'d>, G>;
+type Response<'d> = Payload<'d, o3::buffer::resident::bound::AtMost<LEN>>;
+type Small<'d> = Payload<'d, o3::buffer::resident::bound::AtMost<{ CAPACITY_BODY.len() }>>;
 pub const PREFIX: &[u8] = b"HTTP/1.1 200 OK\r\n\r\n";
 const START: &[u8] = b"start";
 const AFTER: &[u8] = b"after";
@@ -67,16 +71,16 @@ pub enum Mode {
 pub struct Reply<'r> {
     pub body: Vec<u8>,
     pub closes: Gate,
-    pub observe: &'r dyn for<'d> Fn(Event<'d>),
+    pub observe: &'r dyn Fn(Event),
     pub mode: Mode,
 }
 
-pub enum Event<'d> {
+pub enum Event {
     Open(dope_tls::Error),
     Wire((dope_tls::Error, Option<dope_tls::Error>)),
     Peer(socket::Error),
     Copy(storage::AllocError),
-    Write(Result<write::Outcome<()>, error::Error<resident::Shared<'d>, (), convert::Infallible>>),
+    Write(Result<(), error::Admission>),
     Input(Vec<u8>),
     Eof(bool),
 }
@@ -84,7 +88,7 @@ pub enum Event<'d> {
 impl Reply<'_> {
     fn reply<'d, ID: Identity>(
         &self,
-        conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool>,
+        conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool, Response<'d>>,
         driver: &mut Context<'_, 'd>,
     ) {
         let bytes = match Shared::try_copy(&self.body) {
@@ -98,17 +102,27 @@ impl Reply<'_> {
         self.send(conn, driver, resident::Shared::from(bytes));
     }
 
-    fn send<'d, ID: Identity>(
+    fn send<'d, ID: Identity, G: o3::buffer::resident::bound::Bound>(
         &self,
-        conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool>,
+        conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool, Payload<'d, G>>,
         driver: &mut Context<'_, 'd>,
         bytes: resident::Shared<'d>,
     ) {
-        let body = egress::Load::new(bytes);
-        let result = conn.write().try_bounded(driver, move |_, mut prefix| {
-            prefix.write_slice(PREFIX).unwrap();
-            prefix.commit(Some(Value::Unchecked(body)), ())
-        });
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let result = match conn.write().try_open(driver, &mut output_slot) {
+            Ok(mut output) => {
+                output.get_mut().parts().1.write_slice(PREFIX).unwrap();
+                let body = egress::Load::new(bytes)
+                    .try_bound::<G>()
+                    .map_err(|excess| excess.maximum)
+                    .expect("fixture resident bound");
+                write::Output::try_publish(output, Value::Unchecked(body), write::End::Open)
+                    .map_err(error::Mismatch::into_cause)
+                    .expect("publication");
+                Ok(())
+            }
+            Err(cause) => Err(cause),
+        };
         (self.observe)(Event::Write(result));
     }
 }
@@ -119,7 +133,7 @@ impl<'d, ID: Identity> Application<'d, ID> for Reply<'_> {
     type Wire = Wire;
     type WireFailure = Self;
     type Retirement = retire::Close;
-    type Egress = resident::Shared<'d>;
+    type Egress = Response<'d>;
     type Input = Borrowed;
     type Send = send::Silent;
 
@@ -137,7 +151,7 @@ impl<'d, ID: Identity> Application<'d, ID> for Reply<'_> {
 
     fn eof(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool, Response<'d>>,
         _: End,
         driver: &mut Context<'_, 'd>,
     ) {
@@ -148,7 +162,10 @@ impl<'d, ID: Identity> Application<'d, ID> for Reply<'_> {
         }
     }
 
-    fn close<'e>(self: Pin<&mut Self>, _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, bool>) {
+    fn close<'e>(
+        self: Pin<&mut Self>,
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, bool, Response<'d>>,
+    ) {
         self.get_mut().closes.hit();
     }
 }
@@ -166,7 +183,7 @@ impl<'r, 'w, 'd: 'w, ID: Identity> failures::Policy<'w, 'd, Reply<'r>, ID> for R
 
     fn wire_failed<'e>(
         app: Pin<&mut Reply<'r>>,
-        _: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Wire, bool>,
+        _: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Wire, bool, Response<'d>>,
         cause: terminal::Error<'w, Wire>,
     ) {
         (app.get_mut().observe)(Event::Wire(cause.into_parts()));
@@ -176,7 +193,7 @@ impl<'r, 'w, 'd: 'w, ID: Identity> failures::Policy<'w, 'd, Reply<'r>, ID> for R
 impl<'d, ID: Identity> handler::Borrowed<'d, ID> for Reply<'_> {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, bool, Response<'d>>,
         chunk: R,
         driver: &mut Context<'_, 'd>,
     ) -> Outcome {
@@ -227,7 +244,7 @@ impl<'d> Application<'d, KeyTag<0>> for Capacity<'_, 'd> {
     type Wire = Wire;
     type WireFailure = Self;
     type Retirement = retire::Close;
-    type Egress = resident::Shared<'d>;
+    type Egress = Small<'d>;
     type Input = Borrowed;
     type Send = send::Reported<send::Silent>;
 
@@ -245,7 +262,7 @@ impl<'d> Application<'d, KeyTag<0>> for Capacity<'_, 'd> {
 
     fn activate<'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, KeyTag<0>, Wire, bool>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, KeyTag<0>, Wire, bool, Small<'d>>,
         driver: &mut Context<'_, 'd>,
     ) {
         let this = self.get_mut();
@@ -262,7 +279,7 @@ impl<'d> Application<'d, KeyTag<0>> for Capacity<'_, 'd> {
 
     fn close<'e>(
         self: Pin<&mut Self>,
-        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, KeyTag<0>, Wire, bool>,
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, KeyTag<0>, Wire, bool, Small<'d>>,
     ) {
         self.get_mut().reply.closes.hit();
     }
@@ -283,7 +300,7 @@ impl<'r, 'w, 'd: 'w> failures::Policy<'w, 'd, Capacity<'r, 'd>, KeyTag<0>> for C
 
     fn wire_failed<'e>(
         app: Pin<&mut Capacity<'r, 'd>>,
-        _: conn::Ctx<'e, '_, '_, '_, 'w, 'd, KeyTag<0>, Wire, bool>,
+        _: conn::Ctx<'e, '_, '_, '_, 'w, 'd, KeyTag<0>, Wire, bool, Small<'d>>,
         cause: terminal::Error<'w, Wire>,
     ) {
         (app.get_mut().reply.observe)(Event::Wire(cause.into_parts()));
@@ -293,7 +310,7 @@ impl<'r, 'w, 'd: 'w> failures::Policy<'w, 'd, Capacity<'r, 'd>, KeyTag<0>> for C
 impl<'d> handler::Borrowed<'d, KeyTag<0>> for Capacity<'_, 'd> {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, KeyTag<0>, Wire, bool>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, KeyTag<0>, Wire, bool, Small<'d>>,
         chunk: R,
         _: &mut Context<'_, 'd>,
     ) -> Outcome {
@@ -315,8 +332,8 @@ impl<'d> send::Report<'d, KeyTag<0>> for Capacity<'_, 'd> {
         let (id, body, cause) = release.into_parts();
         (self.get_mut().observe)(Change::Released {
             index: id.index().into_usize(),
-            body: body.as_ref(),
-            resident: body.resident(),
+            body: body.as_inner().as_ref(),
+            resident: body.as_inner().resident(),
             cause,
         });
     }

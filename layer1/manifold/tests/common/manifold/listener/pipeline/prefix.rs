@@ -31,12 +31,6 @@ pub enum State {
     Done,
 }
 
-#[derive(Debug)]
-pub enum Error {
-    Capacity(write::Reject),
-    Mismatch(error::Cause),
-}
-
 pub enum Admission {
     Committed,
     Deferred(write::Deferred),
@@ -57,16 +51,6 @@ impl<B> From<Admit<B>> for Admission {
     }
 }
 
-impl<B, R> From<error::Error<B, R, Infallible>> for Error {
-    fn from(error: error::Error<B, R, Infallible>) -> Self {
-        match error {
-            error::Error::Capacity(cause) => Self::Capacity(cause),
-            error::Error::Mismatch(cause) => Self::Mismatch(cause.into_parts().0),
-            error::Error::Build(cause) => match cause {},
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct Seen {
     pub chunks: Vec<usize>,
@@ -79,7 +63,7 @@ pub struct Attempt {
     pub callback: Option<State>,
     pub state: State,
     pub allocations: (usize, usize),
-    pub result: Result<write::Outcome<()>, Error>,
+    pub result: Result<(), error::Admission>,
 }
 
 pub struct Prefix {
@@ -99,16 +83,24 @@ impl Prefix {
         }
         let mut callback = None;
         let measure = Tracker::begin();
-        let result = conn.write().try_prefix(driver, |state, mut prefix| {
-            callback = Some(*state);
-            *state = State::Done;
-            prefix.write_byte(b'B').unwrap();
-            prefix.commit(None, ()).close_after()
-        });
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let result = match conn.write().try_prefix(driver, &mut output_slot) {
+            Ok(mut output) => {
+                let (state, mut prefix) = output.get_mut().parts();
+                callback = Some(*state);
+                *state = State::Done;
+                prefix.write_byte(b'B').unwrap();
+                write::Output::finish(output, write::End::Close)
+                    .map_err(error::Mismatch::into_cause)
+                    .expect("prefix publication");
+                Ok(())
+            }
+            Err(cause) => Err(cause),
+        };
         let activity = measure.finish();
         if !matches!(
             &result,
-            Ok(write::Outcome::Committed(()) | write::Outcome::Deferred(write::Deferred::Capacity))
+            Ok(()) | Err(error::Admission::Deferred(write::Deferred::Capacity))
         ) {
             conn.close_after();
         }
@@ -116,7 +108,7 @@ impl Prefix {
             callback,
             state: *conn.state(),
             allocations: (activity.allocations, activity.deallocations),
-            result: result.map_err(Error::from),
+            result,
         };
         let mut seen = self.seen.take();
         seen.attempts.push(attempt);

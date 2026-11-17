@@ -285,6 +285,56 @@ fn integrity_limit_stops_packet_processing() {
 }
 
 #[test]
+fn long_limit_stops_the_batch() {
+    use dope_quic::{
+        conn, conn::life::options::Options, conn::wire::packet::Batch, wire::packet::cid,
+    };
+    use peer::Receiver as _;
+    use std::time::Instant;
+
+    let mut pair = peer::Pair::try_config(
+        Options::default(),
+        Options::default(),
+        cid::Id::try_from([0x71; 8]).expect("fixture CID"),
+        |config, _| {
+            sealer::suite(
+                config,
+                sealer::Dimensions::<16, 16, false, false, false, 3>::SUITE.expect("native suite"),
+            )
+            .expect("bounded suite");
+        },
+    )
+    .expect("native peers");
+    let now = Instant::now();
+    pair.server
+        .receive_from(&mut pair.work, &mut pair.client, now)
+        .expect("client Initial");
+    let mut batch = Batch::default();
+    for bytes in [1200, 96, 96] {
+        pair.server
+            .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 1, bytes))
+            .expect("single protected packet");
+    }
+    pair.server
+        .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 64, 96))
+        .expect("long-key exhaustion is terminal");
+    let handshakes = batch
+        .iter()
+        .filter(|wire| {
+            matches!(
+                long::Parsed::parse(wire.to_vec()).expect("protected long packet"),
+                long::Parsed::Handshake(_),
+            )
+        })
+        .count();
+    assert_eq!(handshakes, 1);
+    assert!(matches!(
+        pair.server.view().lifecycle().state(),
+        conn::State::Closing | conn::State::Closed
+    ));
+}
+
+#[test]
 fn confidentiality_limit_preserves_final_close() {
     use dope_quic::{conn, conn::wire::packet::Batch, wire::packet::cid};
     use peer::Receiver as _;

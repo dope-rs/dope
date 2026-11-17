@@ -144,13 +144,13 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Records<'a,
         ack.apply(&mut conn.receive.packet_numbers);
         let epoch = plan.epoch;
         let number = plan.packet_number.auth().protected();
-        if plan.is_tracked() && plan.flags.is_eliciting() && plan.flags.is_in_flight() {
+        let flight = plan.flags.is_in_flight();
+        if flight && plan.flags.is_eliciting() {
             let space = epoch.bind_mut(&mut conn.egress.recovery.spaces);
             space.time_of_last_ack_eliciting = Some(now);
         }
         let outer_bytes = conn.egress.activity.commit_amp(amp);
         let bytes = plan.bytes as u64;
-        let flight = plan.is_tracked() && plan.flags.is_in_flight();
         let probe = if flight {
             plan.path
                 .pmtud_probe

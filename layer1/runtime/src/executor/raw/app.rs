@@ -1,9 +1,6 @@
 use std::{ops, pin};
 
-use dope_core::{
-    driver::{schedule, settings},
-    io,
-};
+use dope_core::driver::{self, schedule, settings};
 
 use crate::executor;
 
@@ -26,7 +23,9 @@ pub unsafe trait App<'d>: Sized + Layout<'d> {
     /// Upper bound on idle coordinator probes, including delegated probes.
     const COORDS: usize;
 
-    fn select_park() -> Option<Self::ParkPlan>;
+    const PARK: bool;
+
+    fn select_park() -> Self::ParkPlan;
 
     /// Prepares the selected coordinator shares once after installation.
     /// The count does not exceed `COORDS`; field presence and shares remain
@@ -80,10 +79,13 @@ pub unsafe trait App<'d>: Sized + Layout<'d> {
         false
     }
 
-    fn dispatch<'app, 'driver, 'turn>(
-        call: executor::raw::Dispatch<'app, 'driver, 'turn, 'd, Self>,
-    ) -> ops::ControlFlow<io::Event<'d>> {
-        ops::ControlFlow::Break(call.into_event())
+    fn dispatch<'event>(
+        _: pin::Pin<&mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+        _: schedule::Turn<'_, 'd>,
+        _: driver::Context<'_, 'd>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
+        ops::ControlFlow::Break(event)
     }
 
     fn progress(

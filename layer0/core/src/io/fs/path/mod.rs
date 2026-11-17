@@ -32,6 +32,12 @@ pub enum ConfineError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConcatError {
+    Length { length: usize, limit: usize },
+    Allocation(alloc::Error),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CopyError {
     Nul { position: usize },
     Allocation(alloc::Error),
@@ -51,7 +57,11 @@ impl CStrExt for Box<std::ffi::CStr> {
                 position: prefix.to_bytes().len(),
             });
         }
-        try_copy(bytes).map_err(CopyError::Allocation)
+        let len = bytes
+            .len()
+            .checked_add(1)
+            .ok_or(CopyError::Allocation(alloc::Error::Overflow))?;
+        try_copy(bytes, &[], len).map_err(CopyError::Allocation)
     }
 }
 
@@ -100,17 +110,30 @@ impl<'a> Component<'a> {
     }
 
     pub fn try_to_owned(self) -> Result<Owned, alloc::Error> {
-        let bytes = try_copy(self.bytes)?;
+        let bytes = try_copy(self.bytes, &[], self.bytes.len() + 1)?;
+        Ok(Owned { bytes })
+    }
+
+    pub fn try_concat(self, suffix: Component<'_>) -> Result<Owned, ConcatError> {
+        let length = self.bytes.len() + suffix.bytes.len();
+        if length > MAX_COMPONENT_BYTES {
+            return Err(ConcatError::Length {
+                length,
+                limit: MAX_COMPONENT_BYTES,
+            });
+        }
+        let bytes =
+            try_copy(self.bytes, suffix.bytes, length + 1).map_err(ConcatError::Allocation)?;
         Ok(Owned { bytes })
     }
 }
 
 /// Callers have rejected interior NULs before copying the admitted path bytes.
 #[inline]
-fn try_copy(base: &[u8]) -> Result<Box<std::ffi::CStr>, alloc::Error> {
-    let len = base.len().checked_add(1).ok_or(alloc::Error::Overflow)?;
+fn try_copy(base: &[u8], suffix: &[u8], len: usize) -> Result<Box<std::ffi::CStr>, alloc::Error> {
     let mut bytes: Vec<u8> = VecExt::try_new(len)?;
     bytes.extend_from_slice(base);
+    bytes.extend_from_slice(suffix);
     bytes.push(0);
     Ok(ffi::finish(bytes))
 }

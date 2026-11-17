@@ -123,18 +123,6 @@ impl<'d> From<Stopped<(Envelope<'d>, fault::Subject), Returned>> for Rejected<'d
     }
 }
 
-impl<'q, 'd> From<Stopped<(Envelope<'d>, flight::Complete<'q, 'd>), Returned>> for Rejected<'d> {
-    fn from(stopped: Stopped<(Envelope<'d>, flight::Complete<'q, 'd>), Returned>) -> Self {
-        let Stopped {
-            state: (packet, bound),
-            cause,
-        } = stopped;
-        let flow = packet.0.flow();
-        let subject = bound.settle(flow).into();
-        packet.reject(subject, Violation::Outcome(cause))
-    }
-}
-
 impl<'d> Envelope<'d> {
     pub(super) fn flow(&self) -> Flow {
         self.0.flow()
@@ -190,11 +178,12 @@ impl<'d> Envelope<'d> {
         Ok((packet, user))
     }
 
-    pub(crate) fn resolve<'q>(
+    pub(crate) fn resolve<'q, 'event>(
         state: &mut Tuning,
         drain: &'q flight::Drain<'q, 'd>,
         entry: Decoded<'d>,
-    ) -> Result<Option<Event<'d>>, Rejected<'d>> {
+        output: o3::mem::slot::Vacant<'event, Event<'d>>,
+    ) -> Result<Option<o3::mem::slot::Occupied<'event, Event<'d>>>, Rejected<'d>> {
         use host::Echo as _;
         let (packet, user) = Self::decode(drain, entry)?;
         match user {
@@ -222,12 +211,12 @@ impl<'d> Envelope<'d> {
                                 state: (packet, fault::Subject::Control(control.control())),
                                 cause,
                             })?;
-                        Ok(Some(outputs::shutdown()))
+                        Ok(Some(output.insert(outputs::shutdown())))
                     }
                     frame::Control::Tuning(tune) => {
                         let (tuned, outcome) =
                             Tuned::bind(state, drain, tune, packet, control.control())?;
-                        Ok(Some(tuned.complete(outcome)))
+                        Ok(Some(tuned.complete(outcome, output)))
                     }
                     frame::Control::ClosePrep | frame::Control::Unknown => {
                         Err(packet.control(control))
@@ -238,7 +227,7 @@ impl<'d> Envelope<'d> {
                 Err(packet.reject(fault::Subject::Unbound, Violation::UserData))
             }
             host::Bound::Cancel(cancel) => packet.cancel(state, cancel).map(|()| None),
-            host::Bound::Flight(bound) => Binding::new(packet, bound).resolve().map(Some),
+            host::Bound::Flight(bound) => Binding::new(packet, bound).resolve(output).map(Some),
         }
     }
 

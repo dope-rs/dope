@@ -34,12 +34,13 @@ pub(super) enum Outcome<'d, ID: Identity, V> {
     Obsolete(drain::Obsolete<'d, ID>),
 }
 
-pub(super) trait RetirePhase<'w, 'd: 'w, ID: Identity, A, S, E>
+pub(super) trait RetirePhase<'p, 'w, 'd: 'w, ID: Identity, A, S, E, X>
 where
     A: app::Application<'d, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
+    X: Mode<'d, ID>,
 {
     fn fail(
         self: pin::Pin<&mut Self>,
@@ -48,16 +49,17 @@ where
         driver: &mut driver::Context<'_, 'd>,
     );
 
-    fn drain_close<V>(
-        self: pin::Pin<&mut Self>,
+    fn drain_close<'a, V>(
+        context: &mut engine::Context<'_, 'd, ID, A, S, E, X>,
+        entry: engine::Entry<'a, 'p, 'w, 'd, ID, A, E::Transport>,
         drain: drain::Drain<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
         output: impl FnOnce(Directive) -> V,
-    ) -> Outcome<'d, ID, V>;
+    ) -> (Option<engine::Entry<'a, 'p, 'w, 'd, ID, A, E::Transport>>, Outcome<'d, ID, V>);
 }
 
-impl<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> RetirePhase<'w, 'd, ID, A, S, E>
+impl<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X> RetirePhase<'p, 'w, 'd, ID, A, S, E, X>
     for engine::Machine<'p, 'w, 'd, ID, A, S, E, X>
 where
     A: app::Lifecycle<'w, 'd, ID>,
@@ -68,20 +70,19 @@ where
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
     fn fail(
-        mut self: pin::Pin<&mut Self>,
+        self: pin::Pin<&mut Self>,
         key: pool::Key<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
-        let target = self.as_ref().backoff();
+        let (pool, mut context) = self.parts();
+        let Ok(mut entry) = pool.entry(key) else { return };
         let drain = {
-            let this = self.as_mut().project();
-            let Some(mut slot) = this.links.get(key, target) else {
-                return;
-            };
+            // SAFETY: parts retains this primary pool and its original liveness book.
+            let source = unsafe { engine::raw::reunite(context.liveness, entry.get_mut(), key) };
+            let mut slot = liveness::Change::new(source, context.target);
             let close = match claim::CutClaim::request(
-                &mut slot,
-                Directive::cut_retry(Reason::Transport),
+                &mut slot, Directive::cut_retry(Reason::Transport),
             ) {
                 claim::CutClaim::Ready(close) => close,
                 claim::CutClaim::Owned => return,
@@ -89,30 +90,30 @@ where
             slot.clear();
             close
         };
-        match self.drain_close(drain, turn, driver, |_| ()) {
+        let (_, outcome) = Self::drain_close(&mut context, entry, drain, turn, driver, |_| ());
+        match outcome {
             Outcome::Retired(()) | Outcome::Pending => {}
             Outcome::Obsolete(proof) => proof.resolve(),
         }
     }
 
-    fn drain_close<V>(
-        self: pin::Pin<&mut Self>,
+    fn drain_close<'a, V>(
+        context: &mut engine::Context<'_, 'd, ID, A, S, E, X>,
+        mut entry: engine::Entry<'a, 'p, 'w, 'd, ID, A, E::Transport>,
         drain: drain::Drain<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
         output: impl FnOnce(Directive) -> V,
-    ) -> Outcome<'d, ID, V> {
-        let target = self.as_ref().backoff();
-        let this = self.project();
-        let (pool, liveness) = this.links.parts();
-        let key = drain.key();
-        if let Some(egress) = pool.egress_mut(key) {
-            egress.queue.cancel_wait(driver.region_token());
+    ) -> (Option<engine::Entry<'a, 'p, 'w, 'd, ID, A, E::Transport>>, Outcome<'d, ID, V>) {
+        let target = context.target;
+        let liveness = &mut *context.liveness;
+        let key = entry.get().key();
+        if let Some(mut sender) = entry.sender() {
+            sender.view().queue.cancel_wait(driver.region_token());
         }
-        let mut ctx = (this.app, this.controller);
-        <<A::Input as input::Mode<A::Wire>>::Ingress as Policy<A::Wire>>::close(
-            pool,
-            key,
+        let mut ctx = (&mut *context.app, &mut *context.controller);
+        let outcome = <<A::Input as input::Mode<A::Wire>>::Ingress as Policy<A::Wire>>::close(
+            Ok(entry),
             turn.reborrow().maint(),
             driver,
             close::Handler {
@@ -258,18 +259,20 @@ where
              token: &mut region::Token<region::Identity<'d, 1>>| {
                 ctx.0.cancel(payload, token)
             },
-            |pool, ctx, driver, outcome| match outcome {
-                close::Outcome::Retired(retired) => {
-                    Outcome::Retired(retired.resolve(ctx.0, driver, output))
-                }
-                close::Outcome::Pending(drain) => match drain.release(pool) {
+        );
+        match outcome {
+            close::Outcome::Retired(retired) => {
+                (None, Outcome::Retired(retired.resolve(ctx.0, driver, output)))
+            }
+            close::Outcome::Pending(mut entry, drain) => {
+                let outcome = match drain.release(entry.get_mut()) {
                     drain::Recovery::Restored | drain::Recovery::Rescheduled => Outcome::Pending,
                     drain::Recovery::Obsolete(proof) => Outcome::Obsolete(proof),
-                },
-                close::Outcome::Stale(drain) | close::Outcome::Missing(drain) => {
-                    Outcome::Obsolete(drain.obsolete())
-                }
-            },
-        )
+                };
+                (Some(entry), outcome)
+            }
+            close::Outcome::Stale(entry, drain) => (Some(entry), Outcome::Obsolete(drain.obsolete())),
+            close::Outcome::Missing(drain) => (None, Outcome::Obsolete(drain.obsolete())),
+        }
     }
 }

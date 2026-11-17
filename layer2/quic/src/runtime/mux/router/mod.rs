@@ -181,7 +181,7 @@ impl<
                 .is_complete(self.state.registry.capacity())
             && self.state.outgoing.pending.is_empty()
             && self.state.outgoing.cache.recycled.is_empty()
-            && self.state.outgoing.cache.batch.is_none()
+            && self.state.outgoing.cache.gso.is_none()
     }
 
     pub(crate) fn drive_net<'turn, 'd>(

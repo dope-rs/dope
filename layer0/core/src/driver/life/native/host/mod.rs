@@ -1,4 +1,5 @@
 use dope_sys::{io::file::File, memory};
+use o3::mem::slot;
 
 use self::poll::file;
 pub(crate) mod context;
@@ -97,10 +98,11 @@ impl<'a, 'd> delivery::Context<driver::Context<'a, 'd>> for Host<Backend> {
         &mut host.storage.0.backend
     }
 
-    fn resolve(
+    fn resolve<'event>(
         host: &mut driver::Context<'a, 'd>,
-    ) -> Option<Result<Option<Self::Event>, Self::Failure>> {
-        host.native().resolve().resolve()
+        output: slot::Vacant<'event, Self::Event>,
+    ) -> Option<Result<Option<slot::Occupied<'event, Self::Event>>, Self::Failure>> {
+        host.native().resolve().resolve(output)
     }
 }
 

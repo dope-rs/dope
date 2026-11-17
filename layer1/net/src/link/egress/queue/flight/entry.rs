@@ -29,6 +29,11 @@ impl<const IOV: usize> Entry<IOV> {
         let msg = unsafe { msg::raw::Vectored::retain((&mut flight.header, iovecs, flight.bytes)) };
         send::Vectored::from_message(msg)
     }
+
+    pub(super) fn retain(self: pin::Pin<&mut Self>, bytes: transfer::Len) {
+        // SAFETY: this scalar is unpinned and no longer builds native descriptors.
+        unsafe { self.get_unchecked_mut() }.bytes = bytes;
+    }
 }
 
 impl<const IOV: usize> Default for Entry<IOV> {

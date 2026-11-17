@@ -10,7 +10,7 @@ use dope_core::{
         schedule::maint,
     },
     io::{
-        event::net::{send::Completion, tuning},
+        event::net::tuning,
         fd::handles,
         socket::option,
     },
@@ -19,14 +19,10 @@ use o3::{base::cell::region, buffer::storage::Shared};
 
 use self::{
     change::{accept, drain},
-    recv::{
-        input::{self, Dispatch},
-        storage::queue::Ops as _,
-    },
+    recv::input::{self, Dispatch},
 };
 use crate::{
     link::{
-        duplex,
         egress::{self, data, reserve::demand},
         setup,
         slot::{transmit, types},
@@ -38,6 +34,7 @@ use crate::{
 };
 
 pub mod change;
+mod entry;
 mod inspect;
 mod key;
 mod outbound;
@@ -45,14 +42,17 @@ pub mod pending;
 pub mod raw;
 pub mod recv;
 pub mod send;
+pub use entry::{Entry, Missing};
 pub use inspect::Inspect;
 pub use key::Key;
 pub(in crate::link) use key::Keyspace;
 pub use outbound::Outbound;
 pub(in crate::link) use outbound::Stored;
 
-type Sending<'a, 'p, 'w, 'd, ID, W, S, B, const IOV: usize, D, R = bool> =
-    Option<(transmit::Sender<'a, 'p, 'w, 'd, ID, W, S, B, IOV, D>, R)>;
+type Sending<'a, 'p, 'w, 'd, ID, T, W, S, M, B, const IOV: usize, D> = Option<(
+    transmit::Sender<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
+    bool,
+)>;
 
 pub enum Released<'a, S, B> {
     Payload(B),
@@ -243,19 +243,9 @@ where
         self.prepared.egress.maintain(token, work);
     }
 
-    pub fn settle(
-        &mut self,
-        done: Completion<'d>,
-    ) -> send::Settlement<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
-        send::Settlement::new(self, done)
-    }
-
     pub fn suspend(&mut self, key: Key<'d, ID>) {
-        let Some((slot, mut recv)) = self.prepared.slab.get_mut(key.parts()) else {
-            return;
-        };
-        if slot.engine.operations.recv.pause_app().is_exhausted() {
-            recv.rearm.remove();
+        if let Ok(mut entry) = self.entry(key) {
+            entry.suspend();
         }
     }
 
@@ -270,6 +260,25 @@ where
         Inspect::new(self)
     }
 
+    pub fn entry(
+        &mut self,
+        key: Key<'d, ID>,
+    ) -> Result<Entry<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>, Missing<'_, 'p, 'w, 'd, ID, W>>
+    {
+        let prepared = &mut self.prepared;
+        if !prepared.slab.contains(key.parts()) {
+            return Err(Missing {
+                key,
+                runtime: &mut prepared.runtime,
+                pending: prepared.pending,
+            });
+        }
+        Ok(Entry {
+            root: prepared,
+            key,
+        })
+    }
+
     pub fn get_mut(
         &mut self,
         key: Key<'d, ID>,
@@ -281,53 +290,32 @@ where
         &mut self,
         key: Key<'d, ID>,
     ) -> Option<EgressMut<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>> {
-        let sender = self.sender(key)?;
+        let (flights, connection, pending, queue) = self.sender(key)?.entry.into_transmit();
         Some(EgressMut {
-            flights: sender.flights,
-            connection: sender.connection,
-            pending: sender.pending,
-            queue: sender.queue.reborrow(),
+            flights,
+            connection,
+            pending,
+            queue: queue.reborrow(),
         })
     }
 
     pub fn sender(
         &mut self,
         key: Key<'d, ID>,
-    ) -> Option<transmit::Sender<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>> {
-        let (sender, ()) = self.sender_with(key, |_| ())?;
-        Some(sender)
+    ) -> Option<transmit::Sender<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>> {
+        self.prepared.pending.handle(key)?;
+        Some(transmit::Sender {
+            entry: self.entry(key).ok()?,
+        })
     }
 
     pub fn sender_with_recv(
         &mut self,
         key: Key<'d, ID>,
-    ) -> Sending<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D> {
-        self.sender_with(key, |recv| recv.storage.has_queued())
-    }
-
-    fn sender_with<'a, R>(
-        &'a mut self,
-        key: Key<'d, ID>,
-        query: impl FnOnce(recv::Borrow<'a, 'd, ID, M::Ingress, input::Receipt<W, M>>) -> R,
-    ) -> Sending<'a, 'p, 'w, 'd, ID, W, S, B, IOV, D, R>
-    where
-        input::Receipt<W, M>: 'a,
-    {
-        let prepared = &mut self.prepared;
-        let slots = &prepared.flights;
-        let wait = prepared.pending.handle(key)?;
-        let (slot, recv) = prepared.slab.get_mut(key.parts())?;
-        let result = query(recv);
-        let queue = prepared.egress.bind_queue(key);
-        Some((
-            transmit::Sender {
-                flights: slots,
-                connection: slot,
-                pending: wait,
-                queue,
-            },
-            result,
-        ))
+    ) -> Sending<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
+        let mut sender = self.sender(key)?;
+        let queued = sender.entry.has_queued();
+        Some((sender, queued))
     }
 
     pub fn update_target(
@@ -405,7 +393,6 @@ where
     {
         use o3::depot::arena::slab;
 
-        let item = duplex::Accepted::new(fd);
         let keys = *self.storage.keys;
         let flights = &self.storage.prepared.flights;
         let lease = match self.storage.prepared.pending.admit(
@@ -415,55 +402,56 @@ where
         ) {
             Ok(lease) => lease,
             Err(slab::Vacancy::Full) => {
-                item.into_fd().close(driver);
+                fd.close(driver);
                 return Ok(accept::Outcome::Unavailable);
             }
             Err(slab::Vacancy::IdentityExhausted) => {
-                item.into_fd().close(driver);
+                fd.close(driver);
                 return Ok(accept::Outcome::IdentityExhausted);
             }
         };
-        let opened = self
-            .storage
-            .prepared
-            .runtime
-            .open(item, |item, wire, send| {
-                let key = lease.key();
-                let state = match build(key) {
-                    Ok(state) => state,
-                    Err(reason) => {
-                        item.into_fd().close(driver);
-                        return open::Disposition::retry(
-                            accept::Outcome::Rejected(reason),
-                            wire,
-                            send,
-                        );
-                    }
-                };
-                let (engine, tuning) = item.tune(flights, driver, opts, key.target());
-                let result = match tuning {
-                    duplex::Tuned::Ready => accept::Outcome::Ready(key),
-                    duplex::Tuned::Pending => accept::Outcome::Pending,
-                    duplex::Tuned::Failed(cause) => accept::Outcome::Failed(key, cause),
-                };
-                lease
-                    .stage(types::Connection {
-                        control: types::Control::new(engine, wire, send, key),
-                        state,
-                    })
-                    .publish();
-                open::Disposition::Commit(result)
-            });
+        let opened = self.storage.prepared.runtime.open(fd, |fd, wire, send| {
+            let key = lease.key();
+            let state = match build(key) {
+                Ok(state) => state,
+                Err(reason) => {
+                    fd.close(driver);
+                    return open::Disposition::retry(accept::Outcome::Rejected(reason), wire, send);
+                }
+            };
+            let (setup, result) = match option::Tuning::try_new(
+                &mut driver.reborrow(),
+                flights,
+                key.target(),
+                fd,
+                opts,
+            ) {
+                Ok(option::Tuning::Applied(fd)) => {
+                    (setup::Setup::Done(fd), accept::Outcome::Ready(key))
+                }
+                Ok(option::Tuning::Pending(tune)) => {
+                    (setup::Setup::Tuning(tune), accept::Outcome::Pending)
+                }
+                Err(rejected) => {
+                    let (fd, cause) = rejected.into_parts();
+                    (setup::Setup::Idle(fd), accept::Outcome::Failed(key, cause))
+                }
+            };
+            lease
+                .stage(types::Connection {
+                    control: types::Control::new(setup, wire, send, key),
+                    state,
+                })
+                .publish();
+            open::Disposition::Commit(result)
+        });
         match opened {
-            open::Outcome::Unavailable(item) => {
-                item.into_fd().close(driver);
+            open::Outcome::Unavailable(fd) => {
+                fd.close(driver);
                 Ok(accept::Outcome::Unavailable)
             }
-            open::Outcome::Failed {
-                context: item,
-                cause,
-            } => {
-                item.into_fd().close(driver);
+            open::Outcome::Failed { context: fd, cause } => {
+                fd.close(driver);
                 Err(cause)
             }
             open::Outcome::Opened(result) => Ok(result),

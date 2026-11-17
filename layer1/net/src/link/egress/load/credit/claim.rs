@@ -9,7 +9,6 @@ use crate::link::egress::{
 };
 
 #[must_use = "a claimed slot must be published or released"]
-#[repr(transparent)]
 pub(in crate::link::egress) struct Claim<
     'queue,
     'p,
@@ -21,7 +20,9 @@ pub(in crate::link::egress) struct Claim<
 > where
     M: credit::Access<'p, 'd>,
 {
-    pub(super) reserve: credit::Reserve<'queue, 'p, 'd, T, M, D, P>,
+    pub(super) queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
+    pub(super) account: credit::Account<'p, 'd>,
+    pub(super) resident: egress::Resident,
 }
 
 impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
@@ -30,7 +31,11 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position:
     pub(in crate::link::egress) const fn from(
         reserve: credit::Reserve<'queue, 'p, 'd, T, M, D, P>,
     ) -> Self {
-        Self { reserve }
+        Self {
+            queue: reserve.queue,
+            account: reserve.account,
+            resident: reserve.amount.resident(),
+        }
     }
 
     pub(in crate::link::egress) fn try_acquire(
@@ -39,22 +44,11 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position:
         held: egress::Resident,
     ) -> Result<Self, egress::Admission> {
         let amount = credit::Amount::new(egress::Entries::new(1), held);
-        Ok(Self {
-            reserve: queue.try_acquire(token, amount)?,
-        })
+        Ok(Self::from(queue.try_acquire(token, amount)?))
     }
 
     pub(in crate::link::egress) fn queue(&self) -> metadata::Queue<'queue, 'p, 'd, T, M, D, P> {
-        self.reserve.queue()
-    }
-
-    pub(super) fn into_parts(
-        self,
-    ) -> (
-        metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
-        credit::Grant<'p>,
-    ) {
-        self.reserve.into_parts()
+        self.queue
     }
 }
 
@@ -62,7 +56,12 @@ impl<'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State> 
     for Claim<'_, 'p, 'd, T, M, D, P>
 {
     fn rollback(self, token: &mut region::Token<region::Identity<'d>>) {
-        self.reserve.rollback(token);
+        // SAFETY: Claim owns exactly one entry and this resident amount.
+        unsafe {
+            self.account
+                .release(credit::Amount::new(egress::Entries::new(1), self.resident));
+        }
+        credit::Lane::new(self.queue).released(token);
     }
 }
 

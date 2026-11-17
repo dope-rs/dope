@@ -10,7 +10,6 @@ use dope_core::{
         schedule::{self, app, ready},
     },
     io::{
-        self,
         datagram::{Decoded, ReceiveError, Residency},
         event::{
             self,
@@ -20,6 +19,7 @@ use dope_core::{
         recv,
     },
 };
+use dope_runtime::executor;
 use o3::{base::cell::region, mem::quota};
 
 use crate::network::datagram::packet;
@@ -109,17 +109,22 @@ impl<'d, ID: Identity> Receive<'d, ID> {
         }
     }
 
-    pub(in crate::network::datagram) fn route(
+    pub(in crate::network::datagram) fn route<'event>(
         self: pin::Pin<&mut Self>,
-        event: io::Event<'d>,
-    ) -> ControlFlow<io::Event<'d>, Received<'d>> {
-        let done = match event.into_kind() {
-            event::Kind::Recv(done) if route::Id::try_from(done.token().route()) == Ok(ID::ID) => {
-                done
+        event: executor::raw::Dispatch<'event, 'd>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>, Received<'d>> {
+        let target = event.route();
+        let (event, vacant) = match event.select() {
+            event::Selected::Recv(member) if route::Id::try_from(target) == Ok(ID::ID) => {
+                let (done, vacant) = member.take();
+                match self.complete(done) {
+                    ControlFlow::Continue(received) => return ControlFlow::Continue(received),
+                    ControlFlow::Break(done) => (Completion::retire(done), vacant),
+                }
             }
-            event => return ControlFlow::Break(event.into()),
+            other => return ControlFlow::Break(other.into_dispatch()),
         };
-        self.complete(done).map_break(Completion::retire)
+        ControlFlow::Break(executor::raw::Dispatch::new(vacant.insert(event)))
     }
 
     pub(in crate::network::datagram) fn complete(

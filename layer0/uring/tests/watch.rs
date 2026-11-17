@@ -81,7 +81,9 @@ fn native_watch_retains_registration_and_cancels_parked_read() {
         executor
             .enter_with(
                 |mut session| {
-                    let port = layout.try_port::<read::Release<'_>>().expect("slots");
+                    let port = layout
+                        .try_port::<read::Release<read::Buffer<'_>>>()
+                        .expect("slots");
                     let reader = read::Reader::<KeyTag<43>>::try_new(&port, &mut session.driver())
                         .expect("reader");
                     let budget = session

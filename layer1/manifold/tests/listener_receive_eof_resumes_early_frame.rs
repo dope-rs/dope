@@ -38,7 +38,7 @@ fn eof_resumes_early_frame() {
         let admitted = admitted.clone();
         let wrote = wrote.clone();
         let eof = eof.clone();
-        move |event: preamble::Event<'_, '_>| match event {
+        move |event: preamble::Event<'_>| match event {
             preamble::Event::Write(result) => {
                 result.expect("preamble wire write");
                 wrote.hit();
@@ -46,7 +46,7 @@ fn eof_resumes_early_frame() {
             preamble::Event::Input { expected, actual } => assert_eq!(actual, expected),
             preamble::Event::Consumed { expected, actual } => assert_eq!(actual, expected),
             preamble::Event::Enqueued(result) => {
-                assert!(matches!(result, Ok(write::Outcome::Committed(()))));
+                assert!(matches!(result, Ok(())));
                 admitted.hit();
             }
             preamble::Event::Chunk(bytes) => assert!(!bytes.is_empty()),

@@ -16,15 +16,17 @@ pub const MAX_IOVECS: usize = <crate::Backend as socket::Socket>::MAX_IOVECS;
 
 /// A send message retaining at most `N` iovecs and their exact live byte sum.
 pub struct Vectored<'a, const N: usize = MAX_IOVECS> {
-    message: Message<'a>,
+    header: &'a mut mem::MaybeUninit<Header>,
     iovs: &'a [Iovec],
     bytes: transfer::Len,
 }
 
 impl<'a, const N: usize> Vectored<'a, N> {
     #[must_use]
-    pub fn message(&self) -> Message<'a> {
-        self.message
+    pub fn into_message(self) -> Message<'a> {
+        let header = self.header.write(Header::new());
+        header.bind(self.iovs);
+        Message { header }
     }
 
     #[must_use]
@@ -44,10 +46,8 @@ impl<'a, const N: usize> Vectored<'a, N> {
         iovs: &'a [Iovec],
         bytes: transfer::Len,
     ) -> Self {
-        let header = header.write(Header::new());
-        header.bind(iovs);
         Self {
-            message: Message { header },
+            header,
             iovs,
             bytes,
         }

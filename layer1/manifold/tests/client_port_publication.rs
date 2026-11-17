@@ -33,12 +33,15 @@ use dope_test::{
     harness::{GUARD, peer::TcpAcceptor, signals::Gate},
     reclaim::Reports,
 };
-use o3::{buffer::pool, depot::capacity};
+use o3::{
+    buffer::{pool, storage},
+    depot::capacity,
+};
 
 use crate::common::{
     contract::Report,
     manifold::client::{
-        connect::ports::{App, NESTED, PAYLOAD, cursor},
+        connect::ports::{App, NESTED, PAYLOAD, pair},
         send::wire::Wire,
     },
     scenario::case::attempt::Attempts,
@@ -112,10 +115,9 @@ fn publication_keeps_owner() {
                                     assert!(port.pending(conn).is_none());
                                     continue;
                                 }
-                                let payload = cursor(&buffers, PAYLOAD)
-                                    .expect("payload fits")
-                                    .expect("payload capacity");
-                                let address = payload.as_ref().as_ptr();
+                                let body = storage::Shared::try_copy(PAYLOAD).expect("body");
+                                let address = body.as_ref().as_ptr();
+                                let payload = pair(&buffers, body);
                                 'publication: {
                                     let reserve = port.try_reserve(token, conn, payload);
                                     assert!(matches!(reserve, Reserve::Item(_)));
@@ -130,7 +132,8 @@ fn publication_keeps_owner() {
                                             .map(|permit| permit.commit(|_| called.set(true)));
                                         assert!(!called.get());
                                         let payload = result.expect_err("write sealed");
-                                        assert_eq!(payload.into_inner().as_ref().as_ptr(), address);
+                                        let (_, body) = payload.into_inner().into_parts();
+                                        assert_eq!(body.as_ref().as_ptr(), address);
                                         break 'publication;
                                     }
                                     let permit =
@@ -147,9 +150,11 @@ fn publication_keeps_owner() {
                                                 egress::Cleared::Retry
                                             ));
                                             assert_eq!(early.get(), 0);
-                                            let nested = cursor(&buffers, NESTED)
-                                                .expect("nested fits")
-                                                .expect("nested capacity");
+                                            let nested = pair(
+                                                &buffers,
+                                                storage::Shared::try_copy(NESTED)
+                                                    .expect("nested body"),
+                                            );
                                             assert!(matches!(
                                                 port.try_reserve(token, conn, nested),
                                                 Reserve::Inactive(_)
@@ -172,10 +177,8 @@ fn publication_keeps_owner() {
                                             let failure = result.expect_err("transition rejection");
                                             let (payload, cause) = failure.into_parts();
                                             assert_eq!(cause, case);
-                                            assert_eq!(
-                                                payload.into_inner().as_ref().as_ptr(),
-                                                address
-                                            );
+                                            let (_, body) = payload.into_inner().into_parts();
+                                            assert_eq!(body.as_ref().as_ptr(), address);
                                         }
                                     }
                                 }
@@ -183,7 +186,8 @@ fn publication_keeps_owner() {
                                 assert!(matches!(
                                     port.retire(conn, work, token, |payload| {
                                         cancels += 1;
-                                        assert_eq!(payload.as_ref().as_ptr(), address);
+                                        let (_, body) = payload.into_parts();
+                                        assert_eq!(body.as_ref().as_ptr(), address);
                                     }),
                                     egress::Cleared::Done
                                 ));
@@ -294,9 +298,8 @@ fn deadline_cuts_retiring_queue() {
                             Rc::clone(&audit),
                             |ports, conn, work, queue, token| {
                                 let buffers = pool::Pool::try_new(1, 8).expect("payload pool");
-                                let payload = cursor(&buffers, PAYLOAD)
-                                    .expect("payload size")
-                                    .expect("payload");
+                                let body = storage::Shared::try_copy(PAYLOAD).expect("body");
+                                let payload = pair(&buffers, body);
                                 assert!(matches!(
                                     queue.try_enqueue(token, payload),
                                     egress::Enqueue::Committed
@@ -397,4 +400,101 @@ fn deadline_cuts_retiring_queue() {
             (Some(0), Some(1))
         );
     }
+}
+
+#[test]
+fn terminal_batch_retires_entry_before_remaining_input() {
+    use crate::common::manifold::client::{connect::batch, switch::terminal::queued};
+
+    let peer = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("peer");
+    let config = settings::Config::for_profile::<Throughput>()
+        .with_receive(settings::Receive::fixed::<2, 4096>());
+    let mut create = Attempt::new();
+    let mut finish = Completion::new();
+    let mut reports = Reports::<_>::new(config, [Id::fixed::<0>()]);
+    let audit = Rc::new(Report::default());
+    let dropped = Gate::new();
+    let dispatched = Gate::new();
+    let mut stream = None;
+    let executor = Executor::new(&mut create, config).ok().expect("executor");
+    executor
+        .with_plan(Attempts::<KeyTag<0>>::new(capacity::Count::new(1)))
+        .run(|executor| {
+            let result = executor.try_create(
+                |mut session| {
+                    let source = session.storage();
+                    let attempt = source.try_reserve().expect("attempt").start(
+                        attempt::StreamTarget::new(
+                            peer.local_addr().expect("address"),
+                            Tcp::options(tcp::StreamConfig::default()),
+                        ),
+                    );
+                    let mut store = Store::try_new(
+                        egress::Config::shared(egress::Credit::fixed::<1, 32>()),
+                        NonZero::<usize>::MIN,
+                    )
+                    .expect("port storage");
+                    let port = Port::try_new(&mut store, &session.driver().regions().0)
+                        .expect("port");
+                    let app = App::<_, batch::Wire>::new(
+                        vec![port], Gate::new(), audit.clone(), |_, _, _, _, _| None,
+                    );
+                    let connected = app.done.clone();
+                    let closed = app.closed.clone();
+                    let wire = batch::State { closed: closed.clone(), dropped: dropped.clone() };
+                    let result = engine::Startup::new(
+                        app, source, Capacity::fixed::<1>(), egress::Config::default(), Local::new(wire),
+                    )
+                    .try_with::<Bundle<Tcp, batch::Wire, Throughput>, _, _>(
+                        &mut session,
+                        Scope::driver,
+                        |engine, session| {
+                            session.with_quiesce(
+                                &mut finish,
+                                Host::new(queued::Host {
+                                    inner: engine,
+                                    state: None,
+                                    renewal: None,
+                                    batch: Some(batch::Capture::new(dispatched.clone())),
+                                    pending: None,
+                                }),
+                                Duration::from_secs(2),
+                                |mut running| {
+                                    assert_eq!(
+                                        fibers::TEST.try_wait(&mut running, &connected, 1)
+                                            .expect("native connection"),
+                                        fibers::Wait::Reached,
+                                    );
+                                    let stream = stream.insert(
+                                        peer.accept_for(GUARD).expect("accept").expect("connected"),
+                                    );
+                                    stream.write_wait(Some(GUARD)).expect("write deadline");
+                                    stream.write_all(b"F").expect("native input");
+                                    stream.shutdown(std::net::Shutdown::Write).expect("native EOF");
+                                    assert_eq!(
+                                        fibers::TEST.try_wait(&mut running, &dispatched, 1)
+                                            .expect("terminal batch dispatch"),
+                                        fibers::Wait::Reached,
+                                    );
+                                    use dope_test::harness::signals::Progress as _;
+                                    assert_eq!(closed.hits(), 1);
+                                    assert_eq!(dropped.hits(), 1);
+                                    assert_eq!(dispatched.hits(), 1);
+                                },
+                            )
+                        },
+                    );
+                    assert!(matches!(result, Ok(Ok(()))), "engine lifecycle");
+                    attempt.cancel();
+                },
+                recovery::Policy::new(|event| reports.push(event), crate::common::recover),
+            );
+            assert!(result.is_ok(), "native retirement");
+        });
+    audit.checked((0, 0));
+    crate::common::manifold::client::assert_reclaimed(&reports);
+    reports.closed().expect("descriptor retirement");
+    let stream = stream.expect("native peer");
+    stream.read_wait(Some(GUARD)).expect("read deadline");
+    assert_eq!(stream.read(&mut [0]).expect("peer EOF"), 0);
 }

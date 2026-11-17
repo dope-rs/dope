@@ -54,7 +54,7 @@ impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a>
                     return Some(Err(Error::Failed(fault.into_error().failure)));
                 }
             };
-            match done.try_retain() {
+            match done.try_retain(|| {}) {
                 Ok(Some(value)) => value,
                 Ok(None) => return None,
                 Err(error) => return Some(Err(Error::Retain(error))),
@@ -69,7 +69,7 @@ impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a>
             Ok(None) => return None,
             Err(error) => return Some(Err(Error::Retain(error))),
         };
-        let second = match next.try_retain() {
+        let second = match next.try_retain(|| {}) {
             Ok(Some(value)) => value,
             Ok(None) => return None,
             Err(error) => return Some(Err(Error::Retain(error))),

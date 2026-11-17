@@ -172,22 +172,19 @@ impl<'a, D: buffer::raw::Segment> Selection<'a, D> {
 }
 
 impl<D: buffer::raw::Segment> Prepared<'_, D> {
-    pub(in crate::conn) fn range(&self) -> outbound::Range {
-        self.selected.range()
-    }
-
     pub(in crate::conn) fn write(
         mut self,
         out: &mut write::Append<'_>,
         limit: usize,
-    ) -> Result<bool, alloc::Error> {
+    ) -> Result<Option<u16>, alloc::Error> {
         let Some((owner, written)) = self.occupied.write(self.selected, out, limit)? else {
-            return Ok(false);
+            return Ok(None);
         };
+        let bytes = written.len();
         self.vacancy
             .insert(Entry::Fresh(Written { owner, written }));
         *self.count += 1;
-        Ok(true)
+        Ok(Some(bytes))
     }
 }
 
@@ -249,7 +246,7 @@ impl<O: journal::raw::Owner> Reserve<O> {
         let mut count = 0;
         for entry in entries.as_slice() {
             if let Entry::Fresh(fresh) = entry {
-                let bytes = fresh.written.len();
+                let bytes = usize::from(fresh.written.len());
                 pending -= bytes;
                 let extra = bytes as u64;
                 let Some(next) = sent.checked_add(extra) else {

@@ -71,14 +71,6 @@ impl<P: ops::DerefMut<Target = control::Pending>> Records<P> {
         Err(journal::Error::Revision(spent))
     }
 
-    pub(in crate::conn) fn set_data(
-        &mut self,
-        owner: &mut Option<owner::Key<kind::MaxData>>,
-        limit: varint::VarInt,
-    ) -> Result<(), journal::Error> {
-        self.revise(owner, delivery::Control::MaxData(limit))
-    }
-
     pub(in crate::conn) fn set_stream(
         &mut self,
         owner: &mut Option<owner::Key<kind::StreamLimit>>,

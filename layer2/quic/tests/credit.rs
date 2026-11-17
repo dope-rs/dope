@@ -285,6 +285,71 @@ fn owned_releases_credit() {
 }
 
 #[test]
+fn connection_credit_waits_for_headroom() {
+    use common::suite::peers::packet;
+    use dope_quic::{
+        conn::wire::packet::Batch,
+        proto::param,
+        wire::{frame, stream::Id},
+    };
+
+    let mut now = Instant::now();
+    let params = param::Set::builder()
+        .initial_data(8)
+        .stream_uni(64)
+        .uni_count(1)
+        .try_build()
+        .expect("receive window");
+    let mut pair = packet::Pair::try_params(1, params, now, |_| {}).expect("packet peer");
+    pair.retired(now).expect("settled handshake");
+    pair.receive(b"\x0a\x02\x01a", now).expect("first byte");
+    let (buffer, credit) = pair
+        .server
+        .recv()
+        .hold(Id::new(2).expect("stream"))
+        .expect("receive stream")
+        .expect("held byte")
+        .into_parts();
+    let credit = pair
+        .server
+        .release_conn(credit)
+        .map_err(|error| error.kind())
+        .expect("connection credit");
+    let mut batch = Batch::default();
+    for step in 0..3 {
+        now += Duration::from_millis(30);
+        if step == 1 {
+            pair.receive(b"\x0e\x02\x01\x06bcdefg", now)
+                .expect("consume advertised credit without another release");
+        } else if step == 2 {
+            now = pair.server.view().next_timer().expect("credit recovery")
+                + Duration::from_millis(1);
+            pair.server
+                .with_scope(|mut scope| scope.recovery().try_loss(now))
+                .expect("lost credit carrier");
+        }
+        pair.server
+            .with_scope(|mut scope| scope.output().send_batch(&mut batch, now, 1, 1_200))
+            .expect("credit output");
+        let mut limits = Vec::new();
+        for wire in batch.iter_mut() {
+            let (_, body) = pair.peer.open(wire).expect("authenticated output");
+            for frame in frame::Frame::decode_all(&body).expect("frames") {
+                if let frame::View::MaxData { maximum_data } = frame.view() {
+                    limits.push(maximum_data.get());
+                }
+            }
+        }
+        assert_eq!(limits.as_slice(), if step == 0 { &[][..] } else { &[9] });
+    }
+    pair.server
+        .release(credit)
+        .map_err(|error| error.kind())
+        .expect("remaining stream credit");
+    drop(buffer);
+}
+
+#[test]
 fn released_credit_requires_publication() {
     use common::suite::peers::packet;
     use dope_quic::{conn, proto::param, wire::stream::Id};

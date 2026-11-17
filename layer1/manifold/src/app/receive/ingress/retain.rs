@@ -51,6 +51,6 @@ where
         M::Reserve: Choice<W, M::Ingress>,
         A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        work.drive(policy, data, |prep| prep.retained(), flow::apply_done)
+        work.drive(policy, data, |prep| prep.retained(), flow::apply_done::<ID, P>)
     }
 }

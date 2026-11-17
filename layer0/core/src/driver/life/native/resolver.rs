@@ -1,3 +1,4 @@
+use o3::mem::slot;
 use std::{marker, mem, ops::ControlFlow, task};
 
 use dope_sys::{engine, engine::life, probe::Stopped, table::Retire};
@@ -185,20 +186,22 @@ impl life::Terminal for Terminal<'_, '_> {
 }
 
 impl<'a, 'd> Resolver<'a, 'd, Running> {
-    pub(crate) fn resolve(mut self) -> Option<Result<Option<io::Event<'d>>, fault::Fault>> {
+    pub(crate) fn resolve<'event>(
+        mut self,
+        output: slot::Vacant<'event, io::Event<'d>>,
+    ) -> Option<Result<Option<slot::Occupied<'event, io::Event<'d>>>, fault::Fault>> {
         if mem::take(&mut self.local.lifecycle.pending) {
-            return Some(Ok(Some(outputs::shutdown())));
+            return Some(Ok(Some(output.insert(outputs::shutdown()))));
         }
         let Some(entry) = tokens::Token::next(&mut *self.local)? else {
             return Some(Ok(None));
         };
-        Some(match crate::completion::resolve(&mut self, entry) {
+        Some(match crate::completion::resolve(&mut self, entry, output) {
             Ok(event) => Ok(event.map(|event| {
-                let kind = event.into_kind();
-                if matches!(kind, io::event::Kind::Shutdown) {
+                if matches!(event.as_ref(), io::event::Kind::Shutdown) {
                     self.local.lifecycle.source = None;
                 }
-                kind.into()
+                event
             })),
             Err(Stopped { state, cause }) => {
                 if let Some(buffer) = state {

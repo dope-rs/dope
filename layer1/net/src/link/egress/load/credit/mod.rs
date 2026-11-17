@@ -1,13 +1,13 @@
-use std::{mem::size_of, task};
+use std::mem::size_of;
 
 pub(in crate::link::egress) use amount::Amount;
 pub(in crate::link::egress) use claim::Claim;
 use demand::Demand;
-use dope_core::{
-    driver,
-    driver::schedule::{maint, ready::Target},
+use dope_core::{driver, driver::schedule::maint};
+use o3::{
+    base::cell::region,
+    mem::{credit::fair, raw::Balance},
 };
-use o3::{base::cell::region, mem, mem::raw::Source as _};
 pub(in crate::link::egress) use ready::Ready;
 pub(in crate::link::egress) use reserve::Reserve;
 pub(in crate::link::egress) use stored::{Part, Prefix, Split, Stored};
@@ -16,10 +16,11 @@ use crate::link::{
     egress,
     egress::{
         create,
+        data::position,
         load::credit,
         metadata,
         metadata::{arena, lane},
-        reserve::{Bounds, Entries, demand::Mode},
+        reserve::{Entries, demand::Mode},
     },
 };
 
@@ -31,22 +32,36 @@ mod reserve;
 mod stored;
 mod wait;
 
-pub(in crate::link::egress) enum Tag {}
-
 pub(in crate::link::egress) trait Access<'p, 'd>: Sized {
-    fn try_acquire(
+    fn try_acquire<'queue, T, D: Mode, P: position::State>(
         &self,
         token: &mut region::Token<region::Identity<'d>>,
-        lane: Lane<'_, 'p, 'd, Self>,
+        queue: metadata::Queue<'queue, 'p, 'd, T, Self, D, P>,
         amount: credit::Amount,
-    ) -> Result<Grant<'p>, egress::Admission>;
+    ) -> Result<Reserve<'queue, 'p, 'd, T, Self, D, P>, egress::Admission>;
 
-    fn release(
+    fn released(
         &self,
         token: &mut region::Token<region::Identity<'d>>,
         lane: Lane<'_, 'p, 'd, Self>,
-        grant: Grant<'p>,
     );
+}
+
+impl<'p, 'd> Access<'p, 'd> for metadata::Local {
+    fn try_acquire<'queue, T, D: Mode, P: position::State>(
+        &self,
+        _: &mut region::Token<region::Identity<'d>>,
+        queue: metadata::Queue<'queue, 'p, 'd, T, Self, D, P>,
+        amount: credit::Amount,
+    ) -> Result<Reserve<'queue, 'p, 'd, T, Self, D, P>, egress::Admission> {
+        Reserve::try_charge(queue, amount)
+    }
+
+    fn released(
+        &self,
+        _: &mut region::Token<region::Identity<'d>>,
+        _: Lane<'_, 'p, 'd, Self>,
+    ) {}
 }
 
 pub(in crate::link::egress) struct Lane<'a, 'p, 'd, M> {
@@ -55,7 +70,7 @@ pub(in crate::link::egress) struct Lane<'a, 'p, 'd, M> {
 }
 
 pub(in crate::link::egress) struct Account<'p, 'd> {
-    pool: &'p mem::raw::Pool<2, credit::Tag, u32>,
+    store: &'p arena::Store<'d>,
     state: &'p lane::Lane<'d>,
 }
 
@@ -75,9 +90,6 @@ impl<'p, 'd, M> Clone for Lane<'_, 'p, 'd, M> {
 
 impl<'p, 'd, M> Copy for Lane<'_, 'p, 'd, M> {}
 
-pub(in crate::link::egress) type Grant<'p> =
-    mem::raw::Grant<mem::raw::Lane<'p, 'p, 2, credit::Tag, u32>, 2, credit::Amount>;
-
 pub(in crate::link::egress) struct Pair {
     first: egress::Resident,
 }
@@ -95,6 +107,10 @@ pub(in crate::link::egress) struct Queued {
 }
 
 impl Queued {
+    pub(in crate::link::egress) const fn new(entries: Entries, resident: egress::Resident) -> Self {
+        Self { entries, resident }
+    }
+
     pub(in crate::link::egress) const fn one(resident: egress::Resident) -> Self {
         Self {
             entries: Entries::One,
@@ -102,27 +118,8 @@ impl Queued {
         }
     }
 
-    pub(in crate::link::egress) const fn from_bounds(bounds: Bounds) -> Self {
-        Self {
-            entries: bounds.entries(),
-            resident: bounds.resident(),
-        }
-    }
-
-    const fn amount(self) -> credit::Amount {
+    pub(in crate::link::egress) const fn amount(self) -> credit::Amount {
         credit::Amount::new(self.entries.into_credit(), self.resident)
-    }
-}
-
-// SAFETY: the caller invokes this marker only for the bounds that minted it.
-unsafe impl mem::raw::Exact<2, u32, credit::Amount> for Pair {
-    type Input = ();
-    type Left = credit::Amount;
-    type Right = credit::Amount;
-
-    fn parts(self, source: credit::Amount, (): ()) -> (Self::Left, Self::Right) {
-        let first = credit::Amount::new(egress::Entries::new(1), self.first);
-        (source.sub(first), first)
     }
 }
 
@@ -146,25 +143,8 @@ impl<'a, 'p, 'd, M> Lane<'a, 'p, 'd, M> {
                 .get_unchecked(self.index.index().into_usize())
         };
         credit::Account {
-            pool: self.pool.shared,
+            store: self.pool.store,
             state,
-        }
-    }
-
-    pub(in crate::link::egress) fn try_charge(
-        self,
-        amount: credit::Amount,
-    ) -> Result<credit::Grant<'p>, egress::Admission> {
-        match mem::raw::Charge::try_new(self.account().credit(), amount) {
-            Ok(grant) => Ok(Grant::from(grant)),
-            Err(rejected) => {
-                let (amount, cause) = rejected.into_parts();
-                Err(egress::Admission::Credit {
-                    lane: self.index,
-                    requested: egress::Credit::new(amount.entries(), amount.resident()),
-                    cause,
-                })
-            }
         }
     }
 
@@ -173,76 +153,75 @@ impl<'a, 'p, 'd, M> Lane<'a, 'p, 'd, M> {
     }
 
     fn is_covered(self, demand: credit::Demand<2>) -> bool {
-        demand.fits(credit::Amount::from_raw(self.pool.shared.shared()))
+        demand.fits(credit::Amount::from_raw(self.pool.store.shared.get()))
     }
 }
 
 impl<'p, 'd> Account<'p, 'd> {
-    fn credit(self) -> mem::raw::Lane<'p, 'p, 2, credit::Tag, u32> {
-        // SAFETY: Account retains the state and pool selected from one exact owner.
-        unsafe { self.pool.lane(&self.state.credit) }
-    }
-
     pub(in crate::link::egress) fn state(self) -> &'p lane::Lane<'d> {
         self.state
     }
 
-    fn demand(self, amount: credit::Amount) -> credit::Demand {
-        credit::Demand::from_raw(self.credit().demand(mem::raw::Amount::get(amount)))
+    fn balance(self) -> Balance<2, u32> {
+        Balance::new(self.state.held.get(), self.store.shared.get())
     }
 
-    fn acquire(self, amount: credit::Amount) -> credit::Grant<'p> {
-        // SAFETY: Ready's zero demand, Vacant's zero/covered branch, and the
-        // eligible Selected capability prove current shared coverage. The
-        // unchanged lane and conserved pool bound held plus amount by the
-        // admitted protected-plus-shared capacity.
-        Grant::from(unsafe { self.credit().acquire_raw(amount) })
+    fn commit(self, balance: Balance<2, u32>) {
+        let (held, shared) = balance.into_parts();
+        self.state.held.set(held);
+        self.store.shared.set(shared);
+    }
+
+    fn try_acquire(self, amount: credit::Amount) -> Result<(), fair::Cause<u32, 2>> {
+        let balance = self.balance().try_acquire(self.state.reserve, amount.raw())?;
+        self.commit(balance);
+        Ok(())
+    }
+
+    fn demand(self, amount: credit::Amount) -> credit::Demand {
+        credit::Demand::from_raw(self.balance().demand(self.state.reserve, amount.raw()))
+    }
+
+    /// # Safety
+    /// The caller retains current shared coverage and the admitted total.
+    unsafe fn acquire(self, amount: credit::Amount) {
+        let balance = unsafe { self.balance().acquire_raw(self.state.reserve, amount.raw()) };
+        self.commit(balance);
+    }
+
+    /// # Safety
+    /// The consuming owner returns a disjoint acquisition from this exact epoch.
+    pub(in crate::link::egress) unsafe fn release(self, amount: credit::Amount) {
+        let balance = unsafe { self.balance().release_raw(self.state.reserve, amount.raw()) };
+        self.commit(balance);
     }
 
     pub(in crate::link::egress) fn fits(self, amount: credit::Amount) -> bool {
-        self.credit().fits(mem::raw::Amount::get(amount))
+        let amount = amount.raw();
+        let shared = self.store.config.shared_limit();
+        (0..2).all(|axis| amount[axis] <= shared[axis] + self.state.reserve[axis])
     }
 
     pub(in crate::link::egress) fn can_charge(self, amount: credit::Amount) -> bool {
-        self.credit().can_acquire(mem::raw::Amount::get(amount))
+        self.balance()
+            .try_acquire(self.state.reserve, amount.raw())
+            .is_ok()
     }
 }
 
 impl<'p, 'd, M: Access<'p, 'd>> Lane<'_, 'p, 'd, M> {
-    pub(in crate::link::egress) fn try_acquire(
-        self,
-        token: &mut region::Token<region::Identity<'d>>,
-        amount: credit::Amount,
-    ) -> Result<credit::Grant<'p>, egress::Admission> {
-        self.pool.mode.try_acquire(token, self, amount)
-    }
-
-    pub(in crate::link::egress) fn release(
-        self,
-        token: &mut region::Token<region::Identity<'d>>,
-        grant: credit::Grant<'p>,
-    ) {
-        self.pool.mode.release(token, self, grant);
+    pub(in crate::link::egress) fn released(self, token: &mut region::Token<region::Identity<'d>>) {
+        self.pool.mode.released(token, self);
     }
 }
 
-impl<'a, 'p, 'd> Lane<'a, 'p, 'd, credit::Ready<'p, 'd>> {
+impl<'p, 'd> Lane<'_, 'p, 'd, credit::Ready<'p, 'd>> {
     pub(in crate::link::egress) fn cancel(self, token: &mut region::Token<region::Identity<'d>>) {
         self.pool.mode.cancel(token, self)
-    }
-
-    pub(in crate::link::egress) fn poll(
-        self,
-        token: &mut region::Token<region::Identity<'d>>,
-        amount: credit::Queued,
-        target: Target<'d>,
-    ) -> task::Poll<Result<credit::Grant<'p>, egress::Tickets>> {
-        self.pool.mode.poll(token, self, amount, target)
     }
 }
 
 const _: () = {
-    assert!(size_of::<Grant>() == 3 * size_of::<u64>());
     assert!(size_of::<Pair>() == size_of::<egress::Resident>());
     assert!(size_of::<Queued>() == size_of::<credit::Amount>());
     assert!(size_of::<Account<'static, 'static>>() == 2 * size_of::<usize>());
@@ -252,15 +231,15 @@ const _: () = {
 };
 
 pub(in crate::link::egress) struct Pool<'p, 'd, M = metadata::Local> {
-    shared: &'p mem::raw::Pool<2, credit::Tag, u32>,
+    store: &'p arena::Store<'d>,
     lanes: &'p [lane::Lane<'d>],
-    mode: M,
+    pub(in crate::link::egress) mode: M,
 }
 
 impl<'p, 'd> Pool<'p, 'd, metadata::Local> {
     pub(in crate::link::egress) fn new(slots: &'p arena::Store<'d>) -> Self {
         Self {
-            shared: &slots.shared,
+            store: slots,
             lanes: &slots.lanes,
             mode: metadata::Local,
         }
@@ -287,7 +266,7 @@ impl<'p, 'd> Pool<'p, 'd, credit::Ready<'p, 'd>> {
             permit.run(|| {
                 self.mode.pending.set(false);
                 let wait = token.borrow_mut(&self.mode.wait);
-                let shared = credit::Amount::from_raw(self.shared.shared());
+                let shared = credit::Amount::from_raw(self.store.shared.get());
                 let Some(selected) = wait.select(self, shared) else {
                     return;
                 };
@@ -302,7 +281,7 @@ impl<'p, 'd> Pool<'p, 'd, credit::Ready<'p, 'd>> {
         owner: driver::Reference<'d>,
     ) -> Result<Self, create::Error> {
         Ok(Self {
-            shared: &slots.shared,
+            store: slots,
             lanes: &slots.lanes,
             mode: credit::Ready::try_new(token, owner, slots.count)?,
         })
@@ -313,7 +292,7 @@ const _: () = {
     assert!(size_of::<metadata::Local>() == 0);
     assert!(
         size_of::<Pool<'static, 'static>>()
-            == size_of::<(&mem::raw::Pool<2, credit::Tag, u32>, &[lane::Lane<'static>])>()
+            == size_of::<(&arena::Store<'static>, &[lane::Lane<'static>])>()
     );
     assert!(
         size_of::<Pool<'static, 'static, credit::Ready<'static, 'static>>>()

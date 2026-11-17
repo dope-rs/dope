@@ -28,9 +28,10 @@ impl Pacer {
     }
 
     pub(crate) fn allows_send(&self, now: time::Instant) -> bool {
-        self.updated_at.is_none_or(|updated| {
-            now.saturating_duration_since(updated).as_nanos() >= u128::from(self.wait_nanos)
-        })
+        self.wait_nanos == 0
+            || self.updated_at.is_none_or(|updated| {
+                now.saturating_duration_since(updated).as_nanos() >= u128::from(self.wait_nanos)
+            })
     }
 
     pub(crate) fn release_at(&self) -> Option<time::Instant> {

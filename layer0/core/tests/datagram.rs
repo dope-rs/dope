@@ -108,7 +108,7 @@ fn keeps_next_datagram() {
                                 &mut context,
                                 turn.reactor(),
                                 |event, _source| {
-                                    let event = event;
+                                    let event = event.into_inner();
                                     if let event::Kind::Recv(done) = event.into_kind()
                                         && let (token, flow, recv::Outcome::Data(buffer)) =
                                             done.into_parts()
@@ -205,6 +205,7 @@ fn retires_routed() {
             let dispatch =
                 driver::Context::dispatch(&mut context, turn.reactor(), |event, _source| {
                     let driver = _source;
+                    let (event, vacant) = event.take();
                     let done = match event.into_kind() {
                         event::Kind::Recv(done) => Ok(done),
                         event => Err(event),
@@ -213,7 +214,7 @@ fn retires_routed() {
                     .expect("receive cancellation");
                     assert!(target.matches(done.token()));
                     assert!(matches!(done.flow(), batch::Flow::Last));
-                    let retired = driver.retire(done.retire());
+                    let retired = driver.retire(vacant.insert(done.retire()));
                     assert!(matches!(retired, ControlFlow::Continue(())));
                     observed += 1;
                     ControlFlow::Continue(())

@@ -87,7 +87,7 @@ where
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     Self: opens::Phase<'d, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E>
-        + close::ClosePhase<'d, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E>,
+        + close::ClosePhase<'p, 'w, 'd, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E, side::Disabled>,
 {
     fn run(
         mut self: pin::Pin<&mut Self>,
@@ -153,7 +153,7 @@ where
     E::Transport: dope_net::Transport,
     I: registry::Intent<'d, ID>,
     Self: opens::Phase<'d, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E>
-        + close::ClosePhase<'d, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E>,
+        + close::ClosePhase<'p, 'w, 'd, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E, side::Enabled<&'r registry::Registry<'d, I, ID>>>,
 {
     fn run(
         mut self: pin::Pin<&mut Self>,
@@ -228,7 +228,7 @@ where
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     Self: opens::Phase<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, N, F>, E>
-        + close::ClosePhase<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, N, F>, E>,
+        + close::ClosePhase<'p, 'w, 'd, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, N, F>, E, side::Disabled>,
 {
     fn run(
         mut self: pin::Pin<&mut Self>,
@@ -294,7 +294,7 @@ where
     E::Transport: dope_net::Transport,
     I: registry::Intent<'d, ID>,
     Self: opens::Phase<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, K, N, F>, E>
-        + close::ClosePhase<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, K, N, F>, E>,
+        + close::ClosePhase<'p, 'w, 'd, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, K, N, F>, E, side::Enabled<&'r registry::Registry<'d, I, ID>>>,
 {
     fn run(
         mut self: pin::Pin<&mut Self>,

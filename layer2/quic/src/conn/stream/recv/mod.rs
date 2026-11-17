@@ -137,8 +137,12 @@ impl<'conn, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer:
 
     fn release_conn(&mut self, bytes: usize) {
         if bytes != 0 {
-            receive::Update::new(&mut self.connection.streams.state)
-                .release_conn(bytes as u64, &mut self.connection.control);
+            self.connection
+                .streams
+                .state
+                .receive
+                .connection_window
+                .release(bytes as u64);
         }
         self.track();
     }

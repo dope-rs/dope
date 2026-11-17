@@ -198,10 +198,7 @@ impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Port<'e, 'd, B, ID> {
         region: &'token mut region::Token<region::Identity<'d>>,
         conn: conn::Id<'d, ID>,
         value: B,
-    ) -> Reserve<'a, 'token, 'e, 'd, B, ID>
-    where
-        B: data::raw::Resident<'d>,
-    {
+    ) -> Reserve<'a, 'token, 'e, 'd, B, ID> {
         let Some(slot) = self.arena.get(metadata::Lane::from_slot(conn.slot())) else {
             return Reserve::Unknown(value);
         };

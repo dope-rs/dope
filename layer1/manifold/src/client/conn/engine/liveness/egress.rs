@@ -13,7 +13,6 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID>,
 {
-    pub(in crate::client::conn::engine) flights: &'a crate::Flights<'d, ID>,
     pub(in crate::client::conn::engine) connection:
         engine::Transition<'a, 'd, ID, E, X, &'a mut engine::Slot<'w, 'd, ID, A>>,
     pub(in crate::client::conn::engine) pending: pending::Handle<'a, 'd, ID>,

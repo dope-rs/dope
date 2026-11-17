@@ -1,6 +1,7 @@
 use std::num::NonZero;
 
 use dope::core::io::datagram::GsoLimits;
+use o3::alloc::VecExt as _;
 
 use crate::conn::{id, wire::packet};
 
@@ -9,13 +10,13 @@ const _: () = assert!(
     1 + ENTRY * crate::conn::MAX_BATCH_PACKETS < crate::proto::datagram::Size::MIN.get() as usize
 );
 
-pub(super) struct Gso<'a> {
-    batch: &'a mut packet::Gso,
+pub(super) struct Gso {
+    batch: packet::Gso,
     tail: *mut u8,
     participants: u8,
 }
 
-impl<'a> Gso<'a> {
+impl Gso {
     pub(super) fn capacity<const SHARED: bool>(
         limits: GsoLimits,
         bytes: usize,
@@ -28,16 +29,24 @@ impl<'a> Gso<'a> {
     }
 
     pub(super) fn try_new(
-        batch: &'a mut packet::Gso,
+        limits: GsoLimits,
+        mut bytes: Vec<u8>,
         packets: usize,
         outer: usize,
         participants: usize,
     ) -> Result<Self, crate::conn::output::transmit::Admission> {
-        let wire = (packets * outer).min(batch.limits().max_bytes().into_raw());
-        let bytes = batch.try_prepare(wire + 1 + ENTRY * participants)?;
+        let wire = (packets * outer).min(limits.max_bytes().into_raw());
+        let required = wire + 1 + ENTRY * participants;
+        if bytes.capacity() < required {
+            drop(bytes);
+            bytes = Vec::try_new(required).map_err(|error| packet::Allocation::Payload {
+                error,
+                requested: required,
+            })?;
+        }
         let tail = bytes.as_mut_ptr().wrapping_add(bytes.capacity() - 1);
         Ok(Self {
-            batch,
+            batch: packet::Gso::new(limits, bytes),
             tail,
             participants: 0,
         })
@@ -50,7 +59,7 @@ impl<'a> Gso<'a> {
         emit: impl FnOnce(&mut packet::Gso) -> R,
     ) -> R {
         let before = self.batch.packets();
-        let result = emit(self.batch);
+        let result = emit(&mut self.batch);
         if self.batch.packets() != before {
             self.participants += 1;
             // SAFETY: first reservation covers all selected contributors beyond
@@ -68,10 +77,10 @@ impl<'a> Gso<'a> {
         result
     }
 
-    pub(super) fn finish(self) -> Option<packet::Ready> {
+    pub(super) fn finish(self) -> packet::Storage {
         // SAFETY: this footer belongs to the first reserved, still-owned Vec.
         unsafe { self.tail.write(self.participants) };
-        self.batch.take()
+        self.batch.into_storage()
     }
 }
 

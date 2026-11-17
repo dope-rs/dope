@@ -70,7 +70,7 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
         H,
     >(
         mut plan: Plan<'a, 'm, 'r, 'p, 'w, 'd, ID, W, S, M, B, IOV, D, C, X, O, K, H>,
-    ) -> Branch<'d, ID, R, B>
+    ) -> (Branch<'d, ID, R, B>, bool)
     where
         'd: 'w,
         W: 'w + 'd,
@@ -103,22 +103,23 @@ pub(in crate::link::pool::change) trait Strategy<W: wire::Spec>:
                 if rearm {
                     plan.storage.recv.rearm.queue();
                 }
-                return Branch::Resume(Resume::new(plan.storage.entry.get()));
+                let next = Resume::new(plan.storage.entry.get());
+                return plan.done(Branch::Resume(next));
             }
             Some(credit::Take::Idle) | None => {}
         }
         match plan.pop() {
-            Step::Done(branch) => return branch,
+            Step::Done(branch) => return plan.done(branch),
             Step::Continue => {}
         }
         match plan.advance() {
-            Step::Done(branch) => return branch,
+            Step::Done(branch) => return plan.done(branch),
             Step::Continue => {}
         }
         let active = Self::credit::<input::Receipt<W, M>>(&plan.storage.recv.storage)
             .is_some_and(credit::Slot::is_active);
         if active || plan.storage.recv.storage.has_queued() {
-            Branch::Pending
+            plan.done(Branch::Pending)
         } else {
             plan.retire()
         }

@@ -281,6 +281,21 @@ unsafe impl<'d, B: Buffer<'d>, C: hold::raw::Retain<'d>> hold::raw::Retain<'d>
             View::Direct(view) => C::try_retain(view, budget),
         }
     }
+
+    fn try_retain_with<'a>(
+        plan: &Self::View<'a>,
+        budget: &resident::Budget<'d>,
+        limit: usize,
+    ) -> Result<Option<hold::Retained<'d>>, hold::Error>
+    where
+        Self: 'a,
+    {
+        match plan {
+            View::Vacant => Ok(None),
+            View::Staged(view) => Buf::try_retain_with(B::staged_view(view), budget, limit),
+            View::Direct(view) => C::try_retain_with(view, budget, limit),
+        }
+    }
 }
 
 // SAFETY: every view and consumption selects the same exclusively owned source.

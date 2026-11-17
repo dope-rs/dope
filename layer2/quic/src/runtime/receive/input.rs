@@ -8,8 +8,6 @@ use dope::manifold::network::datagram::packet;
 use crate::runtime::mux::handler::hook::wire::cert;
 use crate::runtime::mux::{auth, handler, protocol};
 use crate::{errors, proto::epoch, stream};
-use protocol::recv;
-use recv::Recv as _;
 
 pub trait Input<'d, D: buffer::raw::Segment>: stream::Recv {
     fn recv<

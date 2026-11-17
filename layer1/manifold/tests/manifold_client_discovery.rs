@@ -439,6 +439,7 @@ fn renewed_demand_preserves_submitted_and_waiting_epochs() {
                                         inner: host,
                                         state: None,
                                         renewal: Some(demand.clone()),
+                                        batch: None,
                                         pending: None,
                                     },
                                 }),

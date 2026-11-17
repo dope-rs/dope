@@ -83,7 +83,7 @@ fn run(mode: Mode, body: Vec<u8>, direct: usize) -> (Vec<u8>, Records) {
     let copies = Cell::new(None);
     let inputs = Cell::new(Vec::new());
     let eofs = Cell::new(0);
-    let observe = |event: Event<'_>| match event {
+    let observe = |event: Event| match event {
         Event::Open(cause) => opens.record(cause),
         Event::Wire(cause) => faults.record(cause),
         Event::Peer(cause) => peers.record(cause),
@@ -97,7 +97,7 @@ fn run(mode: Mode, body: Vec<u8>, direct: usize) -> (Vec<u8>, Records) {
             assert!(seen, "plaintext must precede EOF");
             eofs.set(eofs.get() + 1);
         }
-        Event::Write(result) => assert!(matches!(result, Ok(write::Outcome::Committed(())))),
+        Event::Write(result) => assert!(matches!(result, Ok(()))),
     };
     let net = Config::<Tcp> {
         max_connections: 16,

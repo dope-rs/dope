@@ -1,7 +1,4 @@
-use std::pin;
-
 use dope_core::driver::{self, route::Identity, schedule};
-use dope_net::link::pool::{self, pending};
 
 use crate::{
     app::{env, receive},
@@ -23,17 +20,17 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn apply<'p, 'machine, 'turn, 'driver, 'context>(
+    fn apply<'entry, 'p, 'turn, 'driver, 'context>(
         self,
-        engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
+        context: &mut engine::Context<'_, 'd, ID, A, S, E, X>,
+        entry: engine::Entry<'entry, 'p, 'w, 'd, ID, A, E::Transport>,
         flow: flow::Flow<()>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
-    ) -> receive::Outcome
+    ) -> (Option<engine::Entry<'entry, 'p, 'w, 'd, ID, A, E::Transport>>, receive::Outcome)
     where
         'd: 'p,
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>,
         A::Requests: send::Policy<'w, 'd, ID, A>;
 }
 
@@ -46,44 +43,32 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn apply<'p, 'machine, 'turn, 'driver, 'context>(
+    fn apply<'entry, 'p, 'turn, 'driver, 'context>(
         self,
-        mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
+        context: &mut engine::Context<'_, 'd, ID, A, S, E, X>,
+        entry: engine::Entry<'entry, 'p, 'w, 'd, ID, A, E::Transport>,
         flow: flow::Flow<()>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
-    ) -> receive::Outcome
+    ) -> (Option<engine::Entry<'entry, 'p, 'w, 'd, ID, A, E::Transport>>, receive::Outcome)
     where
         'd: 'p,
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>,
         A::Requests: send::Policy<'w, 'd, ID, A>,
     {
         if let Err(error) = self.into_result() {
-            return receive::Outcome::Failed(error);
+            return (Some(entry), receive::Outcome::Failed(error));
         }
-        let close = {
-            let this = engine.as_mut().project();
-            match this.links.pool_mut().get_mut(key) {
-                Some(slot) => slot.state.closing.is_closing(),
-                None => false,
+        let close = entry.get().state.closing.is_closing();
+        let entry = match flow {
+            flow::Flow::Continue(()) => {
+                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit_entry::<false, false, S, E, X>(
+                    context, entry, turn, driver,
+                )
             }
+            flow::Flow::Discarded(()) => Some(entry),
         };
-        match flow {
-            flow::Flow::Continue(()) => <A::Requests as send::Policy<'w, 'd, ID, A>>::submit::<
-                false,
-                false,
-                _,
-                _,
-                _,
-            >(engine.as_mut(), key, turn.reborrow(), driver),
-            flow::Flow::Discarded(()) => {}
-        }
-        if close {
-            receive::Outcome::CloseAfter
-        } else {
-            receive::Outcome::Continue
-        }
+        (entry, if close { receive::Outcome::CloseAfter } else { receive::Outcome::Continue })
     }
 }
 
@@ -95,22 +80,22 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn apply<'p, 'machine, 'turn, 'driver, 'context>(
+    fn apply<'entry, 'p, 'turn, 'driver, 'context>(
         self,
-        engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
+        context: &mut engine::Context<'_, 'd, ID, A, S, E, X>,
+        entry: engine::Entry<'entry, 'p, 'w, 'd, ID, A, E::Transport>,
         flow: flow::Flow<()>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
-    ) -> receive::Outcome
+    ) -> (Option<engine::Entry<'entry, 'p, 'w, 'd, ID, A, E::Transport>>, receive::Outcome)
     where
         'd: 'p,
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>,
         A::Requests: send::Policy<'w, 'd, ID, A>,
     {
         match self {
-            Self::Complete(done) => done.apply(engine, key, flow, turn, driver),
-            Self::Paused(pause) => pause.apply(engine, key, flow, turn, driver),
+            Self::Complete(done) => done.apply(context, entry, flow, turn, driver),
+            Self::Paused(pause) => pause.apply(context, entry, flow, turn, driver),
         }
     }
 }
@@ -124,53 +109,35 @@ where
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
 {
-    fn apply<'p, 'machine, 'turn, 'driver, 'context>(
+    fn apply<'entry, 'p, 'turn, 'driver, 'context>(
         self,
-        mut engine: pin::Pin<&'machine mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
-        key: pool::Key<'d, ID>,
+        context: &mut engine::Context<'_, 'd, ID, A, S, E, X>,
+        mut entry: engine::Entry<'entry, 'p, 'w, 'd, ID, A, E::Transport>,
         flow: flow::Flow<()>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
-    ) -> receive::Outcome
+    ) -> (Option<engine::Entry<'entry, 'p, 'w, 'd, ID, A, E::Transport>>, receive::Outcome)
     where
         'd: 'p,
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>,
         A::Requests: send::Policy<'w, 'd, ID, A>,
     {
-        let close = {
-            let this = engine.as_mut().project();
-            let close = match this.links.pool_mut().get_mut(key) {
-                Some(slot) => slot.state.closing.is_closing(),
-                None => false,
-            };
-            if !close {
-                this.links.pool_mut().suspend(key);
-                match self {
-                    app::Pause::Yield => {
-                        if let Some((slot, handle)) =
-                            pending::Mut::of(this.links.pool_mut()).get(key)
-                        {
-                            slot.state.work.request_next();
-                            handle.wake();
-                        }
-                    }
-                    app::Pause::Blocked => {}
-                }
+        let close = entry.get().state.closing.is_closing();
+        if !close {
+            entry.suspend();
+            if let app::Pause::Yield = self {
+                entry.get_mut().state.work.request_next();
+                entry.pending().wake();
             }
-            close
-        };
-        match flow {
+        }
+        let entry = match flow {
             flow::Flow::Continue(()) => {
-                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit::<false, false, _, _, _>(
-                    engine, key, turn, driver,
+                <A::Requests as send::Policy<'w, 'd, ID, A>>::submit_entry::<false, false, S, E, X>(
+                    context, entry, turn, driver,
                 )
             }
-            flow::Flow::Discarded(()) => {}
-        }
-        if close {
-            receive::Outcome::CloseAfter
-        } else {
-            receive::Outcome::Continue
-        }
+            flow::Flow::Discarded(()) => Some(entry),
+        };
+        (entry, if close { receive::Outcome::CloseAfter } else { receive::Outcome::Continue })
     }
 }

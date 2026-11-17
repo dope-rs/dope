@@ -29,7 +29,7 @@ impl<'a, 'token, 'e, 'd, B, ID: Identity> Permit<'a, 'token, 'e, 'd, B, ID> {
     }
 }
 
-impl<'e, 'd, B: data::raw::Resident<'d>, ID: Identity> Permit<'_, '_, 'e, 'd, B, ID> {
+impl<'e, 'd, B: data::raw::Payload<'d>, ID: Identity> Permit<'_, '_, 'e, 'd, B, ID> {
     pub fn commit<R>(
         self,
         acquire: impl for<'a> FnOnce(&'a mut region::Token<region::Identity<'d>>) -> R,

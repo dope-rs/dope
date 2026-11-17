@@ -105,12 +105,12 @@ impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>, P: position::State>
         let (token, credit) = (self.token, self.credit);
         let queue = credit.queue();
         if let Some(stored) = queue.pool.store.discard(token, &mut self.links) {
-            let mut grant = stored.into_grant();
+            let mut previous = stored;
             while let Some(stored) = queue.pool.store.discard(token, &mut self.links) {
-                grant.release();
-                grant = stored.into_grant();
+                previous.release();
+                previous = stored;
             }
-            grant.release();
+            previous.release();
         }
         credit.rollback(token);
     }

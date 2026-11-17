@@ -1,7 +1,5 @@
 //! Retained reply accounting and ownership.
 
-use o3::mem;
-
 use crate::reply::{retain::grant::payload, usage};
 
 mod batch;
@@ -23,30 +21,22 @@ pub use values::Values;
 /// The caller owns the matching byte storage and protocol-value records.
 #[must_use = "dropping the reservation returns its payload credits"]
 pub struct Reservation<'arena, 'credits, 'region> {
-    held: mem::Lease<pool::Lane<'arena, 'credits, 'region>>,
+    lane: pool::Lane<'arena, 'credits, 'region>,
+    source: &'credits raw::State,
+    amount: payload::Failure,
 }
 
-impl<'arena, 'credits, 'region> Reservation<'arena, 'credits, 'region> {
-    pub(in crate::reply) fn try_new(
-        lane: pool::Lane<'arena, 'credits, 'region>,
-        usage: usage::Usage,
-    ) -> Result<Self, usage::Capacity> {
-        let grant = lane.try_reserve(usage)?;
-        Ok(Self {
-            held: mem::Lease::new(lane, grant),
-        })
-    }
-
+impl Reservation<'_, '_, '_> {
     pub fn usage(&self) -> usage::Usage {
-        self.held.item().amount().usage()
+        self.amount.usage()
     }
 }
 
-impl<'credits> mem::Return for pool::Lane<'_, 'credits, '_> {
-    type Item = payload::Grant<'credits, payload::Failure>;
-
-    fn return_item(self, grant: Self::Item) {
-        self.release(grant);
+impl Drop for Reservation<'_, '_, '_> {
+    fn drop(&mut self) {
+        // SAFETY: the private constructor admitted this unchanged amount from
+        // this exact source; Reservation has no disarm or rebinding operation.
+        unsafe { self.lane.release(self.source, self.amount) };
     }
 }
 

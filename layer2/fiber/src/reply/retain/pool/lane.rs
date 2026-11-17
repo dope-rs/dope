@@ -1,16 +1,18 @@
 //! Owner-bound access to one reply resource lane.
 
 use dope::core::driver::schedule::ready;
-use o3::mem::{self, raw::Source as _};
+use o3::mem;
 
 use crate::reply::{
     self, LaneIndex,
-    retain::{grant::payload, pool::Pool},
+    retain::{
+        self,
+        grant::payload,
+        pool::{Acquire, Pool},
+    },
     usage,
     usage::Footprint,
 };
-
-const ENTRY: usize = 0;
 
 #[derive(Clone, Copy)]
 pub(in crate::reply) struct Lane<'arena, 'credits, 'region: 'arena> {
@@ -57,20 +59,37 @@ impl<'arena, 'credits, 'region> Lane<'arena, 'credits, 'region> {
     }
 
     pub(in crate::reply) fn has_reserve(self) -> bool {
-        let credit = self.pool.lanes().credits.capacity(self.index);
-        credit.held()[ENTRY] < credit.reserve()[ENTRY]
+        self.pool.lanes().credits.state(self.index).has_reserve()
     }
 
     pub(in crate::reply) fn try_reserve(
         self,
         usage: usage::Usage,
-    ) -> Result<payload::Grant<'credits, payload::Failure>, usage::Capacity> {
-        self.pool.lanes().try_reserve(self.index, usage)
+    ) -> Result<retain::Reservation<'arena, 'credits, 'region>, usage::Capacity> {
+        let source = self.pool.lanes().credits.state(self.index);
+        let amount = payload::Failure::new(usage);
+        source
+            .try_acquire(mem::raw::Amount::get(amount))
+            .map_err(|cause| match Acquire::new(cause) {
+                Acquire::Capacity(cause) => cause,
+                Acquire::Backpressure(cause) => usage::Capacity::Unavailable(cause),
+            })?;
+        Ok(retain::Reservation {
+            lane: self,
+            source,
+            amount,
+        })
     }
 
-    pub(in crate::reply) fn release(self, grant: payload::Grant<'credits, payload::Failure>) {
+    /// # Safety
+    /// The original Reservation consumes its unchanged source and amount once.
+    pub(in crate::reply::retain) unsafe fn release(
+        self,
+        source: &retain::raw::State,
+        amount: payload::Failure,
+    ) {
         let lanes = self.pool.lanes();
-        lanes.release_data(grant);
+        unsafe { lanes.release_data(source, amount) };
         if lanes.has_pending() {
             lanes.wake(self.index);
         }

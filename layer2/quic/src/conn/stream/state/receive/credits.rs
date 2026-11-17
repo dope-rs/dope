@@ -11,10 +11,9 @@ use recv::map;
 
 const FLAG_BITS: u32 = u8::BITS;
 const MAX_ORIGIN: u64 = u64::MAX >> FLAG_BITS;
-const MAX_DATA_DIRTY: u8 = 1 << 0;
 const MAX_STREAMS_BIDI_DIRTY: u8 = 1 << 1;
 const MAX_STREAMS_UNI_DIRTY: u8 = 1 << 2;
-const CONTROL_DIRTY: u8 = MAX_DATA_DIRTY | MAX_STREAMS_BIDI_DIRTY | MAX_STREAMS_UNI_DIRTY;
+const CONTROL_DIRTY: u8 = MAX_STREAMS_BIDI_DIRTY | MAX_STREAMS_UNI_DIRTY;
 
 /// Receive-wide identity and flags packed into the word that previously held
 /// one byte of flags and alignment padding.
@@ -50,18 +49,6 @@ impl Meta {
 
     pub(super) const fn has_ctrl(&self) -> bool {
         self.contains(CONTROL_DIRTY)
-    }
-
-    pub(super) const fn has_data(&self) -> bool {
-        self.contains(MAX_DATA_DIRTY)
-    }
-
-    pub(super) fn mark_data(&mut self) {
-        self.mark(MAX_DATA_DIRTY);
-    }
-
-    pub(super) fn clear_data(&mut self) {
-        self.clear(MAX_DATA_DIRTY);
     }
 
     pub(super) const fn has_stream(&self, dir: Direction) -> bool {
@@ -100,8 +87,9 @@ impl Flow {
         }
     }
 
-    pub(in crate::conn) const fn desired(&self) -> varint::VarInt {
-        self.desired
+    pub(in crate::conn) fn pending(&self) -> Option<varint::VarInt> {
+        let released = self.desired.get() - self.published.get();
+        (released != 0 && released >= self.published.get() - self.total).then_some(self.desired)
     }
 
     pub(in crate::conn) fn publish(&mut self, limit: varint::VarInt) {
@@ -129,13 +117,8 @@ impl Flow {
         self.total = recorded.0;
     }
 
-    pub(in crate::conn) fn release(&mut self, count: u64) -> Option<varint::VarInt> {
-        let next = varint::VarInt::saturate(u128::from(self.desired.get()) + u128::from(count));
-        if next == self.desired {
-            return None;
-        }
-        self.desired = next;
-        Some(next)
+    pub(in crate::conn) fn release(&mut self, count: u64) {
+        self.desired = varint::VarInt::saturate(u128::from(self.desired.get()) + u128::from(count));
     }
 }
 

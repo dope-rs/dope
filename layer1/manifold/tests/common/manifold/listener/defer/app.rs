@@ -14,15 +14,20 @@ use dope_manifold::{
 };
 use dope_net::link::egress::{self, load::Value};
 use dope_test::harness::signals::Gate;
-use o3::buffer::{bytes::TryRetain, resident::Shared};
+use o3::buffer::bytes::TryRetain;
 
 use crate::common::manifold::listener::defer::wire::Wire;
 
 pub(crate) const BODY: &[u8; 4] = b"body";
 
-pub enum Event<'a, 'd> {
+type Output<'d> = dope_net::link::egress::data::Bound<
+    o3::buffer::resident::Shared<'d>,
+    o3::buffer::resident::bound::AtMost<4>,
+>;
+
+pub enum Event<'a> {
     Chunk(usize),
-    Write(&'a Result<write::Outcome<()>, error::Error<Shared<'d>, (), convert::Infallible>>),
+    Write(&'a Result<(), error::Admission>),
 }
 
 pub struct App<F> {
@@ -38,10 +43,10 @@ pub enum State {
     Done,
 }
 
-impl<F: for<'a, 'd> Fn(Event<'a, 'd>)> App<F> {
+impl<F: for<'a> Fn(Event<'a>)> App<F> {
     pub(crate) fn fill<'d, ID: Identity>(
         &self,
-        conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State>,
+        conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State, Output<'d>>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
         loop {
@@ -50,20 +55,37 @@ impl<F: for<'a, 'd> Fn(Event<'a, 'd>)> App<F> {
                 State::Last => (State::Done, b'B', true),
                 State::Done => return,
             };
-            let load = egress::NonEmpty::from_array(BODY);
-            let result = conn.write().try_bounded(driver, move |state, mut prefix| {
-                *state = next;
-                prefix.write_byte(byte).unwrap();
-                let draft = prefix.commit(Some(Value::Checked(load)), ());
-                if close { draft.close_after() } else { draft }
-            });
+            let mut output_slot = std::mem::MaybeUninit::uninit();
+            let result = match conn.write().try_open(driver, &mut output_slot) {
+                Ok(mut output) => {
+                    let (state, mut prefix) = output.get_mut().parts();
+                    *state = next;
+                    prefix.write_byte(byte).unwrap();
+                    let load = egress::NonEmpty::from_array(BODY)
+                        .try_bound::<o3::buffer::resident::bound::AtMost<4>>()
+                        .map_err(|rejected| rejected.into_parts().1)
+                        .expect("fixture body bound");
+                    let end = if close {
+                        write::End::Close
+                    } else {
+                        write::End::Open
+                    };
+                    write::Output::try_publish(output, Value::Checked(load), end)
+                        .map_err(error::Mismatch::into_cause)
+                        .expect("publication");
+                    Ok(())
+                }
+                Err(cause) => Err(cause),
+            };
             (self.observe)(Event::Write(&result));
-            if matches!(result, Ok(write::Outcome::Committed(()))) {
+            if matches!(result, Ok(())) {
                 self.done.hit();
             } else {
                 if matches!(
                     result,
-                    Ok(write::Outcome::Deferred(write::Deferred::OrderedDrain))
+                    Err(write::error::Admission::Deferred(
+                        write::Deferred::OrderedDrain
+                    ))
                 ) {
                     self.ordered.hit();
                 }
@@ -73,13 +95,13 @@ impl<F: for<'a, 'd> Fn(Event<'a, 'd>)> App<F> {
     }
 }
 
-impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> Application<'d, ID> for App<F> {
+impl<'d, ID: Identity, F: for<'a> Fn(Event<'a>)> Application<'d, ID> for App<F> {
     type Conn = State;
     type Build = convert::Infallible;
     type Wire = Wire;
     type WireFailure = failures::Close;
     type Retirement = retire::Close;
-    type Egress = Shared<'d>;
+    type Egress = Output<'d>;
     type Input = receive::Borrowed;
     type Send = send::Run;
 
@@ -97,7 +119,7 @@ impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> Application<'d, ID> for
 
     fn accept(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State>,
+        conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State, Output<'d>>,
     ) -> Outcome {
         conn.wake_target().wake();
         Outcome::Continue
@@ -105,31 +127,34 @@ impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> Application<'d, ID> for
 
     fn activate<'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, State>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, State, Output<'d>>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
         self.as_ref().get_ref().fill(&mut conn, driver);
     }
 
-    fn close<'e>(self: Pin<&mut Self>, _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, State>) {
+    fn close<'e>(
+        self: Pin<&mut Self>,
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Wire, State, Output<'d>>,
+    ) {
         self.as_ref().get_ref().closed.hit();
     }
 }
 
-impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> send::Drive<'d, ID> for App<F> {
+impl<'d, ID: Identity, F: for<'a> Fn(Event<'a>)> send::Drive<'d, ID> for App<F> {
     fn send(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State, Output<'d>>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
         self.as_ref().get_ref().fill(&mut conn, driver);
     }
 }
 
-impl<'d, ID: Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> handler::Borrowed<'d, ID> for App<F> {
+impl<'d, ID: Identity, F: for<'a> Fn(Event<'a>)> handler::Borrowed<'d, ID> for App<F> {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Wire, State, Output<'d>>,
         chunk: R,
         driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {

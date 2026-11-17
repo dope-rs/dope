@@ -423,6 +423,7 @@ fn check_retirement(shutdown: bool, fault: Option<Errno>) {
                             inner: host,
                             state: fault.clone(),
                             renewal: None,
+                            batch: None,
                             pending: None,
                         }),
                         Duration::from_secs(2),

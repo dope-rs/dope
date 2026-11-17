@@ -17,11 +17,8 @@ use crate::{
     runtime::{mux, routing},
     wire::packet::cid,
 };
-use dial::{direct, pooled};
-use direct::Direct as _;
 use life::options;
 use mux::{handler, protocol};
-use protocol::dial;
 
 pub(super) fn connect_with_config<
     'd,
@@ -168,7 +165,7 @@ where
             let mut config = config;
             config.cap_udp(ep.packet);
             let mut protocol = protocol::Io::new(ep.project().udp.handler_mut().mux_mut());
-            pooled::Pooled::connect_in(&mut protocol, scope, peer, pool, config, dcid, raw)
+            protocol.pool_connect_in(scope, peer, pool, config, dcid, raw)
         })
     })
 }
@@ -196,7 +193,7 @@ where
     R: routing::PeerRoute,
 {
     let mut protocol = protocol::Io::new(ep.project().udp.handler_mut().mux_mut());
-    pooled::Pooled::route_in(&mut protocol, scope, peer, pool, config, route, now)
+    protocol.pool_route_in(scope, peer, pool, config, route, now)
 }
 
 pub(crate) fn pool_again<
@@ -225,7 +222,7 @@ where
     R: routing::PeerRoute,
 {
     let mut protocol = protocol::Io::new(ep.project().udp.handler_mut().mux_mut());
-    pooled::Pooled::reconnect_in(&mut protocol, scope, pool, config, again, route, now)
+    protocol.pool_reconnect_in(scope, pool, config, again, route, now)
 }
 
 /// Pooled connection operations preserve the endpoint's exact TLS loan and routing policy.

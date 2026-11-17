@@ -97,7 +97,7 @@ impl Header {
 pub(in crate::network::listener) struct Flight<B, P: data::position::State> {
     #[pin]
     pub(super) header: Header,
-    pub(super) source: Option<B>,
+    pub(super) source: o3::mem::slot::Storage<B>,
     pub(super) position: P,
     pub(super) iovecs: [mem::MaybeUninit<msg::Iovec>; listener::IOV_CAP],
     pub(super) message: mem::MaybeUninit<msg::Header>,
@@ -109,7 +109,7 @@ impl<B, P: data::position::State> Flight<B, P> {
         // SAFETY: disjoint field writes initialize the complete exclusive slot.
         unsafe {
             Header::init(&mut *(&raw mut (*slot).header).cast());
-            (&raw mut (*slot).source).write(None);
+            (&raw mut (*slot).source).write(o3::mem::slot::Storage::new(()));
             (&raw mut (*slot).position).write(P::default());
             (&raw mut (*slot).iovecs).write([mem::MaybeUninit::uninit(); listener::IOV_CAP]);
             (&raw mut (*slot).message).write(mem::MaybeUninit::uninit());
@@ -184,13 +184,6 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Retention<'p, 's, 'd, 
         Self { arena, lane }
     }
 
-    pub(in crate::network::listener) fn reborrow(&self) -> Retention<'p, 's, 'd, ID, B> {
-        Retention {
-            arena: self.arena,
-            lane: self.lane,
-        }
-    }
-
     pub(in crate::network::listener) fn sources(
         &self,
     ) -> (
@@ -259,38 +252,8 @@ pub(in crate::network::listener) type HeaderSlot<'p, 's, 'd, ID> =
 pub(in crate::network::listener) type DirectSlot<'p, 's, 'd, ID, B = resident::Shared<'d>> =
     release::Lease<'p, 's, 'd, Flight<B, <B as data::raw::Payload<'d>>::Position>, ID>;
 
-pub(in crate::network::listener) type Plan<'a, 'p, 's, 'e, 'd, ID, B> =
-    reserve::Plan<'a, 'e, 'd, writer::Payload<'p, 's, 'd, ID, B>, writer::Reserve<'d, B>>;
-
-pub(in crate::network::listener) enum Buffer<
-    'a,
-    'p,
-    's,
-    'e,
-    'd,
-    ID: Identity,
-    B = resident::Shared<'d>,
-    P = Plan<'a, 'p, 's, 'e, 'd, ID, B>,
-> where
-    B: data::raw::Payload<'d>,
-{
-    Direct(DirectSlot<'p, 's, 'd, ID, B>),
-    Queued {
-        slot: HeaderSlot<'p, 's, 'd, ID>,
-        queue: egress::Queue<
-            'a,
-            'e,
-            'd,
-            { listener::IOV_CAP },
-            writer::Payload<'p, 's, 'd, ID, B>,
-            writer::Reserve<'d, B>,
-        >,
-        plan: P,
-    },
-}
-
-pub(in crate::network::listener) type Bounded<'a, 'p, 's, 'e, 'd, ID, B = resident::Shared<'d>> =
-    Buffer<'a, 'p, 's, 'e, 'd, ID, B, ()>;
+pub(in crate::network::listener) type Plan<'a, 'p, 's, 'e, 'd, ID, B, G> =
+    reserve::Plan<'a, 'e, 'd, writer::Payload<'p, 's, 'd, ID, B>, writer::Reserve<'d, B>, G>;
 
 impl<ID: Identity> AsMut<[mem::MaybeUninit<u8>; WRITE_BUF_CAP]> for HeaderSlot<'_, '_, '_, ID> {
     fn as_mut(&mut self) -> &mut [mem::MaybeUninit<u8>; WRITE_BUF_CAP] {
@@ -339,10 +302,6 @@ const _: () = {
     assert!(
         mem::size_of::<listener::raw::Owned<'static, 'static, 'static, KeyTag<0>>>()
             == 3 * mem::size_of::<usize>()
-    );
-    assert!(
-        mem::size_of::<Bounded<'static, 'static, 'static, 'static, 'static, KeyTag<0>>>()
-            < mem::size_of::<Buffer<'static, 'static, 'static, 'static, 'static, KeyTag<0>>>()
     );
     assert!(
         mem::size_of::<Option<listener::raw::Owned<'static, 'static, 'static, KeyTag<0>>>>()

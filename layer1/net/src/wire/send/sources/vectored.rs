@@ -37,12 +37,12 @@ pub(in crate::wire::send) struct Vectors<'a> {
 }
 
 impl<'scope, 'bytes: 'scope, const N: usize> Payload<'scope> for Vectored<'bytes, N> {
-    fn select(&self) -> Option<impl send::raw::Ready<'scope>> {
+    fn select(self) -> Option<impl send::raw::Ready<'scope>> {
         let bytes = transfer::NonZero::try_from(self.message.bytes()).ok()?;
         Some(match self.message.contiguous() {
             Some(view) => Either::Left(Slice { view, bytes }),
             None => Either::Right(Vectors {
-                message: self.message.message(),
+                message: self.message.into_message(),
                 bytes,
             }),
         })

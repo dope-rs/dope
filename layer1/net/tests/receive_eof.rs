@@ -50,13 +50,11 @@ fn parked_receipt_is_preserved() {
         let mut publication = true;
         let mut captures = 0;
         pool.suspend(key);
-        assert!(matches!(
-            pool.recv().data(done, |_, _| {
-                captures += 1;
-                publication
-            }),
-            Reservation::Parked(ParkRecv::Deferred)
-        ));
+        assert!(pool.recv().data(
+            done,
+            |_, _| { captures += 1; publication },
+            |plan| matches!(plan, Reservation::Parked(ParkRecv::Deferred)),
+        ).1);
         assert!(pool.sender_with_recv(key).expect("send owner").1);
         publication = false;
         pool.resume(key);
@@ -72,14 +70,15 @@ fn parked_receipt_is_preserved() {
             _ => panic!("queued completion"),
         };
         assert!(!pool.sender_with_recv(key).expect("send owner").1);
-        let data = match pool.recv().data(done, |_, _| {
-            captures += 1;
-            publication
-        }) {
-            Reservation::Ready(data) => data,
-            _ => panic!("replay admission"),
-        };
-        let (chunk, receipt) = match data.retained() {
+        let output = pool.recv().data(
+            done,
+            |_, _| { captures += 1; publication },
+            |plan| match plan {
+                Reservation::Ready(data) => Some(data.retained()),
+                _ => None,
+            },
+        ).1.expect("replay admission");
+        let (chunk, receipt) = match output {
             DispatchRecv::Chunk(_, output) => output,
             _ => panic!("retained data"),
         };
@@ -97,12 +96,11 @@ fn tail_keeps_cancel() {
     let (reports, input) = eof::run::<input::Scoped>(|pool, key, scope, peer| {
         let (flow, done) = eof::final_byte(pool, key, scope, &peer).expect("final byte completion");
         assert!(flow == Flow::More || std::env::consts::OS != "linux");
-        let data = match pool.recv().data(done, |_, _| ()) {
-            Reservation::Ready(data) => Some(data),
+        let (mut entry, data) = pool.recv().data(done, |_, _| (), |plan| match plan {
+            Reservation::Ready(data) => Some(data.scoped()),
             _ => None,
-        }
-        .expect("final reservation");
-        let (seen, chunk) = match data.scoped() {
+        });
+        let (seen, chunk) = match data.expect("final reservation") {
             DispatchRecv::Chunk(seen, chunk) => Some((seen, chunk)),
             _ => None,
         }
@@ -111,16 +109,13 @@ fn tail_keeps_cancel() {
         assert_eq!(chunk.as_ref(), b"F");
         let address = chunk.as_ref().as_ptr();
         assert!(matches!(
-            pool.recv().defer(key, chunk),
+            entry.as_mut().expect("admitted connection").defer(chunk),
             recv::Deferral::Ready
         ));
         assert!(
-            pool.inspect()
-                .get(key)
-                .expect("retained EOF owner")
-                .terminal
-                .has_eof()
+            entry.as_ref().expect("retained EOF owner").get().terminal.has_eof()
         );
+        drop(entry);
         eof::cancel(pool, scope, flow, |flow, status, dispatch| {
             assert_eq!(flow, Flow::Last);
             assert!(matches!(status, Status::Cancelled));
@@ -133,17 +128,17 @@ fn tail_keeps_cancel() {
             _ => None,
         }
         .expect("same generation");
-        let mut receiver = pool.recv();
+        let mut receiver = pool.entry(resumed.key()).map_err(|missing| missing.key()).expect("same generation");
         {
             let _tail = receiver
-                .take_tail(&resumed)
+                .take_tail()
                 .continue_value()
                 .expect("receive gate open")
                 .expect("retained plaintext tail");
             assert_eq!(resumed.key(), key);
         }
         let tail = receiver
-            .take_tail(&resumed)
+            .take_tail()
             .continue_value()
             .expect("receive gate open")
             .expect("tail remains pending")
@@ -151,7 +146,8 @@ fn tail_keeps_cancel() {
         assert_eq!(tail.as_ref(), b"F");
         assert_eq!(tail.as_ref().as_ptr(), address);
         drop(tail);
-        receiver.finish_tail(&resumed);
+        receiver.finish_tail();
+        drop(receiver);
         assert!(matches!(
             pool.get_mut(key)
                 .expect("live connection")
@@ -183,12 +179,11 @@ fn tail_keeps_cancel() {
 fn credit_return_keeps_eof() {
     let (reports, input) = eof::run::<input::Retained>(|pool, key, scope, peer| {
         let (flow, done) = eof::final_byte(pool, key, scope, &peer).expect("final byte completion");
-        let data = match pool.recv().data(done, |_, _| ()) {
-            Reservation::Ready(data) => Some(data),
+        let data = pool.recv().data(done, |_, _| (), |plan| match plan {
+            Reservation::Ready(data) => Some(data.retained()),
             _ => None,
-        }
-        .expect("credit reservation");
-        let (seen, chunk) = match data.retained() {
+        }).1.expect("credit reservation");
+        let (seen, chunk) = match data {
             DispatchRecv::Chunk(seen, (chunk, ())) => Some((seen, chunk)),
             _ => None,
         }
@@ -204,10 +199,7 @@ fn credit_return_keeps_eof() {
                 _ => None,
             }
             .expect("late native buffer");
-            assert!(matches!(
-                pool.recv().data(late, |_, _| ()),
-                Reservation::Drop
-            ));
+            assert!(pool.recv().data(late, |_, _| (), |plan| matches!(plan, Reservation::Drop)).1);
         }
         eof::cancel(pool, scope, flow, |flow, status, dispatch| {
             assert_eq!(flow, Flow::Last);
@@ -280,7 +272,7 @@ fn closing_settles_eof() {
         }
         .expect("EOF completion");
         assert!(matches!(done.status(), Status::Eof));
-        assert!(matches!(pool.recv().dispatch(done), Dispatch::Settled));
+        assert!(matches!(pool.recv().dispatch(done).1, Dispatch::Settled));
         assert!(!Pending::of(pool).is_empty());
         assert!(!pool.inspect().has_rearm());
         assert!(matches!(
@@ -305,7 +297,7 @@ fn close_after_keeps_pending_reply() {
             let mut driver = scope.context();
             assert!(pool.try_right(driver.region_token(), key, bytes).is_ok());
             assert!(matches!(
-                pool.sender(key).expect("send owner").submit(&mut driver),
+                pool.sender(key).expect("send owner").submit(&mut driver, drop),
                 Attempt::Waiting
             ));
         }
@@ -316,11 +308,19 @@ fn close_after_keeps_pending_reply() {
         .expect("response completion");
         {
             let mut driver = scope.context();
-            assert!(matches!(
-                pool.settle(output).settle_owned(&mut driver, |_| {}, |_, _| {}),
-                SendOutcome::Queued { key: seen, acknowledged }
-                    if seen == key && acknowledged.into_raw() == 5
-            ));
+            let mut observed = false;
+            pool.settle(
+                output, &mut driver, &mut observed, |_, _| {}, |_, _, _, _| {},
+                |observed, completion, _| {
+                    let dope_net::link::pool::send::Completion::Ready(owner, outcome) = completion else {
+                        panic!("unexpected direct completion");
+                    };
+                    assert_eq!(owner.publish(|_| {}).into_entry().get().key(), key);
+                    assert!(matches!(outcome, SendOutcome::Queued { acknowledged } if acknowledged.into_raw() == 5));
+                    *observed = true;
+                },
+            );
+            assert!(observed);
         }
         let mut response = [0; 5];
         peer.read_exact(&mut response).expect("drained response");
@@ -360,7 +360,7 @@ fn shutdown_wakes_terminal() {
             }
             .expect("shutdown request rejects deferred output");
             assert!(matches!(
-                pool.sender(key).expect("send owner").submit(&mut driver),
+                pool.sender(key).expect("send owner").submit(&mut driver, drop),
                 Attempt::Waiting
             ));
             bytes
@@ -370,7 +370,7 @@ fn shutdown_wakes_terminal() {
             _ => None,
         }
         .expect("shutdown completion");
-        assert!(matches!(pool.recv().dispatch(input), Dispatch::Ready(_)));
+        assert!(matches!(pool.recv().dispatch(input).1, Dispatch::Ready(_)));
         assert!(
             pool.get_mut(key)
                 .expect("terminal owner")
@@ -395,9 +395,19 @@ fn shutdown_wakes_terminal() {
         ));
         {
             let mut driver = scope.context();
-            assert!(
-                matches!(pool.settle(output).settle_owned(&mut driver, |_| {}, |_, _| {}), SendOutcome::WriteShutdown { key: seen } if seen == key)
+            let mut observed = false;
+            pool.settle(
+                output, &mut driver, &mut observed, |_, _| {}, |_, _, _, _| {},
+                |observed, completion, _| {
+                    let dope_net::link::pool::send::Completion::Ready(owner, outcome) = completion else {
+                        panic!("unexpected direct completion");
+                    };
+                    assert_eq!(owner.publish(|_| {}).into_entry().get().key(), key);
+                    assert!(matches!(outcome, SendOutcome::WriteShutdown));
+                    *observed = true;
+                },
             );
+            assert!(observed);
         }
         assert!(matches!(
             eof::take_ready(scope, |token| {
@@ -450,10 +460,7 @@ fn closing_wakes_exhaustion() {
                 _ => None,
             }
             .expect("native buffer");
-            assert!(matches!(
-                pool.recv().data(done, |_, _| ()),
-                Reservation::Parked(ParkRecv::Deferred)
-            ));
+            assert!(pool.recv().data(done, |_, _| (), |plan| matches!(plan, Reservation::Parked(ParkRecv::Deferred))).1);
         }
         peer.write_all(b"F").expect("exhaust receive buffers");
         let (flow, item) = eof::receive(scope).expect("native exhaustion");
@@ -466,7 +473,7 @@ fn closing_wakes_exhaustion() {
         assert!(matches!(done.status(), Status::Exhausted));
         pool.get_mut(key).expect("closing owner").io().close();
         assert!(Pending::of(pool).is_empty());
-        let done = match pool.recv().dispatch(done) {
+        let done = match pool.recv().dispatch(done).1 {
             Dispatch::Retired(done) => Some(done),
             _ => None,
         }
@@ -530,7 +537,7 @@ fn closing_wakes_reset() {
         .expect("native reset error");
         assert!(error.is_reset());
         assert!(matches!(
-            pool.recv().dispatch(done),
+            pool.recv().dispatch(done).1,
             Dispatch::Ready(ControlRecv::Failed { key: seen, error: cause })
                 if seen == key && cause == error
         ));

@@ -23,7 +23,7 @@ use dope::{
     net::{
         self, Listen,
         link::{
-            egress::{self, reserve::demand},
+            egress::{self, data::raw::Payload, reserve::demand},
             event::{SendFailure, SendOutcome},
             pool::{
                 self,
@@ -57,14 +57,20 @@ use native::{commit, next};
 type Route = KeyTag<0>;
 type Wire = Tls<Server>;
 type Key<'d> = pool::Key<'d, Route>;
-type Pool<'p, 'w, 'd> = pool::Pool<'p, 'w, 'd, Route, Tcp, Wire, (), input::Scoped, &'d [u8]>;
+pub type Pool<'p, 'w, 'd, B = &'d [u8]> =
+    pool::Pool<'p, 'w, 'd, Route, Tcp, Wire, (), input::Scoped, B>;
+
+const UPDATES: usize = 256;
+pub const PARTIAL_BYTES: usize = 128 * 1024;
 
 #[derive(Clone, Copy)]
 pub enum Mode {
     Reply,
     Close,
     Held,
+    Updates,
     Failed,
+    Partial,
 }
 
 #[derive(Debug)]
@@ -72,6 +78,7 @@ pub struct Held {
     pub inflight: bool,
     pub retained: bool,
     pub rearm: bool,
+    pub sent: usize,
 }
 
 #[derive(Debug)]
@@ -130,19 +137,44 @@ pub fn run(
         Result<Result<[Vec<u8>; 2], Error>, scope::Error<'owner, Result<[Vec<u8>; 2], Error>>>,
     ),
 ) -> Result<(), Error> {
+    with(
+        mode,
+        |scope, end, pubkey| prepare(scope, end, pubkey, mode, test),
+        policy,
+        finish,
+    )
+}
+
+pub fn with(
+    mode: Mode,
+    test: impl for<'a, 'w, 'd> FnOnce(
+        &'w mut life::Scope<'a, 'd>,
+        domain::Endpoint<'w, Wire, Route>,
+        [u8; 32],
+    ) -> Result<[Vec<u8>; 2], Error>,
+    policy: impl recovery::Observe,
+    finish: impl for<'owner> FnOnce(
+        Result<Result<[Vec<u8>; 2], Error>, scope::Error<'owner, Result<[Vec<u8>; 2], Error>>>,
+    ),
+) -> Result<(), Error> {
     let (end, pubkey) = Peer::try_server().map_err(Error::Config)?;
     let storage = domain::Owner::<Wire, Route>::try_new(conn::Capacity::fixed::<2>())
         .map_err(Error::Resource)?;
-    let config = settings::Config::default()
+    let mut config = settings::Config::default()
         .with_queues(state::QUEUES)
         .with_files(settings::FileSlots::fixed::<3, 2>())
         .with_receive(settings::Receive::fixed::<8, 4096>());
+    if matches!(mode, Mode::Partial) {
+        config = config.with_domains(settings::Domain::ONE);
+    }
     Driver::new(config).with_scope(
         |scope| {
-            let send = NonZero::<usize>::MIN
-                .saturating_add(usize::from(matches!(mode, Mode::Held | Mode::Failed)));
+            let send = NonZero::<usize>::MIN.saturating_add(usize::from(matches!(
+                mode,
+                Mode::Held | Mode::Updates | Mode::Failed
+            )));
             let Ok(end) = storage.bind(end.with_send(send));
-            prepare(scope, end, pubkey, mode, test)
+            test(scope, end, pubkey)
         },
         policy,
         finish,
@@ -150,22 +182,28 @@ pub fn run(
     Ok(())
 }
 
-fn prepare<'w, 'd: 'w>(
+pub fn prepare<'w, 'd: 'w, B: Payload<'d>>(
     scope: &mut life::Scope<'_, 'd>,
     end: domain::Endpoint<'w, Wire, Route>,
     pubkey: [u8; 32],
     mode: Mode,
     test: impl for<'p> FnOnce(
-        &mut Pool<'p, 'w, 'd>,
+        &mut Pool<'p, 'w, 'd, B>,
         [Key<'d>; 2],
         &mut life::Scope<'_, 'd>,
         Option<Held>,
     ) -> Result<(), Error>,
 ) -> Result<[Vec<u8>; 2], Error> {
-    change::try_prepare::<Route, Tcp, Wire, (), input::Scoped, &'d [u8], 32, _, _, _, _>(
+    let credit = match mode {
+        Mode::Partial => {
+            egress::Config::shared(egress::Credit::fixed::<1, { PARTIAL_BYTES as u32 }>())
+        }
+        _ => egress::Config::DEFAULT,
+    };
+    change::try_prepare::<Route, Tcp, Wire, (), input::Scoped, B, 32, _, _, _, _>(
         domain::Retained::ZERO,
         domain::Resident::ZERO,
-        demand::Fallible::prepare(egress::Config::DEFAULT, conn::Capacity::fixed::<2>()),
+        demand::Fallible::prepare(credit, conn::Capacity::fixed::<2>()),
         end,
         scope,
         life::Scope::context,
@@ -234,11 +272,23 @@ fn prepare<'w, 'd: 'w>(
                             *bad.last_mut().ok_or(Connect::WriteZero)? ^= 0xff;
                             wire.extend_from_slice(&bad);
                             first.socket.write_all(&wire).map_err(Connect::Peer)?;
+                        } else if matches!(mode, Mode::Updates) {
+                            for _ in 0..UPDATES {
+                                first.tls.refresh_traffic_keys().map_err(Connect::Tls)?;
+                                first.try_send(b"A")?;
+                            }
                         } else {
                             first.try_send(b"A")?;
                         }
                         let mut second = Peer::establish(second, pubkey)?;
                         second.try_send(b"B")?;
+                        if matches!(mode, Mode::Partial) {
+                            let mut bytes = [0; 4096];
+                            for socket in [first.socket, second.socket] {
+                                while socket.read(&mut bytes).map_err(Connect::Peer)? != 0 {}
+                            }
+                            return Ok([Vec::new(), Vec::new()]);
+                        }
                         let first = match (mode, first.try_recv()) {
                             (
                                 Mode::Failed,
@@ -249,7 +299,9 @@ fn prepare<'w, 'd: 'w>(
                             (_, result) => result?,
                         };
                         let second = match mode {
-                            Mode::Reply | Mode::Held | Mode::Failed => second.try_recv()?,
+                            Mode::Reply | Mode::Held | Mode::Updates | Mode::Failed | Mode::Partial => {
+                                second.try_recv()?
+                            }
                             Mode::Close => receive_close(&mut second)?,
                         };
                         Ok::<_, Connect>([first, second])
@@ -345,14 +397,14 @@ fn receive_close(peer: &mut Peer<'_>) -> Result<Vec<u8>, Connect> {
     Ok(Vec::new())
 }
 
-pub fn submit<'p, 'w, 'd: 'w>(
-    pool: &mut Pool<'p, 'w, 'd>,
+pub fn submit<'p, 'w, 'd: 'w, B: Payload<'d>>(
+    pool: &mut Pool<'p, 'w, 'd, B>,
     key: Key<'d>,
     scope: &mut life::Scope<'_, 'd>,
 ) -> Result<(), Error> {
     let mut driver = scope.context();
     let mut sender = pool.sender(key).ok_or(Error::Sender)?;
-    submission(sender.submit(&mut driver))
+    submission(sender.submit(&mut driver, drop))
 }
 
 fn submission(attempt: transmit::Attempt) -> Result<(), Error> {
@@ -365,26 +417,34 @@ fn submission(attempt: transmit::Attempt) -> Result<(), Error> {
     }
 }
 
-pub fn settle<'p, 'w, 'd: 'w>(
-    pool: &mut Pool<'p, 'w, 'd>,
+pub fn settle<'p, 'w, 'd: 'w, B: Payload<'d>>(
+    pool: &mut Pool<'p, 'w, 'd, B>,
     done: send::Completion<'d>,
     scope: &mut life::Scope<'_, 'd>,
 ) -> Result<Key<'d>, Error> {
     let mut driver = scope.context();
-    match pool
-        .settle(done)
-        .settle_owned(&mut driver, |_| {}, |_, _| {})
-    {
-        SendOutcome::Queued { key, .. } | SendOutcome::Terminal { key } => Ok(key),
-        SendOutcome::Rejected { failure, .. } => Err(Error::Rejected(failure)),
-        SendOutcome::Failed { failure, .. } => Err(Error::Send(failure)),
-        SendOutcome::Invalid { error, .. } => Err(Error::Invalid(error)),
-        _ => Err(Error::Settlement),
-    }
+    let mut result = Err(Error::Settlement);
+    pool.settle(
+        done, &mut driver, &mut (), |_, _| {}, |_, _, _, _| {},
+        |_, completion, _| {
+            let pool::send::Completion::Ready(owner, outcome) = completion else {
+                return;
+            };
+            let key = owner.publish(|_| {}).into_entry().get().key();
+            result = match outcome {
+                SendOutcome::Queued { .. } | SendOutcome::Terminal | SendOutcome::Pending => Ok(key),
+                SendOutcome::Rejected { failure } => Err(Error::Rejected(failure)),
+                SendOutcome::Failed { failure } => Err(Error::Send(failure)),
+                SendOutcome::Invalid { error } => Err(Error::Invalid(error)),
+                _ => Err(Error::Settlement),
+            };
+        },
+    );
+    result
 }
 
-pub fn pending<'p, 'w, 'd: 'w>(
-    pool: &mut Pool<'p, 'w, 'd>,
+pub fn pending<'p, 'w, 'd: 'w, B: Payload<'d>>(
+    pool: &mut Pool<'p, 'w, 'd, B>,
     scope: &mut life::Scope<'_, 'd>,
     mut observe: impl FnMut(Key<'d>),
 ) -> Result<(), Error> {
@@ -399,7 +459,7 @@ pub fn pending<'p, 'w, 'd: 'w>(
         let attempt = pool
             .sender(key)
             .ok_or(Error::PendingSender)
-            .and_then(|mut sender| submission(sender.submit(&mut driver)));
+            .and_then(|mut sender| submission(sender.submit(&mut driver, drop)));
         if result.is_ok() {
             result = attempt;
         }

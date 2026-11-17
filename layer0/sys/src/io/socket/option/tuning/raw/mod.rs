@@ -26,11 +26,18 @@ pub unsafe trait State<E: Copy, const N: usize>: Default {
 }
 
 /// Applies options through the host's exact descriptor and native storage policy.
-pub trait Apply<B, H: device::raw::Host<B, N>, const N: usize>: device::Owner<H> {
+pub trait Apply<B, H: device::raw::Host<B, N, Value = ()>, const N: usize>: device::Owner<H> {
     /// # Safety
     /// Each cursor contains its declared option count; readiness options settle synchronously.
     /// On a ring backend, retain pinned values through terminal completion or queue quiescence.
     unsafe fn try_apply(self) -> Result<H::Output, H::Error>;
+}
+
+/// Queries the peer UID while retaining the same descriptor through settlement.
+pub trait Peer<B, H: device::raw::Host<B, N, Value = u32>, const N: usize>:
+    device::Owner<H>
+{
+    fn try_peer(self) -> Result<H::Output, H::Error>;
 }
 
 /// Connects through the backend's exact option and retained-terminal policy.

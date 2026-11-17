@@ -106,22 +106,19 @@ fn blocked_receives_preserve_native_lane_progress() {
                     // SAFETY: registered sockets, keys, pool and control source remain live.
                     let turn: Turn<'_> =
                         unsafe { Dispatch::<'_, Host, _, _>::new(&mut backend, &budget) };
-                    let (state, held) = Dispatch::<'_, Host, _, _>::dispatch(
-                        turn,
-                        |packet: complete::Dequeued<Event>, _| {
-                            let complete::Dequeued::Emit(event) = packet else {
-                                panic!("unexpected reclamation");
-                            };
-                            assert_eq!(event.token(), None);
-                            assert_eq!(
-                                Kqueue::read::<Errno>(control.as_fd(), &mut [0])
-                                    .expect("drain control"),
-                                b"c"
-                            );
-                            delivered += 1;
-                            ControlFlow::Continue(())
-                        },
-                    )
+                    let (state, held) = Dispatch::<'_, Host, _, _>::dispatch(turn, |packet, _| {
+                        let complete::Dequeued::Emit(event) = packet.into_inner() else {
+                            panic!("unexpected reclamation");
+                        };
+                        assert_eq!(event.token(), None);
+                        assert_eq!(
+                            Kqueue::read::<Errno>(control.as_fd(), &mut [0])
+                                .expect("drain control"),
+                            b"c"
+                        );
+                        delivered += 1;
+                        ControlFlow::Continue(())
+                    })
                     .0
                     .expect("native dispatch");
                     // SAFETY: the same turn retains all registered owners and its remaining quota.
@@ -149,20 +146,17 @@ fn blocked_receives_preserve_native_lane_progress() {
                 // SAFETY: the returned buffer and both live reads retain the same engine.
                 let turn: Turn<'_> =
                     unsafe { Dispatch::<'_, Host, _, _>::new(&mut backend, &budget) };
-                let (_, held) = Dispatch::<'_, Host, _, _>::dispatch(
-                    turn,
-                    |packet: complete::Dequeued<Event>, _| {
-                        let complete::Dequeued::Emit(event) = packet else {
-                            panic!("unexpected reclamation");
-                        };
-                        drop(<Event as complete::Map>::map(event, |buffer| {
-                            assert_eq!(buffer.len(), 1);
-                            received += 1;
-                            buffer.recycle();
-                        }));
-                        ControlFlow::Continue(())
-                    },
-                )
+                let (_, held) = Dispatch::<'_, Host, _, _>::dispatch(turn, |packet, _| {
+                    let complete::Dequeued::Emit(event) = packet.into_inner() else {
+                        panic!("unexpected reclamation");
+                    };
+                    drop(<Event as complete::Map>::map(event, |buffer| {
+                        assert_eq!(buffer.len(), 1);
+                        received += 1;
+                        buffer.recycle();
+                    }));
+                    ControlFlow::Continue(())
+                })
                 .0
                 .expect("returned receive buffer");
                 // SAFETY: the same turn retains all registered owners and its remaining quota.

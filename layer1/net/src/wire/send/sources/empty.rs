@@ -7,7 +7,7 @@ use crate::wire::send::{self, Payload};
 pub struct Empty;
 
 impl<'a> Payload<'a> for Empty {
-    fn select(&self) -> Option<impl send::raw::Ready<'a>> {
+    fn select(self) -> Option<impl send::raw::Ready<'a>> {
         None::<Infallible>
     }
 }

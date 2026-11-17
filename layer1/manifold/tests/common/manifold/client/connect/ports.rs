@@ -1,4 +1,4 @@
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, marker::PhantomData, rc::Rc};
 
 use dope_core::{
     driver::{
@@ -17,13 +17,13 @@ use dope_manifold::{
     },
 };
 use dope_net::{
-    link::{egress, pool::change::opening},
-    wire::{open, terminal},
+    link::{egress, pool::{change::opening, recv::input}},
+    wire::{failure, open, terminal},
 };
 use dope_test::harness::signals::Gate;
 use o3::{
     base::{Call, cell::region},
-    buffer::{bytes::TryRetain, pool, write::consume},
+    buffer::{bytes::TryRetain, pool, storage},
     mem::rc,
 };
 
@@ -32,38 +32,42 @@ use crate::common::{
     manifold::client::{connect::Error, error, send::wire::Wire},
 };
 
-pub struct App<'e, 'd, F> {
-    pub(crate) ports: Vec<Port<'e, 'd, pool::Cursor>>,
+pub struct App<'e, 'd, F, W = Wire> {
+    pub(crate) ports: Vec<Port<'e, 'd, Payload>>,
     pub(crate) call: Option<F>,
     pub(crate) done: Gate,
     pub(crate) audit: Rc<Report<error::Error, 16>>,
     pub(crate) closed: Gate,
     pub(crate) reason: Rc<Cell<Option<close::Reason>>>,
+    wire: PhantomData<fn() -> W>,
 }
 
 pub const PAYLOAD: &[u8] = b"payload";
 pub const NESTED: &[u8] = b"nested";
 
-pub fn cursor(buffers: &pool::Pool, bytes: &[u8]) -> Result<Option<pool::Cursor>, consume::Error> {
-    let Some(mut cursor) = buffers.cursor() else {
-        return Ok(None);
-    };
-    cursor.try_append(bytes)?.commit();
-    Ok(Some(cursor))
+pub type Payload = egress::data::pair::Source<storage::Shared>;
+
+pub fn pair(buffers: &pool::Pool, body: storage::Shared) -> Payload {
+    let mut prefix = buffers.cursor().expect("header slot");
+    prefix.try_append(b"h").expect("header bytes").commit();
+    egress::data::pair::Source::try_new(prefix, body)
+        .map_err(|rejected| rejected.into_parts().2)
+        .expect("header and body")
+        .into_inner()
 }
 
-impl<'e, 'd, F> App<'e, 'd, F>
+impl<'e, 'd, F, W> App<'e, 'd, F, W>
 where
     F: for<'turn, 'queue> FnOnce(
-        &[Port<'e, 'd, pool::Cursor>],
+        &[Port<'e, 'd, Payload>],
         conn::Id<'d, KeyTag<0>>,
         Work<'turn, 'd>,
-        egress::Queue<'_, 'queue, 'd, 32, pool::Cursor>,
+        egress::Queue<'_, 'queue, 'd, 32, Payload>,
         &mut region::Token<region::Identity<'d>>,
     ) -> Option<close::Directive>,
 {
     pub fn new(
-        ports: Vec<Port<'e, 'd, pool::Cursor>>,
+        ports: Vec<Port<'e, 'd, Payload>>,
         done: Gate,
         audit: Rc<Report<error::Error, 16>>,
         call: F,
@@ -75,17 +79,18 @@ where
             audit,
             closed: Gate::new(),
             reason: Rc::new(Cell::new(None)),
+            wire: PhantomData,
         }
     }
 }
 
-impl<'d, F> app::Application<'d> for App<'_, 'd, F> {
+impl<'d, F, W: input::Execution + 'd> app::Application<'d> for App<'_, 'd, F, W> {
     type Conn = ();
     type Connect = Full;
     type Deferred = Controlled;
     type Failure = Observed;
-    type Wire = Wire;
-    type Send = pool::Cursor;
+    type Wire = W;
+    type Send = Payload;
     type Input = receive::Borrowed;
     type Requests = request::Enabled;
 
@@ -94,7 +99,7 @@ impl<'d, F> app::Application<'d> for App<'_, 'd, F> {
     }
 }
 
-impl<'d, F> app::Receive<'d> for App<'_, 'd, F> {
+impl<'d, F, W: input::Execution + 'd> app::Receive<'d> for App<'_, 'd, F, W> {
     type Continuation = resume::Complete;
 
     fn quiesce<'a>(
@@ -106,11 +111,11 @@ impl<'d, F> app::Receive<'d> for App<'_, 'd, F> {
     }
 }
 
-impl<'d, F> app::Borrowed<'d> for App<'_, 'd, F> {
+impl<'d, F, W: input::Execution + 'd> app::Borrowed<'d> for App<'_, 'd, F, W> {
     fn chunk<O, R: TryRetain>(
         &mut self,
-        conn: conn::Ctx<'_, 'd, KeyTag<0>, Wire, (), O>,
-        _: egress::Queue<'_, '_, 'd, 32, pool::Cursor>,
+        conn: conn::Ctx<'_, 'd, KeyTag<0>, W, (), O>,
+        _: egress::Queue<'_, '_, 'd, 32, Payload>,
         _: R,
         _: &mut driver::Context<'_, 'd>,
     ) -> app::ChunkOutcome {
@@ -126,7 +131,7 @@ impl<'d, F> app::Borrowed<'d> for App<'_, 'd, F> {
     }
 }
 
-impl<'d, F> admit::Register<'d> for App<'_, 'd, F> {
+impl<'d, F, W: input::Execution + 'd> admit::Register<'d> for App<'_, 'd, F, W> {
     fn register(&mut self, active: &conn::Activation<'_, 'd, KeyTag<0>>) -> app::Admission {
         for port in &self.ports {
             let first = port.try_activate(active);
@@ -141,15 +146,15 @@ impl<'d, F> admit::Register<'d> for App<'_, 'd, F> {
     }
 }
 
-impl<'d, F> app::Connected<'d> for App<'_, 'd, F> {
+impl<'d, F, W: input::Execution + 'd> app::Connected<'d> for App<'_, 'd, F, W> {
     type Activation = admit::Registered;
 
     fn connected<O>(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
         _: socket::Addr,
-        conn: conn::Established<'_, 'd, KeyTag<0>, Wire, (), O>,
-        _: egress::Queue<'_, '_, 'd, 32, pool::Cursor>,
+        conn: conn::Established<'_, 'd, KeyTag<0>, W, (), O>,
+        _: egress::Queue<'_, '_, 'd, 32, Payload>,
         _: &mut driver::Context<'_, 'd>,
     ) {
         if let Some(index) = self
@@ -162,7 +167,7 @@ impl<'d, F> app::Connected<'d> for App<'_, 'd, F> {
     }
 }
 
-impl<'d, F> app::Exhausted<'d> for App<'_, 'd, F> {
+impl<'d, F, W: input::Execution + 'd> app::Exhausted<'d> for App<'_, 'd, F, W> {
     fn exhaust(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -173,7 +178,7 @@ impl<'d, F> app::Exhausted<'d> for App<'_, 'd, F> {
     }
 }
 
-impl<'d, F> app::Failed<'d> for App<'_, 'd, F> {
+impl<'d, F, W: input::Execution + 'd> app::Failed<'d> for App<'_, 'd, F, W> {
     fn failed(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
@@ -184,24 +189,28 @@ impl<'d, F> app::Failed<'d> for App<'_, 'd, F> {
     }
 }
 
-impl<'d, F> app::Opened<'d, 'd> for App<'_, 'd, F> {
+impl<'d, F, W> app::Opened<'d, 'd> for App<'_, 'd, F, W>
+where
+    W: input::Execution<OpenFailure = failure::Never> + 'd,
+{
     fn open(
         &mut self,
         _: attempt::Completion<'_, 'd, KeyTag<0>>,
-        error: open::Error<'d, Wire>,
+        error: open::Error<'d, W>,
         _: &mut driver::Context<'_, 'd>,
     ) {
         error.eliminate()
     }
 }
 
-impl<'e, 'd, F> app::Lifecycle<'d, 'd> for App<'e, 'd, F>
+impl<'e, 'd, F, W> app::Lifecycle<'d, 'd> for App<'e, 'd, F, W>
 where
+    W: input::Execution<TerminalFailure = failure::Never> + 'd,
     F: for<'turn, 'queue> FnOnce(
-        &[Port<'e, 'd, pool::Cursor>],
+        &[Port<'e, 'd, Payload>],
         conn::Id<'d, KeyTag<0>>,
         Work<'turn, 'd>,
-        egress::Queue<'_, 'queue, 'd, 32, pool::Cursor>,
+        egress::Queue<'_, 'queue, 'd, 32, Payload>,
         &mut region::Token<region::Identity<'d>>,
     ) -> Option<close::Directive>,
 {
@@ -211,9 +220,9 @@ where
 
     fn prepare<O>(
         &mut self,
-        mut context: conn::Ctx<'_, 'd, KeyTag<0>, Wire, (), O>,
+        mut context: conn::Ctx<'_, 'd, KeyTag<0>, W, (), O>,
         _: bool,
-        queue: egress::Queue<'_, '_, 'd, 32, pool::Cursor>,
+        queue: egress::Queue<'_, '_, 'd, 32, Payload>,
         driver: &mut driver::Context<'_, 'd>,
         _: &<Self::Wire as dope_net::wire::Spec>::Connection<
             'd,
@@ -243,15 +252,15 @@ where
         self.audit.record_sent();
     }
 
-    fn cancel(&mut self, _: pool::Cursor, _: &mut region::Token<region::Identity<'d, 1>>) {
+    fn cancel(&mut self, _: Payload, _: &mut region::Token<region::Identity<'d, 1>>) {
         self.audit.cancelled();
     }
 
     fn wire_fail<O>(
         &mut self,
-        _: conn::Io<'_, 'd, KeyTag<0>, Wire, (), O>,
-        _: egress::Queue<'_, '_, 'd, 32, pool::Cursor>,
-        cause: terminal::Error<'d, Wire>,
+        _: conn::Io<'_, 'd, KeyTag<0>, W, (), O>,
+        _: egress::Queue<'_, '_, 'd, 32, Payload>,
+        cause: terminal::Error<'d, W>,
         _: &mut driver::Context<'_, 'd>,
     ) {
         cause.eliminate()
@@ -259,8 +268,8 @@ where
 
     fn io_fail<O>(
         &mut self,
-        _: conn::Io<'_, 'd, KeyTag<0>, Wire, (), O>,
-        _: egress::Queue<'_, '_, 'd, 32, pool::Cursor>,
+        _: conn::Io<'_, 'd, KeyTag<0>, W, (), O>,
+        _: egress::Queue<'_, '_, 'd, 32, Payload>,
         cause: dope_core::Errno,
         _: &mut driver::Context<'_, 'd>,
     ) {
@@ -269,8 +278,8 @@ where
 
     fn close<O>(
         &mut self,
-        _: conn::Ctx<'_, 'd, KeyTag<0>, Wire, (), O>,
-        _: egress::Queue<'_, '_, 'd, 32, pool::Cursor>,
+        _: conn::Ctx<'_, 'd, KeyTag<0>, W, (), O>,
+        _: egress::Queue<'_, '_, 'd, 32, Payload>,
         reason: close::Reason,
         _: &mut driver::Context<'_, 'd>,
     ) -> app::CloseOutcome {
@@ -291,7 +300,7 @@ where
     }
 }
 
-impl<'d, F> app::Scheduling<'d> for App<'_, 'd, F> {
+impl<'d, F, W: input::Execution + 'd> app::Scheduling<'d> for App<'_, 'd, F, W> {
     fn shutdown() -> Option<impl for<'a> Call<&'a mut Self>> {
         Some(|this: &mut Self| {
             if this.call.is_some() {
@@ -309,8 +318,8 @@ impl<'d, F> app::Scheduling<'d> for App<'_, 'd, F> {
     }
 }
 
-impl<'d, F> app::Requests<'d> for App<'_, 'd, F> {
-    fn drain(&self, turn: &mut request::Turn<'_, '_, 'd, (), pool::Cursor>) {
+impl<'d, F, W: input::Execution + 'd> app::Requests<'d> for App<'_, 'd, F, W> {
+    fn drain(&self, turn: &mut request::Turn<'_, '_, 'd, (), Payload>) {
         let (_, mut requests) = turn.parts();
         for port in &self.ports {
             port.drain(&mut requests);

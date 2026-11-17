@@ -1,5 +1,5 @@
 use std::{
-    convert::{self, Infallible},
+    convert,
     mem,
 };
 
@@ -12,25 +12,25 @@ use dope_core::driver::{
 use dope_net::{link::egress, wire};
 use egress::{
     data::{self, Bound, compose},
-    reserve::exact,
+    reserve::{self, exact},
 };
 use o3::{
-    base::cell::region,
     buffer::{resident, resident::bound},
+    mem::slot,
 };
 use write::{
     body::{Admit, Failure},
-    error::Error,
+    error::Admission,
+    output::Output,
 };
 
 use crate::network::listener::{conn, writer};
 
-mod modes;
 mod send;
 
-use send::{body, capacity};
+use send::body;
 
-/// Affine access to one callback-scoped listener write transaction.
+/// Affine access to one listener output admission.
 pub struct Context<'e, 'turn, 'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B>
 where
     B: data::raw::Payload<'d>,
@@ -50,110 +50,27 @@ where
         Self { connection: scope }
     }
 
-    /// Acquires the turn once, then carries its lease through native reservation and commit.
-    fn try_send<R, E, P, const CANCEL: bool>(
+    /// Admits a header without granting body publication authority.
+    pub fn try_prefix<'out, 'io>(
         self,
-        driver: &mut driver::Context<'_, 'd>,
-        prepare: impl FnOnce(
-            &egress::Queue<
-                'a,
-                'e,
-                'd,
-                { crate::network::listener::IOV_CAP },
-                writer::Payload<'p, 's, 'd, ID, B>,
-                writer::Reserve<'d, B>,
-            >,
-        ) -> Option<P>,
-        commit: impl FnOnce(
-            send::Header<'turn, 'a, 'p, 's, 'w, 'e, 'd, ID, W, C, B, P>,
-            &mut driver::Context<'_, 'd>,
-        ) -> Result<write::Outcome<R>, Error<B, R, E>>,
-    ) -> Result<write::Outcome<R>, Error<B, R, E>> {
-        let Some(lease) = self.connection.work.lease() else {
-            self.connection.slot.io().wake_target().wake();
-            return Ok(write::Outcome::Deferred(write::Deferred::Turn));
-        };
-        let slot = &mut self.connection.slot;
-        let conn::Output::Open {
-            slots,
-            permit,
-            held,
-            queue,
-        } = &mut self.connection.output
-        else {
-            return Ok(write::Outcome::Closed);
-        };
-        let buffer = match capacity::header::<_, _, _, _, _, CANCEL>(
-            held,
-            queue,
-            slot,
-            driver.region_token(),
-            prepare,
-        ) {
-            Ok(buffer) => buffer,
-            Err(capacity::Unavailable::Closed) => return Ok(write::Outcome::Closed),
-            Err(capacity::Unavailable::Deferred(cause)) => {
-                slot.ensure_send(driver.driver_ref().clock().now());
-                return Ok(write::Outcome::Deferred(cause));
-            }
-            Err(capacity::Unavailable::Rejected(cause)) => {
-                return Err(Error::Capacity(cause));
-            }
-        };
-        commit(
-            send::Header {
-                slot,
-                flights: slots,
-                pending: *permit,
-                buffer,
-                lease,
-            },
-            driver,
-        )
-    }
-
-    pub fn try_bounded<R, F>(
-        self,
-        driver: &mut driver::Context<'_, 'd>,
-        commit: F,
-    ) -> Result<write::Outcome<R>, Error<B, R, Infallible>>
-    where
-        F: for<'b, 'id> FnOnce(
-            &mut C,
-            write::Prefix<'b, 'id>,
-        )
-            -> write::Commit<region::Identity<'id>, egress::load::Value<B>, R>,
-        B: 'd,
-    {
-        self.try_send::<_, _, _, true>(
-            driver,
-            |_| Some(()),
-            |send, driver| send.execute(driver, commit),
-        )
-    }
-
-    /// Reserves the exact prefix owner and queue capacity before calling the application.
-    /// The uninhabited body type prevents the callback from adding unreserved egress.
-    pub fn try_prefix<R, F>(
-        self,
-        driver: &mut driver::Context<'_, 'd>,
-        commit: F,
-    ) -> Result<write::Outcome<R>, Error<B, R, Infallible>>
-    where
-        F: for<'b, 'id> FnOnce(
-            &mut C,
-            write::Prefix<'b, 'id>,
-        ) -> write::Commit<
-            region::Identity<'id>,
-            egress::load::Value<Infallible>,
-            R,
+        driver: &'turn mut driver::Context<'io, 'd>,
+        output: &'out mut mem::MaybeUninit<
+            Output<'turn, 'a, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, B, reserve::Prefix<{ writer::memory::WRITE_BUF_CAP }>>,
         >,
-        B: 'd,
-    {
-        self.try_send::<_, _, _, false>(
+    ) -> Result<
+        slot::Occupied<'out, Output<'turn, 'a, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, B, reserve::Prefix<{ writer::memory::WRITE_BUF_CAP }>>>,
+        Admission,
+    > {
+        use writer::memory;
+
+        Output::prepare(
+            self.connection,
             driver,
-            |_| Some(()),
-            |send, driver| send.try_prefix(driver, commit),
+            output,
+            |_| Some(((), ())),
+            |queue, ()| {
+                queue.prefix::<{ memory::WRITE_BUF_CAP }>()
+            },
         )
     }
 
@@ -171,7 +88,7 @@ where
     }
 
     pub fn pending(&self) -> egress::Pending {
-        self.connection.output.pending(&self.connection.slot)
+        self.connection.pending()
     }
 
     pub fn reject(self, cause: Failure) {
@@ -231,23 +148,26 @@ where
     B: data::raw::Payload<'d>,
     G: bound::Bound,
 {
-    pub fn try_commit<R, F, E>(
+    pub fn try_open<'out, 'io>(
         self,
-        driver: &mut driver::Context<'_, 'd>,
-        commit: F,
-    ) -> Result<write::Outcome<R>, Error<Bound<B, G>, R, E>>
-    where
-        F: for<'b, 'id> FnOnce(
-            &mut C,
-            write::Prefix<'b, 'id>,
-        ) -> Result<
-            write::Commit<region::Identity<'id>, egress::load::Value<Bound<B, G>>, R>,
-            E,
+        driver: &'turn mut driver::Context<'io, 'd>,
+        output: &'out mut mem::MaybeUninit<
+            Output<'turn, 'a, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, Bound<B, G>, reserve::Bounds, G>,
         >,
-    {
-        self.try_send::<_, _, _, false>(driver, egress::Queue::prove, |send, driver| {
-            send.try_header(driver, commit)
-        })
+    ) -> Result<
+        slot::Occupied<
+            'out,
+            Output<'turn, 'a, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, Bound<B, G>, reserve::Bounds, G>,
+        >,
+        Admission,
+    > {
+        Output::prepare(
+            self.connection,
+            driver,
+            output,
+            egress::Queue::prove,
+            |_, plan| Ok(plan),
+        )
     }
 }
 

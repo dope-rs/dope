@@ -1,6 +1,6 @@
 use std::{ops, pin};
 
-use dope_core::io;
+use dope_core::driver::{self, schedule};
 
 use crate::{executor, topology::lending};
 
@@ -16,20 +16,17 @@ where
     executor::raw::Install::new(app, install)
 }
 
-pub(super) fn dispatch<'app, 'driver, 'turn, 'd, P>(
-    call: executor::raw::Dispatch<'app, 'driver, 'turn, 'd, P>,
-) -> ops::ControlFlow<io::Event<'d>>
+pub(super) fn dispatch<'event, 'd, P>(
+    app: pin::Pin<&mut P>,
+    event: executor::raw::Dispatch<'event, 'd>,
+    turn: schedule::Turn<'_, 'd>,
+    driver: driver::Context<'_, 'd>,
+) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>>
 where
     P: lending::raw::Project,
     P::App: executor::raw::App<'d>,
 {
-    let (app, event, turn, driver) = call.into_parts();
-    <P::App as executor::raw::App<'d>>::dispatch(executor::raw::Dispatch::new(
-        app.exclusive(),
-        event,
-        turn,
-        driver,
-    ))
+    <P::App as executor::raw::App<'d>>::dispatch(app.exclusive(), event, turn, driver)
 }
 
 /// # Safety

@@ -63,6 +63,34 @@ impl<T: Codec, F, const N: usize> Vacant<'_, T, F, N> {
         Ok((self.fd, target))
     }
 
+    pub(crate) fn try_peer<R, E>(
+        mut self,
+        queue: sq::raw::Queue<'_, T>,
+        reserve: impl FnOnce() -> Result<(Key<T>, R), E>,
+    ) -> Result<(F, R), tuning::Error<F, E>> {
+        use dope_sys::io::reactor::submit::{Ready as _, raw::Vacancy as _};
+
+        let ready = match queue.try_one() {
+            Ok(ready) => ready,
+            Err(error) => return Err(tuning::Error::Full(self.fd, error)),
+        };
+        let (key, target) = match reserve() {
+            Ok(target) => target,
+            Err(error) => return Err(tuning::Error::Reserve(self.fd, error)),
+        };
+        // SAFETY: the affine host admits this vacant, pinned slot and retains
+        // its output through completion or native quiescence, including on drop.
+        let _ = unsafe { self.state.as_mut().begin(key, num::NonZero::<u32>::MIN, None) };
+        // SAFETY: this projection initializes the query phase without moving its output.
+        let state = unsafe { self.state.get_unchecked_mut() };
+        state.status.phase = super::Phase::Peer;
+        let request = crate::reactor::op::sockets::peer_uid(self.slot, &mut state.values)
+            .user_data(self.token);
+        // SAFETY: request borrows only this retained pinned output; ready owns native capacity.
+        unsafe { ready.borrow(&request) }.push();
+        Ok((self.fd, target))
+    }
+
     /// Consumes the host's exact backend and affine descriptor admission.
     pub(crate) fn admit<'a, C>(
         admitted: device::Admission<

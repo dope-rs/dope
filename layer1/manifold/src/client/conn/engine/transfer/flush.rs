@@ -48,7 +48,7 @@ where
         driver: &'driver mut driver::Context<'context, 'd>,
     ) -> Option<(types::Demand, Option<Reason>)>
     where
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>;
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>;
 
     /// Flushes available work while peer EOF retains the application's drain fence.
     fn flush<'machine, 'turn, 'driver, 'context>(
@@ -56,7 +56,7 @@ where
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
     ) where
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>,
     {
         enum Demand {
             Egress,
@@ -209,7 +209,7 @@ where
         _: &'driver mut driver::Context<'context, 'd>,
     ) -> Option<(types::Demand, Option<Reason>)>
     where
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>,
     {
         engine
             .as_ref()
@@ -240,50 +240,30 @@ where
         driver: &'driver mut driver::Context<'context, 'd>,
     ) -> Option<(types::Demand, Option<Reason>)>
     where
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'d, ID, A, S, E>,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>,
     {
-        let state = engine
-            .as_ref()
-            .project_ref()
-            .links
-            .pool()
-            .inspect()
-            .get(key)
-            .map(|slot| {
-                (
-                    slot.demand(),
-                    slot.state.closing.reason(),
-                    slot.state.work.has_next(),
-                )
-            });
-        let (control, reason, pending) = state?;
+        let (pool, mut context) = engine.as_mut().parts();
+        let Ok(mut entry) = pool.entry(key) else { return None };
+        let slot = entry.get();
+        let (control, reason, pending) = (
+            slot.demand(), slot.state.closing.reason(), slot.state.work.has_next(),
+        );
         if control == types::Demand::Discard || !pending {
             return Some((control, reason));
         }
         let callback = {
-            let this = engine.as_mut().project();
             let Some(pool::EgressMut {
-                flights: _,
-                connection: slot,
-                pending: handle,
-                queue: egress,
-            }) = this.links.pool_mut().egress_mut(key)
-            else {
-                return Some((control, reason));
-            };
+                connection: slot, pending: handle, queue: egress, ..
+            }) = entry.egress_mut() else { return Some((control, reason)) };
             let Some(permit) = turn.reborrow().app().permit() else {
                 handle.wake();
                 return Some((control, reason));
             };
-            // The same slot's continuation remains set until this exclusive loan clears it.
             slot.state.work.clear_next();
             match State::active(slot, |active, _| {
                 app::Resumable::resume(
-                    this.app,
-                    permit,
-                    conn::Ctx::new(active, turn.reborrow().app()),
-                    egress.reborrow(),
-                    driver,
+                    context.app, permit, conn::Ctx::new(active, turn.reborrow().app()),
+                    egress.reborrow(), driver,
                 )
             }) {
                 flow::Active::Ready(callback) => {
@@ -298,41 +278,43 @@ where
             }
         };
         let (done, next) = callback.into_parts();
-        let outcome = match done {
+        let (entry, outcome) = match done {
             app::Resumed::Complete(done) => {
-                engine.as_mut().project().links.pool_mut().resume(key);
-                done.apply(engine.as_mut(), key, next, turn.reborrow(), driver)
+                entry.resume();
+                done.apply(&mut context, entry, next, turn.reborrow(), driver)
             }
             app::Resumed::Paused(pause) => {
-                match pause.apply(engine.as_mut(), key, next, turn.reborrow(), driver) {
-                    receive::Outcome::Continue => return Some((control, reason)),
-                    outcome => outcome,
+                let (entry, outcome) = pause.apply(&mut context, entry, next, turn.reborrow(), driver);
+                if matches!(outcome, receive::Outcome::Continue) {
+                    return entry.map(|_| (control, reason));
                 }
+                (entry, outcome)
             }
         };
-        match outcome {
+        let mut entry = entry?;
+        let entry = match outcome {
             receive::Outcome::Continue => {
-                engine.as_mut().maybe_close(key, turn.reborrow(), driver);
+                <engine::Machine<'p, 'w, 'd, ID, A, S, E, X> as close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>>::maybe_entry(
+                    &mut context, entry, turn, driver,
+                )
             }
             receive::Outcome::Failed(error) => {
-                engine.as_mut().cut_close(
-                    key,
-                    Directive::cut_retry(error.into()),
-                    turn.reborrow(),
-                    driver,
-                );
+                let rule = Directive::cut_retry(error.into());
+                if !matches!(State::apply(entry.get_mut(), rule), flow::Apply::Sealed) {
+                    <engine::Machine<'p, 'w, 'd, ID, A, S, E, X> as close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>>::close_entry(
+                        &mut context, entry, rule.reason(), turn, driver,
+                    )
+                } else {
+                    Some(entry)
+                }
             }
             receive::Outcome::CloseAfter => {
-                engine
-                    .as_mut()
-                    .project()
-                    .links
-                    .pool_mut()
-                    .recv()
-                    .close_after(key);
-                engine.as_mut().maybe_close(key, turn.reborrow(), driver);
+                entry.get_mut().close_after();
+                <engine::Machine<'p, 'w, 'd, ID, A, S, E, X> as close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>>::maybe_entry(
+                    &mut context, entry, turn, driver,
+                )
             }
-        }
-        Some((control, reason))
+        };
+        entry.map(|_| (control, reason))
     }
 }

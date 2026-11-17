@@ -184,10 +184,10 @@ fn commit<'p, 'd, T, P: position::State>(
     token: &mut region::Token<region::Identity<'d>>,
     index: index::Index<'d>,
     value: egress::NonEmpty<T>,
-    stored: credit::Stored<'p>,
+    stored: credit::Stored<'p, 'd>,
 ) {
-    queue.state().push(index, stored, |prev, entry| {
-        queue.pool.store.write(token, index, value, entry);
+    queue.state().push(index, |prev| {
+        queue.pool.store.write(token, index, value, stored);
         queue.pool.store.set_next(token, index, None);
         if let Some(prev) = prev {
             queue.pool.store.set_next(token, prev, Some(index));

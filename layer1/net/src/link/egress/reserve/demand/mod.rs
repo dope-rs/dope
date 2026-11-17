@@ -1,4 +1,4 @@
-use std::{marker, mem, num, num::NonZero};
+use std::{mem, num, num::NonZero};
 
 pub use body::Body;
 use dope_core::{driver::route::table::conn, io::transfer};
@@ -31,15 +31,14 @@ pub enum Provision<M: Mode> {
 pub struct Fallible;
 
 /// Storage used by an execution contract with a guaranteed final path.
-pub struct Guaranteed<G, const PREFIX: usize> {
-    capacity: Option<Capacity<PREFIX>>,
-    bound: marker::PhantomData<fn() -> G>,
+pub struct Guaranteed<G: bound::Bound, const PREFIX: usize> {
+    capacity: Option<(Capacity<PREFIX>, G::Finite)>,
 }
 
-impl<G, const PREFIX: usize> Guaranteed<G, PREFIX> {
-    pub(in crate::link::egress) const fn bounds(&self) -> Option<reserve::Bounds> {
+impl<G: bound::Bound, const PREFIX: usize> Guaranteed<G, PREFIX> {
+    pub(in crate::link::egress) const fn bounds(&self) -> Option<(G::Finite, reserve::Bounds)> {
         match self.capacity {
-            Some(capacity) => Some(reserve::Bounds::proven(capacity)),
+            Some((capacity, proof)) => Some((proof, reserve::Bounds::proven(capacity))),
             None => None,
         }
     }
@@ -86,12 +85,9 @@ impl<G: bound::Bound, const PREFIX: usize> Mode for Guaranteed<G, PREFIX> {
         let mut setup = Setup {
             config,
             routes,
-            mode: Self {
-                capacity: None,
-                bound: marker::PhantomData,
-            },
+            mode: Self { capacity: None },
         };
-        let bound::Limit::AtMost(body) = G::LIMIT else {
+        let bound::Limit::AtMost(body, proof) = G::LIMIT else {
             return Provision::Direct(setup);
         };
         let Some(total) = PREFIX.checked_add(body) else {
@@ -113,7 +109,7 @@ impl<G: bound::Bound, const PREFIX: usize> Mode for Guaranteed<G, PREFIX> {
         let Some(headers) = setup.config.chunks(chunk) else {
             return Provision::Direct(setup);
         };
-        setup.mode.capacity = Some(Capacity::from_valid(body));
+        setup.mode.capacity = Some((Capacity::from_valid(body), proof));
         Provision::Queued { setup, headers }
     }
 }

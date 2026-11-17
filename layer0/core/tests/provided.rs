@@ -103,7 +103,7 @@ fn forgotten_account() {
                 let mut count = 0;
                 let outcome =
                     driver::Context::dispatch(&mut context, turn.reactor(), |event, _source| {
-                        let recv = match event.into_kind() {
+                        let recv = match event.into_inner().into_kind() {
                             event::Kind::Recv(recv) => Some(recv),
                             _ => None,
                         }

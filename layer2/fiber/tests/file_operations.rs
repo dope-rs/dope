@@ -23,13 +23,86 @@ use dope::{
 };
 use dope_fiber::{abi::Task, file::Operation};
 use dope_test::{fibers, harness::scenario};
-use o3::mem::{Lease, Rejected};
+use o3::{
+    buffer::pool,
+    mem::{Lease, Rejected},
+};
 
 use common::{
     file::{Capture, Coordinate, Observed, Profile, buffer, fixture, open},
     recover,
     runtime::{self, Setup},
 };
+
+#[test]
+fn pooled_reads_append_and_return_the_same_slot() {
+    let dir = fixture("fiber_file_pool");
+    let directory = file::Dir::open(dir.path()).expect("directory owner");
+    let pool = pool::Pool::<pool::state::Initialized>::try_new(1, 8).expect("file pool");
+    let layout = read::Layout::<KeyTag<41>>::try_new(NonZero::<u32>::MIN).expect("one request");
+    let mut finish = session::Completion::new();
+    let mut reports = Vec::new();
+    Setup::try_for_plan::<Profile, _>(&layout)
+        .expect("file layout")
+        .with_session(
+            |mut session| {
+                let output =
+                    Lease::open(read::Release::default(), pool.acquire().expect("file slot"));
+                let address = output.item().as_ref().as_ptr();
+                let port = layout.try_port().expect("request slots");
+                let reader = read::Reader::<KeyTag<41>, _>::try_new(&port, &mut session.driver())
+                    .expect("installed reader");
+                let done = session.with_quiesce(
+                    &mut finish,
+                    Host::new(reader),
+                    scenario::TIMEOUT,
+                    |mut app| {
+                        let port = &port;
+                        fibers::TEST.try_run(&mut app, dope_fiber::fiber!('_ => async move {
+                            let read::Completion::Open { result, .. } =
+                                Operation::new(port, read::Request::Open(open(&directory, "data")))
+                                    .await.map_err(Rejected::discard).expect("open admission")
+                            else {
+                                panic!("open completion")
+                            };
+                            let mut request = read::Read::try_new(
+                                result.expect("opened file"), output, file::Offset::fixed::<0>(),
+                            ).map_err(Rejected::discard).expect("nonempty output");
+                            for (offset, count, expected) in [
+                                (file::Offset::fixed::<0>(), 3, b"abc".as_slice()),
+                                (file::Offset::fixed::<0>(), 3, b"abcabc".as_slice()),
+                                (file::Offset::fixed::<3>(), 0, b"abcabc".as_slice()),
+                            ] {
+                                request = request.try_append_at(offset)
+                                    .map_err(Rejected::discard).expect("remaining output");
+                                let read::Completion::Read { request: returned, result } =
+                                    Operation::new(port, read::Request::Read(request))
+                                        .await.map_err(Rejected::discard).expect("read admission")
+                                else {
+                                    panic!("read completion")
+                                };
+                                assert_eq!(result.map(transfer::Len::into_raw), Ok(count));
+                                assert_eq!(returned.output().as_ref(), expected);
+                                request = returned;
+                            }
+                            request
+                        })).expect("pooled reads")
+                    },
+                );
+                let Ok(request) = done else {
+                    panic!("application finalizes")
+                };
+                let (_, output, _) = request.into_parts();
+                assert_eq!(output.item().as_ref().as_ptr(), address);
+                assert_eq!(pool.available(), 0);
+                drop(output);
+                assert_eq!(pool.available(), 1);
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+            runtime::check_scope,
+        );
+    runtime::check_reports(&reports);
+}
 
 #[test]
 fn opens_reads_and_returns_the_original_charged_owner() {

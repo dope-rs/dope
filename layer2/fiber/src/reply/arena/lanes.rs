@@ -166,7 +166,7 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         self,
         usage: usage::Usage,
     ) -> Result<retain::Reservation<'arena, 'credits, 'region>, usage::Capacity> {
-        retain::Reservation::try_new(pool::Lane::new(self), usage)
+        pool::Lane::new(self).try_reserve(usage)
     }
 
     pub fn complete(self, token: &mut region::Token<region::Identity<'region>>) -> order::Depth {

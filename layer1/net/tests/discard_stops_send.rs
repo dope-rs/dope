@@ -24,7 +24,7 @@ fn discard_stops_send() {
     let observed = Observed::capture(
         config,
         |settled| {
-            let closed = matches!(&settled, SendOutcome::Close(_));
+            let closed = matches!(&settled, SendOutcome::Close);
             match settled {
                 SendOutcome::Rejected { failure, .. } => {
                     assert!(closed, "settle rejected: {failure:?}")

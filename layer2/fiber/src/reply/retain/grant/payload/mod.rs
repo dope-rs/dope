@@ -4,14 +4,9 @@ use std::{mem::size_of, num};
 
 use o3::mem;
 
-use crate::reply::{retain, usage, usage::amount::Amount};
+use crate::reply::{usage, usage::amount::Amount};
 
 pub(in crate::reply) mod raw;
-
-pub(in crate::reply) enum Tag {}
-
-pub(in crate::reply) type Grant<'credits, A> =
-    mem::raw::Grant<retain::raw::Lane<'credits, 3, Tag>, 3, A>;
 
 /// One payload data unit, with no value or byte component.
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -41,11 +36,11 @@ pub(in crate::reply) enum Used {
     Bytes(Bytes),
 }
 
-pub(in crate::reply::retain) enum Class<'credits> {
+pub(in crate::reply::retain) enum Class {
     Zero,
-    Values(Grant<'credits, Values>),
-    Bytes(Grant<'credits, Bytes>),
-    Both(Grant<'credits, Values>, Grant<'credits, Bytes>),
+    Values(Values),
+    Bytes(Bytes),
+    Both(Values, Bytes),
 }
 
 // SAFETY: `Data` represents exactly one payload data unit.
@@ -135,40 +130,6 @@ unsafe impl mem::raw::Amount<3, usize> for Used {
     }
 }
 
-struct SplitValue;
-struct Reclassify<A>(A);
-struct SplitFailure(Values, Bytes);
-
-// SAFETY: Value always partitions into exactly one Data and its stored usage.
-unsafe impl<A: Amount> mem::raw::Exact<3, usize, Value<A>> for SplitValue {
-    type Input = ();
-    type Left = Data;
-    type Right = Failure<A>;
-    fn parts(self, source: Value<A>, (): ()) -> (Data, Failure<A>) {
-        (Data, Failure(source.0))
-    }
-}
-
-// SAFETY: classification binds the exact unchanged source before reclassification.
-unsafe impl<A: mem::raw::Amount<3, usize>> mem::raw::ExactRebind<3, usize, Failure>
-    for Reclassify<A>
-{
-    type Output = A;
-    fn rebind(self, _: Failure) -> A {
-        self.0
-    }
-}
-
-// SAFETY: classification extracts these two exact nonzero components from its source.
-unsafe impl mem::raw::Exact<3, usize, Failure> for SplitFailure {
-    type Input = ();
-    type Left = Values;
-    type Right = Bytes;
-    fn parts(self, _: Failure, (): ()) -> (Values, Bytes) {
-        (self.0, self.1)
-    }
-}
-
 impl Values {
     pub(in crate::reply::retain) const fn new(value: num::NonZero<usize>) -> Self {
         Self(value)
@@ -190,11 +151,8 @@ impl<A: Amount> Value<A> {
         self.0.usage()
     }
 
-    pub(in crate::reply) fn split<'credits>(
-        grant: Grant<'credits, Self>,
-    ) -> (Grant<'credits, Data>, Grant<'credits, Failure<A>>) {
-        // SAFETY: SplitValue is exact for every Value, including zero usage.
-        unsafe { grant.bind(SplitValue) }.split(())
+    pub(in crate::reply) fn split(self) -> (Data, Failure<A>) {
+        (Data, Failure(self.0))
     }
 }
 
@@ -211,57 +169,38 @@ impl Failure {
         self.0
     }
 
-    /// An empty grant owns no capacity and requires no refund.
-    pub(in crate::reply::retain) fn claim<'credits>(
-        grant: Grant<'credits, Self>,
-    ) -> Option<Grant<'credits, Used>> {
-        let amount = grant.amount().0;
-        let used = if let Some(values) = num::NonZero::<usize>::new(amount.values().get()) {
-            Used::Values {
+    pub(in crate::reply::retain) fn claim(self) -> Option<Used> {
+        if let Some(values) = num::NonZero::<usize>::new(self.0.values().get()) {
+            Some(Used::Values {
                 values: Values(values),
-                bytes: amount.bytes(),
-            }
+                bytes: self.0.bytes(),
+            })
         } else {
-            Used::Bytes(Bytes(num::NonZero::<usize>::new(amount.bytes().get())?))
-        };
-        // SAFETY: classification preserves the grant's exact usage components.
-        Some(unsafe { grant.bind(Reclassify(used)) }.map())
+            Some(Used::Bytes(Bytes(num::NonZero::<usize>::new(
+                self.0.bytes().get(),
+            )?)))
+        }
     }
 
-    pub(in crate::reply::retain) fn split<'credits>(
-        grant: Grant<'credits, Self>,
-    ) -> Class<'credits> {
-        let amount = grant.amount().0;
-        let values = num::NonZero::<usize>::new(amount.values().get());
-        let bytes = num::NonZero::<usize>::new(amount.bytes().get());
+    pub(in crate::reply::retain) fn split(self) -> Class {
+        let values = num::NonZero::<usize>::new(self.0.values().get());
+        let bytes = num::NonZero::<usize>::new(self.0.bytes().get());
         match (values, bytes) {
             (None, None) => Class::Zero,
-            (Some(values), None) => {
-                // SAFETY: values is the exact sole component of the retained source.
-                Class::Values(unsafe { grant.bind(Reclassify(Values(values))) }.map())
-            }
-            (None, Some(bytes)) => {
-                // SAFETY: bytes is the exact sole component of the retained source.
-                Class::Bytes(unsafe { grant.bind(Reclassify(Bytes(bytes))) }.map())
-            }
-            (Some(values), Some(bytes)) => {
-                // SAFETY: both exact nonzero source components were extracted above.
-                let (values, bytes) =
-                    unsafe { grant.bind(SplitFailure(Values(values), Bytes(bytes))) }.split(());
-                Class::Both(values, bytes)
-            }
+            (Some(values), None) => Class::Values(Values(values)),
+            (None, Some(bytes)) => Class::Bytes(Bytes(bytes)),
+            (Some(values), Some(bytes)) => Class::Both(Values(values), Bytes(bytes)),
         }
     }
 }
 
 const _: () = {
-    assert!(size_of::<Grant<'_, Data>>() == size_of::<usize>());
-    assert!(size_of::<Grant<'_, Value>>() == 3 * size_of::<usize>());
-    assert!(size_of::<Grant<'_, Failure>>() == 3 * size_of::<usize>());
+    assert!(size_of::<Data>() == 0);
+    assert!(size_of::<Value>() == 2 * size_of::<usize>());
+    assert!(size_of::<Failure>() == 2 * size_of::<usize>());
     assert!(size_of::<Requested>() == 3 * size_of::<usize>());
     assert!(size_of::<Used>() == size_of::<usage::Usage>());
-    assert!(size_of::<Grant<'_, Used>>() == 3 * size_of::<usize>());
-    assert!(size_of::<Class<'_>>() == 5 * size_of::<usize>());
-    assert!(size_of::<Option<Grant<'_, Values>>>() == 2 * size_of::<usize>());
-    assert!(size_of::<Option<Grant<'_, Bytes>>>() == 2 * size_of::<usize>());
+    assert!(size_of::<Class>() == 3 * size_of::<usize>());
+    assert!(size_of::<Option<Values>>() == size_of::<usize>());
+    assert!(size_of::<Option<Bytes>>() == size_of::<usize>());
 };

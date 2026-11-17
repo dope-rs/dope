@@ -1,7 +1,5 @@
 use std::mem::size_of;
 
-use o3::mem;
-
 use crate::link::egress;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -22,6 +20,10 @@ impl Amount {
 
     pub(super) const fn from_raw(raw: [u32; 2]) -> Self {
         Self::new(egress::Entries::new(raw[0]), egress::Resident::new(raw[1]))
+    }
+
+    pub(super) const fn raw(self) -> [u32; 2] {
+        [(self.0 >> Self::SHIFT) as u32, self.0 as u32]
     }
 
     pub(in crate::link::egress) const fn entries(self) -> egress::Entries {
@@ -58,9 +60,3 @@ impl Amount {
 
 const _: () = assert!(size_of::<Amount>() == size_of::<u64>());
 
-// SAFETY: Amount stores these exact two immutable u32 components.
-unsafe impl mem::raw::Amount<2, u32> for Amount {
-    fn get(self) -> [u32; 2] {
-        [(self.0 >> Self::SHIFT) as u32, self.0 as u32]
-    }
-}

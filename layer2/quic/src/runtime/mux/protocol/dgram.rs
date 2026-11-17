@@ -5,36 +5,13 @@ use crate::{conn, errors, proto::datagram, runtime::mux, stream};
 use conn::id;
 use mux::{auth, handler, protocol, router};
 
-pub(crate) trait Dgram<
-    A: auth::Mode<DOMAIN>,
-    H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
-    const DOMAIN: u8,
-    B: stream::Recv,
->
-{
-    fn try_send(
-        &mut self,
-        handle: id::Handle<A::Identity, DOMAIN>,
-        data: Vec<u8>,
-        now: time::Instant,
-    ) -> Result<(), errors::SendFailure<Vec<u8>>>;
-
-    fn try_packet<'pool>(
-        &mut self,
-        handle: id::Handle<A::Identity, DOMAIN>,
-        packet: datagram::Packet<'pool>,
-        now: time::Instant,
-    ) -> Result<(Peer, datagram::Sealed<'pool>), errors::SendFailure<datagram::Packet<'pool>>>;
-}
-
-impl<'a, 'tls, H, const DOMAIN: u8, B, A> Dgram<A, H, DOMAIN, B>
-    for protocol::Io<'a, 'tls, H, DOMAIN, B, A>
+impl<'a, 'tls, H, const DOMAIN: u8, B, A> protocol::Io<'a, 'tls, H, DOMAIN, B, A>
 where
     A: auth::Mode<DOMAIN>,
     H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
     B: stream::Recv,
 {
-    fn try_send(
+    pub(crate) fn try_send(
         &mut self,
         handle: id::Handle<A::Identity, DOMAIN>,
         data: Vec<u8>,
@@ -52,7 +29,7 @@ where
         }
     }
 
-    fn try_packet<'pool>(
+    pub(crate) fn try_packet<'pool>(
         &mut self,
         handle: id::Handle<A::Identity, DOMAIN>,
         packet: datagram::Packet<'pool>,

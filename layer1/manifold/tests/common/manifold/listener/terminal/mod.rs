@@ -52,7 +52,7 @@ pub struct Probe<I, F> {
 
 pub enum Observation<'d> {
     Deadline(Result<(), conn::deadline::Error>),
-    Write(Result<write::Outcome<()>, error::Error<Shared, (), convert::Infallible>>),
+    Write(Result<(), error::Admission>),
     Owned(Admit<Shared>),
     Replay(Option<Result<(), scope::Error>>),
     Failure(Option<&'d conn::Failure>),
@@ -61,7 +61,7 @@ pub enum Observation<'d> {
 pub fn accepted(event: Observation<'_>) {
     assert!(match event {
         Observation::Deadline(armed) => armed.is_ok(),
-        Observation::Write(result) => matches!(result, Ok(write::Outcome::Committed(()))),
+        Observation::Write(result) => matches!(result, Ok(())),
         Observation::Owned(result) => matches!(result, Admit::Committed),
         Observation::Replay(result) => matches!(result, Some(Ok(()))),
         Observation::Failure(_) => false,
@@ -372,13 +372,18 @@ where
                 Outcome::Continue
             }
             Ingress::Reply => {
-                (this.observe)(Observation::Write(conn.write().try_bounded(
-                    driver,
-                    |_, mut prefix| {
-                        prefix.write_slice(b"reply").unwrap();
-                        prefix.commit(None, ())
-                    },
-                )));
+                let mut output_slot = std::mem::MaybeUninit::uninit();
+                let result = match conn.write().try_prefix(driver, &mut output_slot) {
+                    Ok(mut output) => {
+                        output.get_mut().parts().1.write_slice(b"reply").unwrap();
+                        write::Output::finish(output, write::End::Open)
+                            .map_err(write::error::Mismatch::into_cause)
+                            .expect("prefix publication");
+                        Ok(())
+                    }
+                    Err(cause) => Err(cause),
+                };
+                (this.observe)(Observation::Write(result));
                 Outcome::Continue
             }
             Ingress::Owned(body) => {

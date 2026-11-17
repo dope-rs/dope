@@ -196,6 +196,7 @@ fn drains_reply_and_peer_eof() {
                     close: gate.clone(),
                     chunk: None,
                     timeout: None,
+                    abandon: false,
                 },
                 Wire::default(),
             ))
@@ -256,6 +257,7 @@ fn quiesces_buffered_send() {
                 close: close.clone(),
                 chunk: Some(chunk.clone()),
                 timeout: None,
+                abandon: false,
             },
             Wire::default(),
         ))

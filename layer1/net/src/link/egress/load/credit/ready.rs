@@ -5,8 +5,10 @@ use o3::base::cell::region;
 
 use crate::link::egress::{
     self, create,
+    data::position,
     load::credit::{self, wait},
     metadata,
+    reserve::demand,
 };
 
 pub struct Ready<'p, 'd> {
@@ -41,12 +43,13 @@ impl<'p, 'd> Ready<'p, 'd> {
 }
 
 impl<'p, 'd> credit::Access<'p, 'd> for Ready<'p, 'd> {
-    fn try_acquire(
+    fn try_acquire<'queue, T, D: demand::Mode, P: position::State>(
         &self,
         token: &mut region::Token<region::Identity<'d>>,
-        lane: credit::Lane<'_, 'p, 'd, Self>,
+        queue: metadata::Queue<'queue, 'p, 'd, T, Self, D, P>,
         amount: credit::Amount,
-    ) -> Result<credit::Grant<'p>, egress::Admission> {
+    ) -> Result<credit::Reserve<'queue, 'p, 'd, T, Self, D, P>, egress::Admission> {
+        let lane = credit::Lane::new(queue);
         let index = lane.index();
         let wait = token.borrow(&self.wait);
         if wait.is_busy(lane) {
@@ -65,18 +68,18 @@ impl<'p, 'd> credit::Access<'p, 'd> for Ready<'p, 'd> {
                     demand: egress::Credit::new(demand.entries(), demand.resident()),
                 });
             }
-            return Ok(account.acquire(amount));
+            // SAFETY: zero shared demand and admitted lane geometry bound this acquisition.
+            unsafe { account.acquire(amount) };
+            return Ok(credit::Reserve::new(queue, account, amount));
         }
-        lane.try_charge(amount)
+        credit::Reserve::try_charge(queue, amount)
     }
 
-    fn release(
+    fn released(
         &self,
         token: &mut region::Token<region::Identity<'d>>,
         lane: credit::Lane<'_, 'p, 'd, Self>,
-        grant: credit::Grant<'p>,
     ) {
-        grant.release();
         let wait = token.borrow_mut(&self.wait);
         wait.refresh(lane);
         self.pending.set(wait.has_waiting());
@@ -85,13 +88,14 @@ impl<'p, 'd> credit::Access<'p, 'd> for Ready<'p, 'd> {
 
 impl<'p, 'd> Ready<'p, 'd> {
     /// Publishes refunded credit even when replacing a grant exhausts tickets.
-    pub(super) fn poll(
+    pub(in crate::link::egress) fn poll<'queue, T, D: demand::Mode, P: position::State>(
         &self,
         token: &mut region::Token<region::Identity<'d>>,
-        lane: credit::Lane<'_, 'p, 'd, Self>,
+        queue: metadata::Queue<'queue, 'p, 'd, T, Self, D, P>,
         queued: credit::Queued,
         target: ready::Target<'d>,
-    ) -> task::Poll<Result<credit::Grant<'p>, egress::Tickets>> {
+    ) -> task::Poll<Result<credit::Reserve<'queue, 'p, 'd, T, Self, D, P>, egress::Tickets>> {
+        let lane = credit::Lane::new(queue);
         let key = target.key();
         let wait = token.borrow_mut(&self.wait);
         let state = wait.resume(lane, key, queued);
@@ -100,7 +104,9 @@ impl<'p, 'd> Ready<'p, 'd> {
         }
         match state? {
             wait::Resume::Waiting | wait::Resume::Queued => task::Poll::Pending,
-            wait::Resume::Granted(grant) => task::Poll::Ready(Ok(grant)),
+            wait::Resume::Granted { account, amount } => {
+                task::Poll::Ready(Ok(credit::Reserve::new(queue, account, amount)))
+            }
         }
     }
 }

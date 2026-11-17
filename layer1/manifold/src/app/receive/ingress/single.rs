@@ -47,41 +47,51 @@ impl<'a, 'c: 'a, 'd: 'a + 'c> Admission<'a, 'c, 'd> for Single<'a, 'c, 'd> {
 }
 
 impl<'a, 'c, 'd> Single<'a, 'c, 'd> {
-    pub(in crate::app::receive::ingress) fn drive<'p, 'w, ID: Identity + 'd, W, M, P, A, C>(
+    pub(in crate::app::receive::ingress) fn drive<'policy, 'p, 'w, ID: Identity + 'd, W, M, P, A, C>(
         self,
-        mut policy: pin::Pin<&mut P>,
+        policy: pin::Pin<&'policy mut P>,
         data: A,
         emit: impl FnOnce(
             delivery::Data<'_, 'w, 'd, ID, W, M::Kind, input::Receipt<W, M>>,
         ) -> event::DispatchRecv<'d, ID, C>,
         apply: impl FnOnce(
-            pin::Pin<&mut P>,
+            &mut P::Context<'policy>,
+            ingress::Entry<'policy, 'p, 'w, 'd, ID, P>,
             event::DispatchRecv<'d, ID, C>,
             schedule::Turn<'_, 'd>,
             &mut driver::Context<'_, 'd>,
-        ),
+        ) -> Option<ingress::Entry<'policy, 'p, 'w, 'd, ID, P>>,
     ) where
         'c: 'a,
         'd: 'a + 'c + 'w + 'p,
         W: wire::Spec + 'w + 'd,
         M: Dispatch<W>,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
+        crate::Inbound<'p, 'w, 'd, ID, P>: 'policy,
         M::Reserve: Choice<W, M::Ingress>,
         A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        let plan = P::reserve(policy.as_mut(), data, self.driver.region_token()).map(emit);
+        let (pool, mut context) = P::parts(policy);
+        let (entry, plan) = pool.recv().data(
+            data,
+            |key, state| P::receipt(&mut context, key, state, self.driver.region_token()),
+            |plan| plan.map(emit),
+        );
+        let Some(entry) = entry else { return };
         let next = match plan {
             event::Reservation::Ready(next) => next,
             event::Reservation::Control(next) => event::DispatchRecv::Control(next),
             event::Reservation::Parked(parked) => {
                 let (driver, turn) = self.into();
-                ingress::apply_parked(policy, parked, turn, driver);
+                drop(ingress::apply_parked::<ID, P>(
+                    &mut context, entry, parked, turn, driver,
+                ));
                 return;
             }
             event::Reservation::Stale(Stale) | event::Reservation::Drop => return,
         };
         let (driver, turn) = self.into();
-        apply(policy.as_mut(), next, turn, driver);
+        drop(apply(&mut context, entry, next, turn, driver));
     }
 }
 

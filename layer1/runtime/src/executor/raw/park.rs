@@ -1,4 +1,4 @@
-use std::{mem, pin};
+use std::mem;
 
 use dope_core::driver::{
     self,
@@ -37,17 +37,6 @@ impl<'driver, 'turn, 'd> Park<'driver, 'turn, 'd> {
 
     pub fn into_driver(self) -> driver::Context<'driver, 'd> {
         self.drive.driver
-    }
-
-    pub(crate) fn run<R>(self, app: pin::Pin<&mut R>, plan: &mut Option<R::ParkPlan>)
-    where
-        R: executor::raw::App<'d>,
-    {
-        if let Some(plan) = plan {
-            // SAFETY: publication prepared this plan for the same installed pinned root.
-            // Failed admission runs forced finish without entering a park operation.
-            unsafe { R::park(app, plan, self) }
-        }
     }
 
     pub fn app_cursor<const N: usize>(

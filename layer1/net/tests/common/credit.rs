@@ -127,9 +127,7 @@ pub fn with_pool<const LANES: usize>(
         },
         recovery::Policy::new(
             reclaimed,
-            |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                panic!("driver recovery: {:?}", failure.cause())
-            },
+            |failure: recovery::Recovery<'_, '_>| -> Infallible { failure.abort() },
         ),
         |result| {
             result
@@ -181,9 +179,8 @@ pub fn release_one<'p, 'd>(
     turn: schedule::Turn<'_, 'd>,
 ) -> Result<bool, Errno> {
     let mut released = Ok(false);
-    <Disabled as Policy<Identity>>::close(
-        pool,
-        key,
+    let outcome = <Disabled as Policy<Identity>>::close(
+        pool.entry(key),
         turn.maint(),
         driver,
         close::Handler {
@@ -231,6 +228,6 @@ pub fn release_one<'p, 'd>(
                 *released = true;
             }
         },
-        |_, released, _, outcome| Ok((*released)? && matches!(outcome, close::Outcome::Pending(()))),
-    )
+    );
+    Ok(released? && matches!(outcome, close::Outcome::Pending(_, ())))
 }

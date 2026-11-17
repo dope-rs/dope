@@ -3,7 +3,10 @@ use std::marker;
 use o3::{
     alloc,
     base::marker::ThreadBound,
-    depot::{arena::slab::storage, capacity},
+    depot::{
+        arena::slab::{entries, storage},
+        capacity,
+    },
 };
 
 use crate::task::storage::caps;
@@ -47,7 +50,11 @@ impl<'d, F, const N: usize, D> Default for Slab<'d, F, N, D> {
     }
 }
 
-impl<'d, F, const N: usize, D> Slab<'d, F, N, D, storage::Heap> {
+impl<'d, F, const N: usize, D, S: storage::Storage> Slab<'d, F, N, D, S>
+where
+    S::Plane<F, { u32::MAX }, entries::Exclusive>:
+        storage::HeapPlane<F, { u32::MAX }, entries::Exclusive>,
+{
     pub fn try_new() -> Result<Self, alloc::Error> {
         Self::try_new_with_capacity(capacity::Count::MAX)
     }

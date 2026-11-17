@@ -13,6 +13,7 @@ pub unsafe trait Host<B, const N: usize>: Sized {
     type Reserve: Reserve;
     type Options<'o>: Options<N>;
     type Permit;
+    type Value;
     type Output;
     type Error;
 
@@ -26,7 +27,7 @@ pub unsafe trait Host<B, const N: usize>: Sized {
             Self::File,
             Self::Slot,
             Option<Self::Options<'o>>,
-        ) -> Result<Self::File, (Self::File, Errno)>,
+        ) -> Result<(Self::File, Self::Value), (Self::File, Errno)>,
     ) -> Result<Self::Output, Self::Error>;
 
     fn with(
@@ -39,7 +40,7 @@ pub unsafe trait Host<B, const N: usize>: Sized {
             Option<Self::Options<'o>>,
             Self::Reserve,
         ) -> Result<
-            Finish<Self::File, <Self::Reserve as Reserve>::Reservation, Self::Permit>,
+            Finish<Self::File, <Self::Reserve as Reserve>::Reservation, Self::Permit, Self::Value>,
             Failure<Self::File, <Self::Reserve as Reserve>::Error>,
         >,
     ) -> Result<Self::Output, Self::Error>;
@@ -51,7 +52,7 @@ pub unsafe trait Host<B, const N: usize>: Sized {
             Option<Self::Options<'o>>,
             Self::Reserve,
         ) -> Result<
-            Finish<Self::File, <Self::Reserve as Reserve>::Reservation, Self::Permit>,
+            Finish<Self::File, <Self::Reserve as Reserve>::Reservation, Self::Permit, Self::Value>,
             Failure<Self::File, <Self::Reserve as Reserve>::Error>,
         >,
     ) -> Result<Self::Output, Self::Error> {

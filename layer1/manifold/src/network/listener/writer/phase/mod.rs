@@ -1,16 +1,12 @@
 use std::pin;
 
 use dope_core::driver::{self, route::Identity, schedule};
-use dope_net::{
-    link::{
-        event,
-        pool::{self, pending},
-        slot::{
-            transmit::{self, outcome::Retention},
-            types::{self, Readiness},
-        },
+use dope_net::link::{
+    pool::{self, pending},
+    slot::{
+        transmit::outcome::Retention,
+        types::{self, Readiness},
     },
-    wire::send::reclaim,
 };
 
 use crate::{
@@ -24,7 +20,6 @@ use crate::{
 
 pub(in crate::network::listener) mod send;
 mod sender;
-pub(in crate::network::listener::writer) use sender::Sender;
 
 #[derive(Clone, Copy)]
 pub(in crate::network::listener) enum Wake {
@@ -40,7 +35,7 @@ pub(in crate::network::listener) fn flush_dirty<'w, 'd: 'w, ID: Identity, A, E>(
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
 ) where
-    A: handler::Application<'d, ID>,
+    A: handler::Runtime<'w, 'd, ID>,
     E: env::Spec<Wire = A::Wire>,
 {
     enum Demand {
@@ -68,11 +63,11 @@ pub(in crate::network::listener) fn flush_dirty<'w, 'd: 'w, ID: Identity, A, E>(
             let waiting = sending.is_waiting();
             let ready = capacity
                 || (waiting && sending.retention() == Retention::Held)
-                || (!waiting
-                    && matches!(
-                        flow::flow(slot, &slot.state.send, pending),
-                        flow::Flow::Plain | flow::Flow::Deferred
-                    ));
+                || match flow::flow(slot, &slot.state.send, pending) {
+                    flow::Flow::Done => true,
+                    flow::Flow::Plain | flow::Flow::Deferred => !waiting,
+                    _ => false,
+                };
             match slot.demand() {
                 types::Demand::Discard | types::Demand::Close => Demand::Close,
                 types::Demand::Terminal => Demand::Terminal,
@@ -87,7 +82,7 @@ pub(in crate::network::listener) fn flush_dirty<'w, 'd: 'w, ID: Identity, A, E>(
                 } else {
                     Wake::Pending
                 };
-                commit_chunk(root.as_mut(), key, wake, turn.reborrow(), driver);
+                advance(root.as_mut(), key, wake, turn.reborrow(), driver);
             }
             Demand::Terminal => commit_end(root.as_mut(), key, turn.reborrow(), driver),
             Demand::Close => control::close_slot(root.as_mut(), key, turn.reborrow(), driver),
@@ -111,187 +106,97 @@ pub(in crate::network::listener) fn commit_end<'w, 'd: 'w, ID: Identity, A, E>(
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
 {
-    let closed = {
-        let this = root.as_mut().project();
-        let Some(writer::Egress {
-            flights: slots,
-            connection: mut slot,
-            pending,
-            ..
-        }) = this.owner.egress_mut(key)
-        else {
+    let mut this = root.as_mut().project();
+    let writer::Owner {
+        pool,
+        deadlines,
+        writes,
+    } = this.owner;
+    let Ok(mut entry) = pool.entry(key) else {
+        return;
+    };
+    {
+        let Some(mut source) = entry.sender() else {
             return;
         };
-        let finish = slot.sending().finish(slots, driver);
-        pending.wait_send(slot.send_status().is_waiting());
-        let closed = match &finish {
-            transmit::Finalize::Rejected(failure) => {
-                slot.state.send.fail(conn::Transmit::Rejected(*failure))
-            }
-            transmit::Finalize::Armed(())
-            | transmit::Finalize::Settled
-            | transmit::Finalize::Abandoned => None,
-        };
-        match finish {
-            transmit::Finalize::Armed(()) => {
-                slot.ensure_send(driver.driver_ref().clock().now());
-            }
-            transmit::Finalize::Settled | transmit::Finalize::Abandoned => {
-                slot.cancel_send();
-            }
-            transmit::Finalize::Rejected(_) => slot.cancel_send(),
-        }
-        closed
-    };
-    if let Some(egress) = closed {
-        writer::release_egress(
-            root.as_mut().project().app,
-            key,
-            egress,
-            handler::Disposition::Closed,
-        );
+        sender::commit_end::<ID, A, _>(&mut source, deadlines, this.app.as_mut(), driver);
     }
-
-    close_ready(root, key, turn, driver);
+    if finish(&mut entry, this.app.as_ref()) {
+        drop(writer::close(
+            Ok(entry), *writes, &mut (this.app, this.accept, deadlines), turn, driver,
+        ));
+    }
 }
 
-pub(in crate::network::listener) fn commit_chunk<'w, 'd: 'w, ID: Identity, A, E>(
+pub(in crate::network::listener) fn advance<'w, 'd: 'w, ID: Identity, A, E>(
     mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
     key: pool::Key<'d, ID>,
     wake: Wake,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
 ) where
-    A: handler::Application<'d, ID>,
+    A: handler::Runtime<'w, 'd, ID>,
     E: env::Spec<Wire = A::Wire>,
 {
-    let result = {
-        let mut this = root.as_mut().project();
-        let Some(mut sender) = this.owner.sender(key) else {
-            return;
-        };
-        let (slots, mut slot, handle, egress) = sender.view();
-        match wake {
-            Wake::Progress => {
-                slot.progress(driver.driver_ref().clock().now());
-            }
-            Wake::Pending | Wake::Capacity => {
-                slot.ensure_send(driver.driver_ref().clock().now());
-            }
-            Wake::Ingress | Wake::Send => {}
-        }
-        let result = if slot.is_closing() {
-            Ok(flow::Handoff::Clear)
-        } else {
-            let pending = egress.pending();
-            let flow = slot.flow(pending);
-            let flow = match (flow, wake) {
-                (
-                    flow::Flow::Stalled,
-                    Wake::Capacity | Wake::Ingress | Wake::Progress | Wake::Send,
-                ) => flow::Flow::Plain,
-                (flow, _) => flow,
-            };
-            match flow {
-                flow::Flow::Inflight => Ok(flow::Handoff::Armed),
-                flow::Flow::Plain => {
-                    slot.advance_send(slots, handle, driver);
-                    let pending = egress.pending();
-                    Ok(slot.after_send(pending))
-                }
-                flow::Flow::Stalled | flow::Flow::Held | flow::Flow::Clear => {
-                    use transmit::outcome;
-
-                    let mode = slot.state.send.mode();
-                    let progress = match &mode {
-                        state::Mode::Queued => slot.sending().flush_queue(slots, driver),
-                        state::Mode::Direct => slot.sending().flush_direct(slots, driver),
-                    };
-                    handle.wait_send(slot.send_status().is_waiting());
-                    match progress {
-                        outcome::Progress::Submitted | outcome::Progress::Idle => {
-                            let pending = egress.pending();
-                            Ok(slot.after_send(pending))
-                        }
-                        outcome::Progress::Rejected(error) => {
-                            slot.sending().discard();
-                            let failure = match mode {
-                                state::Mode::Queued => event::SendFailure::Queued(error),
-                                state::Mode::Direct => event::SendFailure::Direct(error),
-                            };
-                            Err(conn::Transmit::Rejected(failure))
-                        }
-                    }
-                }
-                flow::Flow::Deferred => {
-                    let done = sender.submit(driver);
-                    let (_, slot, _, _) = sender.view();
-                    match done {
-                        transmit::Attempt::Runnable(
-                            reclaim::Advance::Idle | reclaim::Advance::Ready,
-                        ) => Ok(flow::Handoff::Restage),
-                        transmit::Attempt::Waiting => {
-                            if slot.send_status().is_inflight() {
-                                Ok(flow::Handoff::Armed)
-                            } else {
-                                Ok(flow::Handoff::Clear)
-                            }
-                        }
-                        transmit::Attempt::Quiescent(
-                            reclaim::Advance::Idle | reclaim::Advance::Ready,
-                        ) => Ok(flow::Handoff::Clear),
-                        transmit::Attempt::Invalid(error) => Err(conn::Transmit::Invalid(error)),
-                        transmit::Attempt::Rejected(
-                            failure,
-                            reclaim::Advance::Idle | reclaim::Advance::Ready,
-                        ) => Err(conn::Transmit::Rejected(failure)),
-                    }
-                }
-            }
-        };
-        let result = match result {
-            Ok(result) => result,
-            Err(failure) => {
-                let (_, slot, _, _) = sender.view();
-                if let Some(egress) = slot.state.send.fail(failure) {
-                    writer::release_egress(
-                        this.app.as_mut(),
-                        key,
-                        egress,
-                        handler::Disposition::Closed,
-                    );
-                }
-                flow::Handoff::Clear
-            }
-        };
-        if matches!(result, flow::Handoff::Armed) && !matches!(wake, Wake::Pending | Wake::Capacity)
-        {
-            let (_, mut slot, _, _) = sender.view();
-            slot.ensure_send(driver.driver_ref().clock().now());
-        }
-        result
+    let this = root.as_mut().project();
+    let writer::Owner {
+        pool,
+        deadlines,
+        writes,
+    } = this.owner;
+    let Ok(entry) = pool.entry(key) else {
+        return;
     };
-    match result {
-        flow::Handoff::Clear => {}
-        flow::Handoff::Armed => {}
-        flow::Handoff::Restage => {
-            let this = root.as_mut().project();
-            if let Some(handle) = pending::Pending::of(this.owner.pool()).at(key) {
-                handle.wake();
-            }
-        }
-    }
-    close_ready(root, key, turn, driver);
+    drop(advance_entry(
+        entry,
+        *writes,
+        &mut (this.app, this.accept, deadlines),
+        wake,
+        turn,
+        driver,
+    ));
 }
 
-pub(in crate::network::listener) fn close_ready<'w, 'd: 'w, ID: Identity, A, E>(
-    mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
-    key: pool::Key<'d, ID>,
+pub(in crate::network::listener) fn advance_entry<
+    'a, 'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport,
+>(
+    mut entry: writer::Entry<'a, 'n, 'p, 's, 'w, 'd, ID, T, A>,
+    writes: &'p writer::memory::Arena<'s, 'd, ID, A::Egress>,
+    ctx: &mut writer::Closing<'_, '_, '_, 'p, 'd, ID, A>,
+    wake: Wake,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
-) where
+) -> Option<writer::Entry<'a, 'n, 'p, 's, 'w, 'd, ID, T, A>>
+where
+    A: handler::Runtime<'w, 'd, ID>,
+{
+    {
+        let Some(mut source) = entry.sender() else { return Some(entry) };
+        let (app, _, deadlines) = &mut *ctx;
+        if matches!(
+            sender::commit_chunk::<ID, A, _>(
+                &mut source, deadlines, app.as_mut(), wake, driver,
+            ),
+            flow::Flow::Done
+        ) {
+            send::complete(
+                &mut source, deadlines, writes, app.as_mut(), turn.reborrow(), driver,
+            );
+        }
+    }
+    if finish(&mut entry, ctx.0.as_ref()) {
+        writer::close(Ok(entry), writes, ctx, turn, driver)
+    } else {
+        Some(entry)
+    }
+}
+
+pub(in crate::network::listener) fn finish<'a, 'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
+    entry: &mut writer::Entry<'a, 'n, 'p, 's, 'w, 'd, ID, T, A>,
+    app: pin::Pin<&A>,
+) -> bool
+where
     A: handler::Application<'d, ID>,
-    E: env::Spec<Wire = A::Wire>,
 {
     enum Step {
         Close,
@@ -304,19 +209,14 @@ pub(in crate::network::listener) fn close_ready<'w, 'd: 'w, ID: Identity, A, E>(
         Resume,
     }
     let (step, gate) = {
-        use crate::network::listener::conn;
-
-        let this = root.as_ref().project_ref();
-        let view = this.owner.pool().inspect();
-        let Some((slot, pending)) = view.egress(key) else {
-            return;
-        };
-        let gate = A::close_gate(this.app, conn::Ref::new(slot));
+        let slot = entry.get();
+        let pending = entry.egress();
+        let gate = A::close_gate(app.as_ref(), conn::Ref::new(slot));
         let owns = <A::Input as receive::Policy>::APPLICATION_GATED
             || <A::Input as receive::Policy>::EGRESS_COUPLED;
         let enabled = owns && A::is_gated(&slot.state.conn);
         let gated = enabled && <A::Input as receive::Policy>::APPLICATION_GATED;
-        let pause = gated && A::is_blocked(this.app, conn::Ref::new(slot));
+        let pause = gated && A::is_blocked(app.as_ref(), conn::Ref::new(slot));
         let close = slot.close_due(gate);
         if slot.is_closing() || (matches!(close, Readiness::Due) && slot.terminal.is_done()) {
             match close {
@@ -328,7 +228,7 @@ pub(in crate::network::listener) fn close_ready<'w, 'd: 'w, ID: Identity, A, E>(
             let held = enabled
                 && <A::Input as receive::Policy>::EGRESS_COUPLED
                 && !matches!(output, flow::Flow::Clear)
-                && !A::can_receive(this.app, conn::Ref::new(slot));
+                && !A::can_receive(app.as_ref(), conn::Ref::new(slot));
             let gate = if pause || held {
                 Gate::Suspend
             } else if owns
@@ -343,7 +243,7 @@ pub(in crate::network::listener) fn close_ready<'w, 'd: 'w, ID: Identity, A, E>(
                 flow::Flow::Plain | flow::Flow::Deferred if slot.send_status().is_waiting() => {
                     Step::Idle
                 }
-                flow::Flow::Plain | flow::Flow::Deferred => Step::Retry,
+                flow::Flow::Done | flow::Flow::Plain | flow::Flow::Deferred => Step::Retry,
                 flow::Flow::Inflight | flow::Flow::Stalled | flow::Flow::Held => Step::Idle,
                 flow::Flow::Clear if matches!(close, Readiness::Due) => Step::Close,
                 flow::Flow::Clear => Step::Idle,
@@ -353,17 +253,39 @@ pub(in crate::network::listener) fn close_ready<'w, 'd: 'w, ID: Identity, A, E>(
     };
     match gate {
         Gate::None => {}
-        Gate::Suspend => root.as_mut().project().owner.pool_mut().suspend(key),
-        Gate::Resume => root.as_mut().project().owner.pool_mut().resume(key),
+        Gate::Suspend => entry.suspend(),
+        Gate::Resume => entry.resume(),
     }
     match step {
-        Step::Close => control::close_slot(root.as_mut(), key, turn, driver),
+        Step::Close => true,
         Step::Retry => {
-            let this = root.as_mut().project();
-            if let Some(handle) = pending::Pending::of(this.owner.pool()).at(key) {
-                handle.wake();
-            }
+            entry.pending().wake();
+            false
         }
-        Step::Idle => {}
+        Step::Idle => false,
+    }
+}
+
+pub(in crate::network::listener) fn close_ready<'w, 'd: 'w, ID: Identity, A, E>(
+    mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
+    key: pool::Key<'d, ID>,
+    turn: schedule::Turn<'_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
+) where
+    A: handler::Application<'d, ID>,
+    E: env::Spec<Wire = A::Wire>,
+{
+    let this = root.as_mut().project();
+    let writer::Owner {
+        pool,
+        deadlines,
+        writes,
+    } = this.owner;
+    if let Ok(mut entry) = pool.entry(key)
+        && finish(&mut entry, this.app.as_ref())
+    {
+        drop(writer::close(
+            Ok(entry), *writes, &mut (this.app, this.accept, deadlines), turn, driver,
+        ));
     }
 }

@@ -40,7 +40,7 @@ pub(in crate::wire::send) struct Slice<'a> {
 }
 
 impl<'scope, 'bytes: 'scope> Payload<'scope> for Plain<'bytes> {
-    fn select(&self) -> Option<impl send::raw::Ready<'scope>> {
+    fn select(self) -> Option<impl send::raw::Ready<'scope>> {
         let view: transfer::View<'scope> = self.view;
         match transfer::NonZero::try_from(view.len()) {
             Ok(bytes) => Some(Slice { view, bytes }),

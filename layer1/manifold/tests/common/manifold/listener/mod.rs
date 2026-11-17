@@ -2,7 +2,6 @@ use std::{cell::Cell, ops::ControlFlow, pin::Pin, rc::Rc};
 
 use dope_core::{
     driver::{route::KeyTag, schedule},
-    io,
     io::{
         event::{Kind, batch::Flow, net::accept},
         fd::handles::AcceptedSlot,
@@ -144,20 +143,14 @@ where
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ControlFlow<io::Event<'d>> {
-        let (owner, (), (done, turn, mut driver)) = call.into_parts();
+    fn dispatch<'event>(
+        owner: Pin<&mut Self>,
+        done: executor::raw::Dispatch<'event, 'd>,
+        turn: schedule::Turn<'_, 'd>,
+        mut driver: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         let mut this = owner.project();
+        let (done, vacant) = done.into_event().take();
         let kind = match (done.into_kind(), &mut *this.at) {
             (Kind::Accept(done), CancelAt::Retain(slot)) if this.gate.hits() == 0 => {
                 let (_, flow, outcome) = done.into_parts();
@@ -180,7 +173,7 @@ where
             CancelAt::Send => matches!(&kind, Kind::Send(_)),
             CancelAt::Retain(_) => false,
         };
-        let done = kind.into();
+        let done = executor::raw::Dispatch::new(vacant.insert(kind.into()));
         let before = this.listener.as_ref().get_ref().len();
         if cancel {
             if matches!(this.at, CancelAt::Send) {
@@ -191,11 +184,12 @@ where
             }
             dispatch::raw::Manifold::shutdown(this.listener.as_mut(), turn.reborrow(), &mut driver);
         }
-        let result = event::Turn::dispatch(executor::raw::Call::new(
+        let result = event::Turn::dispatch(
             this.listener.as_mut(),
-            (),
-            (done, turn.reborrow(), driver.narrow()),
-        ));
+            done,
+            turn.reborrow(),
+            driver.narrow(),
+        );
         if accept
             && matches!(result, ControlFlow::Continue(()))
             && this.listener.as_ref().get_ref().len() > before

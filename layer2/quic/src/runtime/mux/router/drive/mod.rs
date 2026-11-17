@@ -58,7 +58,7 @@ fn flush_slot_round<I: Copy, C, const DOMAIN: u8, B: stream::Recv, D: buffer::ra
         slot.peer_addr.overhead()
     };
     let outer = max.saturating_add(overhead);
-    let mut gso = output.cache.batch.as_ref().and_then(|batch| {
+    let mut gso = output.cache.gso.and_then(|limits| {
         path.gso()
             .filter(|_| {
                 slot.conn
@@ -66,7 +66,7 @@ fn flush_slot_round<I: Copy, C, const DOMAIN: u8, B: stream::Recv, D: buffer::ra
                     .permit()
                     .is_gso_ready(size, MIN_GSO_PACKETS)
             })
-            .map(|path| (batch.limits(), path))
+            .map(|path| (limits, path))
     });
     let quota = flush_packet_quantum(gso.map(|(limits, _)| limits), peers);
     let room = output
@@ -99,7 +99,7 @@ fn flush_slot_round<I: Copy, C, const DOMAIN: u8, B: stream::Recv, D: buffer::ra
             outer,
             count,
         );
-        if count == 0 {
+        if count < 2 {
             gso = None;
             count = 1;
         }
@@ -115,13 +115,12 @@ fn flush_slot_round<I: Copy, C, const DOMAIN: u8, B: stream::Recv, D: buffer::ra
             (target.and_then(transmit::Destination::network), result)
         })?
     } else {
-        output.emit_round(count, outer.get(), *slot.peer_addr, |packet| {
-            let (target, result) = slot
-                .conn
-                .output()
-                .send_one(packet, now, size, *slot.peer_addr);
-            (target.and_then(transmit::Destination::network), result)
-        })
+        let before = output.pending.len();
+        let result = slot
+            .conn
+            .output()
+            .send_into(output, now, count, size, *slot.peer_addr);
+        (output.pending.len() - before, result)
     };
     if sent != 0 {
         *slot.first_flush = false;
@@ -207,9 +206,6 @@ fn flush_one<
     turn: &mut router::Turn<'_, A, H, DOMAIN, B>,
     now: time::Instant,
 ) -> Result<Step, errors::Transmit<A::Identity, DOMAIN>> {
-    if turn.registry.promote(now).is_driven() || reap_one(turn, now)?.is_driven() {
-        return Ok(Step::Driven);
-    }
     if turn.outgoing.pending.len() >= turn.outgoing.pending.capacity()
         || turn.outgoing.pending.bytes() >= turn.outgoing.bytes_capacity
         || !turn.registry.can_flush(turn.outgoing.pending.bytes())
@@ -254,6 +250,8 @@ pub(in crate::runtime::mux) fn drive_one<
             Phase::Notify => timers::notify(turn, at),
             Phase::Deadline => turn.registry.promote(now),
             Phase::Reap => reap_one(turn, now)?,
+            Phase::Flush if seen <= 2 && turn.registry.promote(now).is_driven() => Step::Driven,
+            Phase::Flush if seen == 1 && reap_one(turn, now)?.is_driven() => Step::Driven,
             Phase::Flush => flush_one(turn, now)?,
         };
         if driven.is_driven() {

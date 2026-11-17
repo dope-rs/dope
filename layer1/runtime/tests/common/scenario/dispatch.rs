@@ -1,6 +1,6 @@
 //! Statically dispatched runtime probes for integration tests.
 
-use std::{convert::Infallible, marker, ops, pin};
+use std::{marker, ops, pin};
 
 use dope_core::{
     driver::{
@@ -120,35 +120,26 @@ pub struct Probe<'d, R, H, ID> {
 }
 
 trait ParkCall<'d, R> {
-    type Plan;
-
-    fn select() -> Option<Self::Plan>;
+    const PARK: bool;
 
     /// # Safety
     /// The root, prepared plan, and park authority belong to the same installation.
     unsafe fn call<'app, 'driver, 'turn>(
         app: pin::Pin<&'app mut R>,
-        plan: &mut Self::Plan,
         park: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
         'd: 'driver + 'turn;
 }
 
 impl<'d, R> ParkCall<'d, R> for Off {
-    type Plan = Infallible;
-
-    fn select() -> Option<Self::Plan> {
-        None
-    }
+    const PARK: bool = false;
 
     unsafe fn call<'app, 'driver, 'turn>(
         _: pin::Pin<&'app mut R>,
-        plan: &mut Self::Plan,
         _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
         'd: 'driver + 'turn,
     {
-        match *plan {}
     }
 }
 
@@ -157,18 +148,13 @@ where
     R: Ready<'d>,
     H: Park<'d, R>,
 {
-    type Plan = ();
-
-    fn select() -> Option<Self::Plan> {
-        Some(())
-    }
+    const PARK: bool = true;
 
     /// # Safety
     /// The pinned probe, prepared unit plan, and park authority must belong to
     /// the same installed root; its hooks retain no authority beyond this call.
     unsafe fn call<'app, 'driver, 'turn>(
         mut app: pin::Pin<&'app mut Probe<'d, R, H, ID>>,
-        (): &mut Self::Plan,
         park: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
         'd: 'driver + 'turn,
@@ -184,20 +170,19 @@ impl<'d> Ready<'d> for () {}
 impl<'d, Tag: route::Tag> Ready<'d> for ready::Slot<'d, Tag> {}
 impl<'d, Tag: route::Tag> Ready<'d> for Box<[ready::Slot<'d, Tag>]> {}
 
-impl<'d, R, H, L, ID: Identity> executor::raw::Layout<'d> for Probe<'d, R, H, ID>
+impl<'d, R, H, ID: Identity> executor::raw::Layout<'d> for Probe<'d, R, H, ID>
 where
     H: Hooks<'d, R>,
-    H::Park: ParkCall<'d, Self, Plan = L>,
 {
-    type ParkPlan = L;
+    type ParkPlan = ();
 }
 
 // SAFETY: the probe retains its exact ready owners and direct lifecycle calls.
-unsafe impl<'d, R, H, L, ID: Identity> executor::raw::App<'d> for Probe<'d, R, H, ID>
+unsafe impl<'d, R, H, ID: Identity> executor::raw::App<'d> for Probe<'d, R, H, ID>
 where
     R: Ready<'d>,
     H: Hooks<'d, R>,
-    H::Park: ParkCall<'d, Self, Plan = L>,
+    H::Park: ParkCall<'d, Self>,
 {
     const ROUTES: settings::Routes = settings::Routes::singleton::<ID>();
     const WAKE_ROUTES: settings::Routes = if H::WAKE {
@@ -206,20 +191,19 @@ where
         settings::Routes::EMPTY
     };
     const COORDS: usize = 0;
+    const PARK: bool = H::Park::PARK;
 
-    fn select_park() -> Option<Self::ParkPlan> {
-        H::Park::select()
-    }
+    fn select_park() -> Self::ParkPlan {}
 
     unsafe fn park<'app, 'driver, 'turn>(
         app: pin::Pin<&'app mut Self>,
-        plan: &mut Self::ParkPlan,
+        _: &mut Self::ParkPlan,
         park: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
         'd: 'driver + 'turn,
     {
         // SAFETY: the exact installed probe, selected plan, and authority are unchanged.
-        unsafe { H::Park::call(app, plan, park) }
+        unsafe { H::Park::call(app, park) }
     }
 
     // SAFETY: the route check retains this exact installed pinned probe.
@@ -240,10 +224,12 @@ where
         true
     }
 
-    fn dispatch<'app, 'driver, 'turn>(
-        call: executor::raw::Dispatch<'app, 'driver, 'turn, 'd, Self>,
-    ) -> ops::ControlFlow<io::Event<'d>> {
-        let (app, event, _, _) = call.into_parts();
+    fn dispatch<'event>(
+        app: pin::Pin<&mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+        _: schedule::Turn<'_, 'd>,
+        _: driver::Context<'_, 'd>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         if route::Id::try_from(event.route()) != Ok(ID::ID) {
             return ops::ControlFlow::Continue(());
         }

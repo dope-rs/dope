@@ -44,8 +44,8 @@ pub trait Reserve {
 
 /// The descriptor is returned with the exact native cancellation authority.
 #[derive(Debug)]
-pub enum Finish<F, R, P> {
-    Applied(F),
+pub enum Finish<F, R, P, V = ()> {
+    Applied(F, V),
     Pending(F, R, P),
 }
 

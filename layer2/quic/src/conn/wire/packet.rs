@@ -4,8 +4,7 @@ use std::{mem, num};
 use dope::core::io::datagram;
 use o3::alloc::{self, VecExt as _};
 
-use crate::conn::wire::permits;
-use crate::conn::wire::permits::Reservation as _;
+use crate::conn::{output::transmit::Destination, wire::permits};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Allocation {
@@ -23,7 +22,7 @@ pub(crate) enum Allocation {
     },
 }
 
-pub(in crate::conn) trait Sink {
+pub(crate) trait Sink {
     type Reservation<'sink>: permits::Reservation
     where
         Self: 'sink;
@@ -33,55 +32,11 @@ pub(in crate::conn) trait Sink {
     /// invariant with authenticated QUIC PADDING before protection.
     const PAD_TO_CEILING: bool = false;
 
-    fn reserve(
-        &mut self,
+    fn reserve<'sink>(
+        &'sink mut self,
         limit: usize,
-        overhead: usize,
-    ) -> Result<Option<Self::Reservation<'_>>, Allocation>;
-
-    /// Publishes metadata only after byte validation and state commit succeed.
-    fn try_emit<'a, C, T, U, E>(
-        &mut self,
-        context: &'a mut C,
-        limit: usize,
-        overhead: usize,
-        extent: impl FnOnce(&T) -> usize,
-        build: impl FnOnce(&'a mut C, &mut write::Append<'_>, usize) -> Result<Option<T>, E>,
-        commit: impl FnOnce(T) -> U,
-    ) -> Result<Option<U>, E>
-    where
-        E: From<Allocation>,
-    {
-        let Some(mut permit) = self.reserve(limit, overhead).map_err(E::from)? else {
-            return Ok(None);
-        };
-        let limit = permit.limit();
-        let built = {
-            let mut out = permit.out();
-            build(context, &mut out, limit)
-        };
-        let built = match built {
-            Ok(built) => built,
-            Err(error) => {
-                permit.rollback();
-                return Err(error);
-            }
-        };
-        let Some(state) = built else {
-            permit.rollback();
-            return Ok(None);
-        };
-        let ready = match permit.validate(extent(&state)) {
-            Ok(ready) => ready,
-            Err(permit) => {
-                permit.rollback();
-                return Ok(None);
-            }
-        };
-        Ok(Some(
-            <Self::Reservation<'_> as permits::Reservation>::publish(ready, state, commit),
-        ))
-    }
+        destination: &'sink Destination,
+    ) -> Result<Option<Self::Reservation<'sink>>, Allocation>;
 }
 
 pub(crate) trait Fresh {
@@ -131,18 +86,18 @@ impl Batch {
 impl Sink for Batch {
     type Reservation<'sink> = permits::Batch<'sink>;
 
-    fn reserve(
-        &mut self,
+    fn reserve<'sink>(
+        &'sink mut self,
         limit: usize,
-        overhead: usize,
-    ) -> Result<Option<Self::Reservation<'_>>, Allocation> {
+        destination: &'sink Destination,
+    ) -> Result<Option<Self::Reservation<'sink>>, Allocation> {
         self.segs
             .try_grow(1)
             .map_err(|error| Allocation::Segments {
                 error,
                 requested: 1,
             })?;
-        let outer = outer_limit(limit, overhead)?;
+        let outer = outer_limit(limit, destination.overhead())?;
         self.buf
             .try_grow(outer)
             .map_err(|error| Allocation::Payload {
@@ -165,7 +120,7 @@ pub(crate) struct Gso {
     pub(super) storage: Storage,
 }
 
-pub(super) enum Storage {
+pub(crate) enum Storage {
     Vacant(Vec<u8>),
     Ready(Ready),
 }
@@ -178,30 +133,11 @@ pub(crate) struct Ready {
 }
 
 impl Gso {
-    pub(crate) const fn new(limits: datagram::GsoLimits) -> Self {
+    pub(crate) const fn new(limits: datagram::GsoLimits, bytes: Vec<u8>) -> Self {
         Self {
             limits,
-            storage: Storage::Vacant(Vec::new()),
+            storage: Storage::Vacant(bytes),
         }
-    }
-
-    pub(crate) const fn limits(&self) -> datagram::GsoLimits {
-        self.limits
-    }
-
-    pub(crate) fn try_prepare(&mut self, required: usize) -> Result<&mut Vec<u8>, Allocation> {
-        let Storage::Vacant(bytes) = &mut self.storage else {
-            unreachable!("flight")
-        };
-        bytes.clear();
-        if bytes.capacity() < required {
-            *bytes = Vec::new();
-            *bytes = Vec::try_new(required).map_err(|error| Allocation::Payload {
-                error,
-                requested: required,
-            })?;
-        }
-        Ok(bytes)
     }
 
     pub(crate) const fn packets(&self) -> usize {
@@ -232,24 +168,8 @@ impl Gso {
         }
     }
 
-    pub(crate) fn recycle(&mut self, mut value: Vec<u8>) -> Result<(), Vec<u8>> {
-        if matches!(&self.storage, Storage::Vacant(current) if current.capacity() == 0) {
-            value.clear();
-            self.storage = Storage::Vacant(value);
-            Ok(())
-        } else {
-            Err(value)
-        }
-    }
-
-    pub(crate) fn take(&mut self) -> Option<Ready> {
-        match mem::replace(&mut self.storage, Storage::Vacant(Vec::new())) {
-            Storage::Vacant(value) => {
-                self.storage = Storage::Vacant(value);
-                None
-            }
-            Storage::Ready(ready) => Some(ready),
-        }
+    pub(crate) fn into_storage(self) -> Storage {
+        self.storage
     }
 }
 
@@ -258,11 +178,12 @@ impl Sink for Gso {
 
     const PAD_TO_CEILING: bool = true;
 
-    fn reserve(
-        &mut self,
+    fn reserve<'sink>(
+        &'sink mut self,
         max: usize,
-        overhead: usize,
-    ) -> Result<Option<Self::Reservation<'_>>, Allocation> {
+        destination: &'sink Destination,
+    ) -> Result<Option<Self::Reservation<'sink>>, Allocation> {
+        let overhead = destination.overhead();
         if matches!(&self.storage, Storage::Ready(ready) if ready.sealed)
             || self.packets() >= self.limits.capacity().count()
         {
@@ -301,32 +222,20 @@ const _: () = {
 impl Sink for Vec<Vec<u8>> {
     type Reservation<'sink> = permits::Fresh<'sink>;
 
-    fn reserve(
-        &mut self,
+    fn reserve<'sink>(
+        &'sink mut self,
         limit: usize,
-        overhead: usize,
-    ) -> Result<Option<Self::Reservation<'_>>, Allocation> {
+        destination: &'sink Destination,
+    ) -> Result<Option<Self::Reservation<'sink>>, Allocation> {
         self.try_grow(1).map_err(|error| Allocation::Packets {
             error,
             requested: 1,
         })?;
-        permits::Fresh::new(self, limit, overhead).map(Some)
+        permits::Fresh::new(self, limit, destination.overhead()).map(Some)
     }
 }
 
-impl Sink for Vec<u8> {
-    type Reservation<'sink> = permits::Single<'sink>;
-
-    fn reserve(
-        &mut self,
-        limit: usize,
-        overhead: usize,
-    ) -> Result<Option<Self::Reservation<'_>>, Allocation> {
-        permits::Single::new(self, limit, overhead).map(Some)
-    }
-}
-
-pub(super) fn outer_limit(limit: usize, overhead: usize) -> Result<usize, Allocation> {
+pub(crate) fn outer_limit(limit: usize, overhead: usize) -> Result<usize, Allocation> {
     limit.checked_add(overhead).ok_or(Allocation::Payload {
         error: alloc::Error::Overflow,
         requested: limit,

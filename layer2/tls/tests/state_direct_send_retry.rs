@@ -14,7 +14,7 @@ use dope::{
     },
     manifold::{
         app::{Host, env::Bundle, receive::Borrowed},
-        network::listener::{self, config::Config, conn::write, handler, topology::Layout},
+        network::listener::{self, config::Config, handler, topology::Layout},
         timing,
     },
     net::{link::egress, tcp::Tcp, wire::domain::Owner},
@@ -44,7 +44,7 @@ fn released_direct() {
     for forced in [false, true] {
         let key = signing_key().expect("signing key");
         let pubkey = key.public_key();
-        let body = b"direct reply after ciphertext release";
+        let body = common::reply::CAPACITY_BODY;
         let ready = Gate::new();
         let closes = Gate::new();
         let inputs = Cell::new(0);
@@ -52,7 +52,7 @@ fn released_direct() {
         let started = Gate::new();
         let released = Cell::new([0; 2]);
         let discarded = Cell::new(0);
-        let observe = |event: Event<'_>| match event {
+        let observe = |event: Event| match event {
             Event::Open(cause) => panic!("TLS open: {cause:?}"),
             Event::Wire(cause) => panic!("TLS wire: {cause:?}"),
             Event::Peer(cause) => panic!("TLS peer: {cause:?}"),
@@ -63,7 +63,7 @@ fn released_direct() {
             }
             Event::Eof(_) => panic!("unexpected peer EOF"),
             Event::Write(result) => {
-                assert!(matches!(result, Ok(write::Outcome::Committed(()))));
+                assert!(matches!(result, Ok(())));
                 writes.set(writes.get() + 1);
             }
         };
@@ -284,11 +284,8 @@ fn released_direct() {
         });
         assert_eq!(inputs.get(), 2, "peers send only their readiness records");
         assert_eq!(started.hits(), 2);
-        if forced {
-            // TLS drops the first queued body on submit without a release callback.
-            assert_eq!(released.get().iter().sum::<usize>(), 1);
-        } else {
-            assert_eq!(released.get(), [1; 2]);
+        assert_eq!(released.get(), [1; 2]);
+        if !forced {
             assert_eq!(closes.hits(), 2);
         }
     }

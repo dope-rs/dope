@@ -3,7 +3,7 @@
 pub mod attach;
 pub mod outcome;
 
-use std::{mem, pin, task};
+use std::{convert, mem, pin, task};
 
 use o3::{base::cell::region, depot};
 
@@ -131,22 +131,28 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
         Ok(())
     }
 
-    fn poll<O>(
-        &self,
+    fn poll<R, O>(
+        &mut self,
         mut context: pin::Pin<&mut context::Context<'_, 'region>>,
         extract: impl FnOnce(
             Option<&mut reply::Slot<'_, 's, 'arena, 'credits, 'region, D, E>>,
-        ) -> task::Poll<O>,
+        ) -> task::Poll<R>,
+        complete: impl FnOnce(&mut Self, R) -> O,
     ) -> task::Poll<O> {
-        let wake = context.as_ref().waker();
-        let Some((mut slot, signal)) = self.slot(context.as_mut().region_token()) else {
-            return extract(None);
+        let output = {
+            let wake = context.as_ref().waker();
+            match self.slot(context.as_mut().region_token()) {
+                Some((mut slot, signal)) => {
+                    let output = extract(Some(&mut slot));
+                    if output.is_pending() {
+                        signal.register(wake.completion());
+                    }
+                    output
+                }
+                None => extract(None),
+            }
         };
-        let output = extract(Some(&mut slot));
-        if output.is_pending() {
-            signal.register(wake.completion());
-        }
-        output
+        output.map(|output| complete(self, output))
     }
 
     fn slot<'a>(
@@ -296,22 +302,29 @@ impl<
         output
     }
 
-    /// Polls the attached response within the caller's admitted operation.
-    /// Extracting an output detaches the response before returning it; later
-    /// polls remain pending until an explicit attachment starts another reply.
-    pub fn poll_reply(
+    /// Runs completion after the slot loan ends and the response detaches.
+    /// Pending leaves completion uncalled and the response attached.
+    pub fn poll_reply<O>(
         self: pin::Pin<&mut Self>,
         context: pin::Pin<&mut context::Context<'_, 'region>>,
-    ) -> task::Poll<X::Output> {
+        extract: impl FnOnce(
+            &X::Context,
+            &mut reply::Slot<'_, 's, 'arena, 'credits, 'region, D, E>,
+        ) -> Option<X::Output>,
+        complete: impl FnOnce(X::Output) -> O,
+    ) -> task::Poll<O> {
         let me = self.get_mut();
-        let output = me.handle.poll(context, |slot| {
-            slot.and_then(|slot| X::extract(&me.extract, slot))
-                .map_or(task::Poll::Pending, task::Poll::Ready)
-        });
-        if output.is_ready() {
-            me.handle.detach();
-        }
-        output
+        me.handle.poll(
+            context,
+            |slot| {
+                slot.and_then(|slot| extract(&me.extract, slot))
+                    .map_or(task::Poll::Pending, task::Poll::Ready)
+            },
+            |handle, output| {
+                handle.detach();
+                complete(output)
+            },
+        )
     }
 
     pub fn poll_next(
@@ -319,18 +332,23 @@ impl<
         context: pin::Pin<&mut context::Context<'_, 'region>>,
     ) -> task::Poll<Option<X::Output>> {
         let me = self.as_mut().get_mut();
-        let output = me.handle.poll(context, |slot| match slot {
-            Some(slot) => match X::extract(&me.extract, slot) {
-                Some(output) => task::Poll::Ready(Some(output)),
-                None if slot.state.is_finished() => task::Poll::Ready(None),
-                None => task::Poll::Pending,
+        me.handle.poll(
+            context,
+            |slot| match slot {
+                Some(slot) => match X::extract(&me.extract, slot) {
+                    Some(output) => task::Poll::Ready(Some(output)),
+                    None if slot.state.is_finished() => task::Poll::Ready(None),
+                    None => task::Poll::Pending,
+                },
+                None => task::Poll::Ready(None),
             },
-            None => task::Poll::Ready(None),
-        });
-        if matches!(output, task::Poll::Ready(None)) {
-            me.handle.detach();
-        }
-        output
+            |handle, output| {
+                if output.is_none() {
+                    handle.detach();
+                }
+                output
+            },
+        )
     }
 }
 
@@ -398,7 +416,7 @@ impl<
 
     fn poll(call: context::PollCall<'_, '_, 'region, Self>) -> task::Poll<X::Output> {
         let (this, context) = call.into_parts();
-        this.poll_reply(context)
+        this.poll_reply(context, X::extract, convert::identity)
     }
 }
 

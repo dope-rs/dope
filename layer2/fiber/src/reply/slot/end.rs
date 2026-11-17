@@ -31,17 +31,15 @@ impl<E> End<E> {
     }
 
     pub(super) fn take_failure(&mut self) -> Option<Failed<E>> {
-        match mem::replace(self, Self::Complete) {
-            Self::Failed(item) => Some(item),
-            Self::DrainingFailed(item) => {
-                *self = Self::Draining;
-                Some(item)
-            }
-            end => {
-                *self = end;
-                None
-            }
-        }
+        let end = match self {
+            Self::Failed(_) => mem::replace(self, Self::Complete),
+            Self::DrainingFailed(_) => mem::replace(self, Self::Draining),
+            _ => return None,
+        };
+        let (Self::Failed(item) | Self::DrainingFailed(item)) = end else {
+            unreachable!("failed");
+        };
+        Some(item)
     }
 }
 
@@ -51,19 +49,21 @@ impl<'a, 's, 'arena, 'credits, 'region, D: Footprint, E>
     pub(super) fn observe(
         slot: Slot<'a, 's, 'arena, 'credits, 'region, D, E>,
     ) -> Option<outcome::Terminal<'a, 's, 'arena, 'credits, 'region, D, E>> {
-        match mem::replace(&mut slot.state.end, End::Complete) {
+        match &slot.state.end {
             End::Complete => Some(outcome::Terminal::Complete(outcome::Completion { slot })),
-            End::Failed(failure) => Some(outcome::Terminal::Failed(Self {
-                credit: Credit {
-                    slot,
-                    amount: failure.amount,
-                },
-                failure: failure.value,
-            })),
-            end => {
-                slot.state.end = end;
-                None
+            End::Failed(_) => {
+                let End::Failed(failure) = mem::replace(&mut slot.state.end, End::Complete) else {
+                    unreachable!("failed");
+                };
+                Some(outcome::Terminal::Failed(Self {
+                    credit: Credit {
+                        slot,
+                        amount: failure.amount,
+                    },
+                    failure: failure.value,
+                }))
             }
+            _ => None,
         }
     }
 

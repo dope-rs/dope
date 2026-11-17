@@ -216,6 +216,19 @@ where
             plan, budget,
         )
     }
+
+    fn try_retain_with<'a>(
+        plan: &Self::View<'a>,
+        budget: &resident::Budget<'d>,
+        limit: usize,
+    ) -> Result<Option<hold::Retained<'d>>, hold::Error>
+    where
+        Self: 'a,
+    {
+        <<W::Receive as receive::Policy<W>>::Cursor<'w, 'd> as hold::raw::Retain<'d>>::try_retain_with(
+            plan, budget, limit,
+        )
+    }
 }
 
 impl<'w, 'd: 'w, W: wire::Spec + 'w, C: mode::Credit> buffer::Cursor for Chunk<'w, 'd, W, C>

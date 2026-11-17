@@ -3,7 +3,6 @@ use std::{cell::Cell, convert::Infallible, ops::ControlFlow, pin::Pin, rc::Rc};
 use dope_core::{
     Errno,
     driver::{route, route::kind, schedule},
-    io,
     io::event::{Kind, batch::Flow, net::recv},
 };
 use dope_manifold::{
@@ -16,7 +15,10 @@ use dope_test::harness::{
     signals::{Gate, Progress as _},
 };
 
-use crate::common::manifold::client::finish::close::members::DemandState;
+use crate::common::manifold::client::{
+    connect::batch,
+    finish::close::members::DemandState,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event {
@@ -39,6 +41,7 @@ pub struct Host<'d, M> {
     pub(crate) inner: M,
     pub(crate) state: Option<Rc<State>>,
     pub(crate) renewal: Option<Rc<DemandState>>,
+    pub(crate) batch: Option<batch::Capture<'d>>,
     /// Identifies the injected completion retained by the executor for replay.
     pub(crate) pending: Option<route::Erased<'d, kind::Recv>>,
 }
@@ -59,12 +62,11 @@ impl<'d, M: dispatch::raw::Manifold<'d>> dispatch::raw::Projection<'d> for Host<
 // injection keeps the actual native target, flow, and owning dispatch call.
 unsafe impl<'d, M> dispatch::raw::Manifold<'d> for Host<'d, M>
 where
-    M: dispatch::raw::Manifold<'d, PrePark = dispatch::raw::Retained>
-        + dispatch::raw::Projection<'d>,
-    M::Inner: event::Turn<'d, Access = dispatch::raw::Retained>,
+    M: dispatch::raw::Manifold<'d, PrePark = dispatch::raw::Retained>,
+    M::Dispatch: event::Set<'d, M, M::Route, Plan = ()>,
 {
     type Route = M::Route;
-    type Dispatch = event::Timed<<M::Inner as event::Turn<'d>>::Access>;
+    type Dispatch = event::Timed<dispatch::raw::Retained>;
     type Install = dispatch::raw::Projected<Self>;
     type Finish = dispatch::raw::Projected<Self>;
     type Activate = dispatch::raw::Projected<Self>;
@@ -96,28 +98,28 @@ where
 
 impl<'d, M> event::Turn<'d> for Host<'d, M>
 where
-    M: dispatch::raw::Manifold<'d, PrePark = dispatch::raw::Retained>
-        + dispatch::raw::Projection<'d>,
-    M::Inner: event::Turn<'d, Access = dispatch::raw::Retained>,
+    M: dispatch::raw::Manifold<'d, PrePark = dispatch::raw::Retained>,
+    M::Dispatch: event::Set<'d, M, M::Route, Plan = ()>,
 {
-    type Access = <M::Inner as event::Turn<'d>>::Access;
+    type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ControlFlow<io::Event<'d>> {
-        let (owner, (), (done, turn, mut driver)) = call.into_parts();
+    fn dispatch<'event>(
+        owner: Pin<&mut Self>,
+        done: executor::raw::Dispatch<'event, 'd>,
+        turn: schedule::Turn<'_, 'd>,
+        mut driver: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         let mut this = owner.project();
+        let (done, vacant) = done.into_event().take();
         let mut selected = false;
-        let kind = done.into_kind();
+        let (kind, last) = match (done.into_kind(), this.batch.as_mut()) {
+            (Kind::Recv(done), Some(capture)) => {
+                let (done, last) = capture.receive(done);
+                let Some(done) = done else { return ControlFlow::Continue(()) };
+                (Kind::Recv(done), last)
+            }
+            (kind, _) => (kind, false),
+        };
         if matches!(&kind, Kind::Connect(_))
             && let Some(demand) = this.renewal.take()
         {
@@ -166,17 +168,22 @@ where
             }
             (kind, _) => kind,
         };
-        let result = event::Turn::dispatch(executor::raw::Call::new(
-            dispatch::raw::Projection::inner_mut(this.inner),
+        let result = <M::Dispatch as event::Set<'d, M, M::Route>>::call(
+            this.inner,
             (),
-            (kind.into(), turn, driver),
-        ));
+            executor::raw::Dispatch::new(vacant.insert(kind.into())),
+            turn,
+            (&mut *driver).reborrow(),
+        );
         if selected
             && result.is_continue()
             && let Some(state) = this.state.as_ref()
         {
             this.pending.take();
             state.queued.hit();
+        }
+        if last && result.is_continue() {
+            this.batch.as_ref().expect("terminal batch").done.hit();
         }
         result
     }

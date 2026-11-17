@@ -221,6 +221,7 @@ fn credit_grants_source() {
     let admitted = Rc::new(Trace::new());
     let next = Rc::new(Cell::new(0));
     let sent = Gate::new();
+    let settled = Gate::new();
     let audit = Rc::new(Report::default());
     let plan = Plan::<KeyTag<0>, 4>::new(
         4,
@@ -253,6 +254,7 @@ fn credit_grants_source() {
                     conn: conn.clone(),
                     moved: moved.clone(),
                     sent: sent.clone(),
+                    settled: settled.clone(),
                 },
                 ingress::Plan::none(),
             );
@@ -293,6 +295,7 @@ fn credit_grants_source() {
                                     &[5, 5],
                                     "resident credit admits exactly two 5-byte requests"
                                 );
+                                assert_eq!(settled.hits(), 0);
                                 let peers = peers.insert(std::array::from_fn(|index| {
                                     acceptors[index]
                                         .accept_for(GUARD)
@@ -310,8 +313,8 @@ fn credit_grants_source() {
                                         .position(|expected| *expected == address)
                                         .expect("connected endpoint")]
                                 };
-                                let first = admitted.values().expect("admitted requests")[0];
-                                let second = admitted.values().expect("admitted requests")[1];
+                                let first = admitted.values().expect("admitted requests")[0].0;
+                                let second = admitted.values().expect("admitted requests")[1].0;
                                 peer(first)
                                     .write_all(b"open")
                                     .expect("establish parked wire");
@@ -326,7 +329,8 @@ fn credit_grants_source() {
                                     &[5, 5, 5],
                                     "one freed 5 cannot admit the 8-byte request"
                                 );
-                                let third = admitted.values().expect("admitted requests")[2];
+                                assert_eq!(settled.hits(), 1);
+                                let third = admitted.values().expect("admitted requests")[2].0;
                                 for address in [second, third] {
                                     peer(address)
                                         .write_all(b"open")
@@ -343,7 +347,7 @@ fn credit_grants_source() {
                                     &[5, 5, 5, 8],
                                     "the 8-byte request is granted last"
                                 );
-                                let fourth = admitted.values().expect("admitted requests")[3];
+                                let fourth = admitted.values().expect("admitted requests")[3].0;
                                 peer(fourth)
                                     .write_all(b"open")
                                     .expect("establish parked wire");
@@ -353,7 +357,7 @@ fn credit_grants_source() {
                                         .expect("progress wait"),
                                     fibers::Wait::Reached
                                 );
-                                for (&address, &length) in admitted
+                                for (&(address, marker), &length) in admitted
                                     .values()
                                     .expect("admitted requests")
                                     .iter()
@@ -362,7 +366,6 @@ fn credit_grants_source() {
                                     let mut bytes = [0; 8];
                                     let bytes = &mut bytes[..length];
                                     peer(address).read_exact(bytes).expect("read request");
-                                    let marker = if length == 5 { b'5' } else { b'8' };
                                     assert!(bytes.iter().all(|byte| *byte == marker));
                                 }
                             },
@@ -380,5 +383,6 @@ fn credit_grants_source() {
     assert_eq!(next.get(), 4);
     assert_eq!(moved.hits(), 4);
     assert_eq!(sent.hits(), 4);
+    assert_eq!(settled.hits(), 4);
     assert_eq!(admitted.values().expect("admitted requests").len(), 4);
 }

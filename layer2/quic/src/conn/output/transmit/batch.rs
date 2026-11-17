@@ -6,9 +6,10 @@ use crate::conn::life::datagram::Datagrams;
 use crate::conn::output::recovery;
 use crate::conn::output::transmit::{self, builder, builder::pending, permit, stage};
 use crate::conn::stream::state::receive;
-use crate::conn::wire::{packet, path};
+use crate::conn::wire::{packet, path, permits};
 use crate::stream;
 use crate::wire::{frame, packet::kind, stream::Initiator};
+use permits::Reservation as _;
 
 use app::{datagram::direct, early, rtt, terminal};
 use builder::app;
@@ -151,36 +152,56 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
         let mut left = packets;
         let mut hs_done = false;
 
-        let result: Result<(), transmit::Admission> = (|| {
+        let result: Result<bool, transmit::Admission> = (|| {
             stage::Stage::new(self.connection).snapshot(work, can_control)?;
 
-            while left != 0
-                && self.connection.egress.recovery.probe.allowance.is_armed()
-                && self
-                    .connection
-                    .egress
-                    .recovery
-                    .probe
-                    .epoch
-                    .is_some_and(|epoch| {
-                        fit::can_probe(&permit::Permit::new(self.connection), epoch)
-                    })
-            {
-                let Some(ceiling) = permit::Permit::new(self.connection).send_limit(mtu) else {
-                    break;
+            if left != 0 && self.connection.egress.recovery.probe.allowance.is_armed() {
+                let keys = &self.connection.handshake.keys;
+                let count = match self.connection.egress.recovery.probe.epoch {
+                    Some(conn::Epoch::Initial) => {
+                        keys.long.initial().map_or(left, |key| key.limit(left))
+                    }
+                    Some(conn::Epoch::Handshake) => {
+                        keys.long.handshake().map_or(left, |key| key.limit(left))
+                    }
+                    Some(conn::Epoch::Application) if !keys.has_write() => {
+                        keys.long.early().map_or(left, |key| key.limit(left))
+                    }
+                    _ => left,
                 };
-                let Emission::Committed =
-                    self.emit_packet(sink, now, ceiling, commit, |builder, dst, ceiling| {
-                        builder.build_probe(now, dst, ceiling)
-                    })?
-                else {
-                    break;
-                };
-                left -= 1;
+                let floor = left - count;
+                while left != floor
+                    && self.connection.egress.recovery.probe.allowance.is_armed()
+                    && self
+                        .connection
+                        .egress
+                        .recovery
+                        .probe
+                        .epoch
+                        .is_some_and(|epoch| {
+                            fit::can_probe(&permit::Permit::new(self.connection), epoch)
+                        })
+                {
+                    let Some(ceiling) = permit::Permit::new(self.connection).send_limit(mtu) else {
+                        break;
+                    };
+                    let Emission::Committed =
+                        self.emit_packet(sink, now, ceiling, commit, |builder, dst, ceiling| {
+                            builder.build_probe(now, dst, ceiling)
+                        })?
+                    else {
+                        break;
+                    };
+                    left -= 1;
+                }
+                if left != 0 && left == floor {
+                    return Ok(true);
+                }
             }
 
-            if self.connection.handshake.keys.long.initial().is_some() {
-                while left != 0 {
+            if let Some(key) = self.connection.handshake.keys.long.initial() {
+                let floor = left - key.limit(left);
+                while left != floor {
                     let Some(intent) =
                         permit::Permit::new(self.connection).plan_crypto::<kind::Initial>(now)
                     else {
@@ -209,13 +230,17 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
                     left -= 1;
                     self.connection.egress.lifecycle.sent_initial = true;
                 }
+                if left != 0 && left == floor {
+                    return Ok(true);
+                }
             }
 
             if left != 0
-                && self.connection.handshake.keys.long.early().is_some()
                 && !self.connection.handshake.keys.has_write()
+                && let Some(key) = self.connection.handshake.keys.long.early()
             {
-                while left != 0 && permit::Permit::new(self.connection).can_send(now) {
+                let floor = left - key.limit(left);
+                while left != floor && permit::Permit::new(self.connection).can_send(now) {
                     let Some(ceiling) = permit::Permit::new(self.connection).send_limit(mtu) else {
                         break;
                     };
@@ -228,10 +253,14 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
                     };
                     left -= 1;
                 }
+                if left != 0 && left == floor {
+                    return Ok(true);
+                }
             }
 
-            if self.connection.handshake.keys.long.handshake().is_some() {
-                while left != 0 {
+            if let Some(key) = self.connection.handshake.keys.long.handshake() {
+                let floor = left - key.limit(left);
+                while left != floor {
                     let Some(intent) =
                         permit::Permit::new(self.connection).plan_crypto::<kind::Handshake>(now)
                     else {
@@ -259,6 +288,9 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
                     };
                     left -= 1;
                 }
+                if left != 0 && left == floor {
+                    return Ok(true);
+                }
             }
 
             if self.connection.handshake.keys.has_write() {
@@ -273,16 +305,15 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
                     if intent == permit::AppIntent::CongestionControlledDatagram {
                         break;
                     }
-                    let before = self.connection.egress.recovery.in_flight();
                     let Some(ceiling) = permit::Permit::new(self.connection).send_limit(mtu) else {
                         break;
                     };
-                    let done = match intent {
+                    let (done, flight) = match intent {
                         permit::AppIntent::AckOnly => {
                             let Emission::Committed = self.emit_ack(sink, now, mtu, commit)? else {
                                 break;
                             };
-                            false
+                            (false, false)
                         }
                         permit::AppIntent::CongestionControlledPacket => {
                             let Some(pn) = conn::Epoch::Application
@@ -296,7 +327,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
                                 ceiling,
                                 &pn,
                             );
-                            let Some(done) = self.emit_with(
+                            let Some(outcome) = self.emit_with(
                                 sink,
                                 now,
                                 permit.route(),
@@ -313,16 +344,16 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
                                     )
                                 },
                                 |commit| {
-                                    commit
-                                        .controls()
-                                        .iter()
-                                        .any(|control| control.kind() == frame::Kind::HandshakeDone)
+                                    let done = commit.controls().iter().any(|control| {
+                                        control.kind() == frame::Kind::HandshakeDone
+                                    });
+                                    (done, commit.plan().flags.is_in_flight())
                                 },
                             )?
                             else {
                                 break;
                             };
-                            done
+                            outcome
                         }
                         permit::AppIntent::CongestionControlledDatagram => {
                             break;
@@ -332,9 +363,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
                     if done {
                         hs_done = true;
                     }
-                    if intent == permit::AppIntent::CongestionControlledPacket
-                        && self.connection.egress.recovery.in_flight() == before
-                    {
+                    if intent == permit::AppIntent::CongestionControlledPacket && !flight {
                         break;
                     }
                 }
@@ -385,7 +414,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
                     })?;
                 }
             }
-            Ok(())
+            Ok(false)
         })();
 
         if hs_done && matches!(self.connection.peer.local, Initiator::Server) {
@@ -399,9 +428,14 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
             Ok(())
         };
         match (result, timing) {
-            (Ok(()), Ok(())) => Ok(()),
+            (Ok(exhausted), Ok(())) => {
+                if exhausted {
+                    stage::Stage::new(self.connection).exhaust_long();
+                }
+                Ok(())
+            }
             (Err(cause), Ok(())) => Err(transmit::Error::Admission(cause)),
-            (Ok(()), Err(timing)) => Err(transmit::Error::Timing(timing)),
+            (Ok(_), Err(timing)) => Err(transmit::Error::Timing(timing)),
             (Err(cause), Err(timing)) => Err(transmit::Error::Finalize {
                 admission: cause,
                 timing,
@@ -469,24 +503,40 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Batch<'a, D
             limit
         }
         .min(destination.max_payload());
-        sink.try_emit(
-            self,
-            limit,
-            destination.overhead(),
-            |prepared: &pending::Packet<'_, DOMAIN, B, D>| prepared.destination().overhead(),
-            |batch, dst, limit| {
-                build(
-                    builder::Builder::new(batch.connection, destination, &mut batch.records),
-                    dst,
-                    limit,
-                )
-            },
-            |prepared| {
-                let value = inspect(&prepared);
-                commit(prepared, now);
-                value
-            },
-        )
+        let Some(mut permit) = sink.reserve(limit, &destination)? else {
+            return Ok(None);
+        };
+        let limit = permit.limit();
+        let built = {
+            let mut out = permit.out();
+            build(
+                builder::Builder::new(self.connection, destination, &mut self.records),
+                &mut out,
+                limit,
+            )
+        };
+        let prepared = match built {
+            Ok(Some(prepared)) => prepared,
+            Ok(None) => {
+                permit.rollback();
+                return Ok(None);
+            }
+            Err(error) => {
+                permit.rollback();
+                return Err(error);
+            }
+        };
+        let ready = match permit.validate(prepared.destination().overhead()) {
+            Ok(ready) => ready,
+            Err(permit) => {
+                permit.rollback();
+                return Ok(None);
+            }
+        };
+        let value = inspect(&prepared);
+        commit(prepared, now);
+        <S::Reservation<'_> as permits::Reservation>::publish(ready);
+        Ok(Some(value))
     }
 
     fn emit_ack<S: packet::Sink, C>(

@@ -251,7 +251,7 @@ impl Observed {
     /// another flush. Quiescence drains any erroneous send before pool release.
     pub fn capture<R>(
         config: Config,
-        settled: impl for<'d> FnOnce(SendOutcome<'d, KeyTag<24>>),
+        settled: impl FnOnce(SendOutcome),
         policy: impl recovery::Observe,
         finish: impl for<'owner> FnOnce(
             Result<Result<Self, Error>, scope::Error<'owner, Result<Self, Error>>>,
@@ -318,7 +318,7 @@ impl Observed {
                             };
                             {
                                 let mut driver = scope.context();
-                                match pool.sender(key).ok_or(Error::Sender)?.submit(&mut driver) {
+                                match pool.sender(key).ok_or(Error::Sender)?.submit(&mut driver, drop) {
                                     transmit::Attempt::Rejected(cause, _) => {
                                         return Err(Error::Rejected(cause));
                                     }
@@ -339,12 +339,23 @@ impl Observed {
                             let sent = done.outcome();
                             let resubmit = {
                                 let mut driver = scope.context();
-                                settled(pool.settle(done).settle_owned(
-                                    &mut driver,
-                                    |slot| slot.discard(),
-                                    |_, _| {},
-                                ));
-                                pool.sender(key).ok_or(Error::Sender)?.submit(&mut driver)
+                                let mut settlement = Err(Error::Sender);
+                                pool.settle(
+                                    done, &mut driver, &mut (),
+                                    |_, slot| slot.discard(),
+                                    |_, _, _, _| {},
+                                    |_, completion, _| {
+                                        let dope_net::link::pool::send::Completion::Ready(owner, outcome) = completion else {
+                                            settlement = Err(Error::Submitted);
+                                            return;
+                                        };
+                                        drop(owner.publish(|_| {}));
+                                        settled(outcome);
+                                        settlement = Ok(());
+                                    },
+                                );
+                                settlement?;
+                                pool.sender(key).ok_or(Error::Sender)?.submit(&mut driver, drop)
                             };
                             let status = pool.get_mut(key).ok_or(Error::Connection)?.send_status();
                             Ok(Observed {

@@ -5,9 +5,8 @@ use crate::{
     runtime::{mux, routing},
     stream,
 };
-use conn::{id, wire};
+use conn::id;
 use mux::{auth, handler, manage, router};
-use wire::packet;
 
 #[repr(transparent)]
 pub struct Config<
@@ -44,12 +43,12 @@ impl<
 
     pub fn enable_gso(&mut self) -> Result<(), manage::GsoError> {
         let limits = manage::gso_limits()?;
-        self.mux.as_mut().project().state.outgoing.cache.batch = Some(packet::Gso::new(limits));
+        self.mux.as_mut().project().state.outgoing.cache.gso = Some(limits);
         Ok(())
     }
 
     pub fn disable_gso(&mut self) {
-        self.mux.as_mut().project().state.outgoing.cache.batch = None;
+        self.mux.as_mut().project().state.outgoing.cache.gso = None;
     }
 
     pub fn try_resize(&mut self, max: usize) -> Result<(), ResizeError> {

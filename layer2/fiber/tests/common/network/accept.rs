@@ -26,9 +26,14 @@ use dope_fiber::{
     context::wake::RootWaker,
     net::server::{self, accept::Accept},
     task::storage::{
-        phase,
-        scope::{Scope, Scoped},
-        set::{self, Access as _},
+        fixed::{
+            local::Removal,
+            schedule::{
+                self as storage,
+                result::{Outcome, Selection},
+            },
+        },
+        scope::Scope,
     },
 };
 use dope_test::harness::{peer, scenario};
@@ -170,21 +175,13 @@ where
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ControlFlow<io::Event<'d>> {
-        let (owner, (), (done, turn, driver)) = call.into_parts();
-        let kind = done.into_kind();
-        let (bit, deferred) = match &kind {
+    fn dispatch<'event>(
+        owner: Pin<&mut Self>,
+        done: executor::raw::Dispatch<'event, 'd>,
+        turn: schedule::Turn<'_, 'd>,
+        driver: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
+        let (bit, deferred) = match done.as_ref() {
             Kind::Accept(done) => (
                 1,
                 matches!(done.outcome(), io::event::net::accept::Outcome::Accepted(_)),
@@ -200,11 +197,7 @@ where
                 permit.run(|| ());
             }
         }
-        let result = L::dispatch(executor::raw::Call::new(
-            this.inner,
-            (),
-            (kind.into(), turn, driver),
-        ));
+        let result = L::dispatch(this.inner, done, turn, driver);
         if blocked
             && matches!(&result, ControlFlow::Break(_)) != deferred
             && this.failure.get().is_none()
@@ -227,12 +220,12 @@ where
 }
 
 pub struct CancelFirst<'s, 'a, 'w, 'd: 'w> {
-    pub tasks: Scope<'s, Pin<&'s mut set::Set<'d, Accept<'a, 'w, 'd, Identity>, bool, ()>>>,
+    pub tasks: Scope<'s, Pin<&'s mut storage::Pool<'d, Accept<'a, 'w, 'd, Identity>, (), bool>>>,
     pub handle: server::Handle<'a, 'w, 'd, Identity>,
     pub accepted: &'a Cell<bool>,
     pub addr: SocketAddr,
     pub peer: Option<peer::Stream<'static>>,
-    pub first: Option<Scoped<'s, 'd, ()>>,
+    pub first: Option<storage::Id<'s, 'd, ()>>,
 }
 
 impl<'a, 'w, 'd: 'w> root::Root<'d> for CancelFirst<'_, 'a, 'w, 'd> {
@@ -247,42 +240,51 @@ impl<'a, 'w, 'd: 'w> root::Root<'d> for CancelFirst<'_, 'a, 'w, 'd> {
         if this.accepted.get()
             && let Some(first) = this.first.take()
         {
-            assert!(this.tasks.remove(first).is_ok(), "cancel woken accept");
+            assert!(
+                matches!(this.tasks.remove(first), Removal::Removed),
+                "cancel woken accept"
+            );
         }
-        if this.peer.is_none() {
+        let registering = this.peer.is_none();
+        if registering {
             let parent = RootWaker::from(target);
             let first = this
                 .tasks
-                .try_insert(this.handle.accept(), false, parent)
-                .expect("first accept task");
-            let second = this
+                .try_admit((), parent)
+                .expect("first accept task")
+                .insert((this.handle.accept(), false));
+            let _second = this
                 .tasks
-                .try_insert(this.handle.accept(), true, parent)
-                .expect("second accept task");
-            this.tasks.poll_ready(work, &mut driver);
-            for id in [&first, &second] {
-                assert!(
-                    this.tasks
-                        .inspect(id, |_, state| state == phase::State::Running)
-                        == Some(true),
-                    "both accepts must be pending before connecting"
-                );
-            }
+                .try_admit((), parent)
+                .expect("second accept task")
+                .insert((this.handle.accept(), true));
             this.first = Some(first);
+        }
+        let mut pending = 0;
+        loop {
+            let outcome = match this.tasks.as_mut().select(work) {
+                Selection::Ready(item) => item.drive(&mut driver),
+                Selection::Idle | Selection::Yielded => break,
+            };
+            match outcome {
+                Outcome::Pending { target } | Outcome::PendingReady { target } => {
+                    pending |= 1 << u8::from(target);
+                }
+                Outcome::Complete { target, output } => {
+                    assert!(target, "only the surviving accept may complete");
+                    return Poll::Ready((output, this.peer.take().expect("connected peer")));
+                }
+                Outcome::Yielded { output, .. } => match output {},
+            }
+        }
+        if registering {
+            assert_eq!(pending, 3, "both accepts must be pending before connecting");
             this.peer = Some(
                 peer::Peer::at(this.addr)
                     .try_read(scenario::TIMEOUT)
                     .expect("connect after waiter registration"),
             );
-        } else {
-            this.tasks.poll_ready(work, &mut driver);
         }
-        match this.tasks.take_done() {
-            Some((second, result)) => {
-                assert!(second, "only the surviving accept may complete");
-                Poll::Ready((result, this.peer.take().expect("connected peer")))
-            }
-            None => Poll::Pending,
-        }
+        Poll::Pending
     }
 }

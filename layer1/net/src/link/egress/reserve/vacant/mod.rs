@@ -1,6 +1,6 @@
 use std::mem;
 
-use metadata::pool::{self, store};
+use metadata::pool::store;
 use o3::base::cell::region;
 use slots::Slots;
 
@@ -9,7 +9,7 @@ use crate::link::egress::{
     load::{Value, credit},
     metadata,
     reserve::{
-        Bounds, Publish,
+        Bounds, Geometry, Publish,
         bounds::Shape,
         demand,
         error::Error,
@@ -36,17 +36,18 @@ pub struct Vacant<
     'd,
     B: data::raw::Payload<'d>,
     D: demand::Mode = demand::Fallible,
+    G: Geometry = Bounds,
 > {
-    bounds: Bounds,
-    state: Guard<'token, 'd, Slots<'queue, 'p, 'd, B, D>>,
+    pub(super) bounds: G,
+    pub(super) state: Guard<'token, 'd, Slots<'queue, 'p, 'd, B, D, G>>,
 }
 
-impl<'queue, 'token, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode>
-    Vacant<'queue, 'token, 'p, 'd, B, D>
+impl<'queue, 'token, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode, G: Geometry>
+    Vacant<'queue, 'token, 'p, 'd, B, D, G>
 {
     pub(super) const fn empty(
         token: &'token mut region::Token<region::Identity<'d>>,
-        bounds: Bounds,
+        bounds: G,
     ) -> Self {
         Self {
             bounds,
@@ -54,55 +55,39 @@ impl<'queue, 'token, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode>
         }
     }
 
-    pub(super) fn try_new(
-        bounds: Bounds,
-        shape: Shape,
-        token: &'token mut region::Token<region::Identity<'d>>,
-        mut credit: credit::Reserve<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
-    ) -> Result<Self, egress::Admission> {
+    pub(super) fn acquire(
+        &mut self,
+        shape: G::Selection,
+        credit: credit::Reserve<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
+    ) -> Result<(), egress::Admission> {
+        let (token, state) = self.state.parts_mut();
         let queue = credit.queue();
         let slots = match queue.pool.store.reservation(token) {
             Ok(slots) => slots,
             Err(token) => {
                 credit.rollback(token);
-                return Err(storage(queue.lane, bounds, egress::Entries::new(0)));
+                return Err(storage(queue.lane, self.bounds.bounds(), egress::Entries::new(0)));
             }
         };
-        let (token, slots) = match shape {
-            Shape::First => {
-                let claim = credit::Claim::from(credit);
-                let (token, index) = slots.reserve();
-                (token, Slots::First(pool::Vacant::new(claim, index, ())))
+        let (first, second) = match G::kind(shape) {
+            Shape::First | Shape::Second => {
+                let (_, first) = slots.reserve();
+                (first, None)
             }
-            Shape::Second => {
-                let claim = credit::Claim::from(credit);
-                let (token, index) = slots.reserve();
-                (token, Slots::Second(pool::Vacant::new(claim, index, ())))
-            }
-            Shape::Pair(pair) => {
+            Shape::Pair => {
                 let slots = match slots.pair() {
                     store::Pairing::Two(slots) => slots,
                     store::Pairing::One(token) => {
                         credit.rollback(token);
-                        return Err(storage(queue.lane, bounds, egress::Entries::new(1)));
+                        return Err(storage(queue.lane, self.bounds.bounds(), egress::Entries::new(1)));
                     }
                 };
-                let first = credit::Claim::from(credit.split_pair(pair));
-                let second = credit::Claim::from(credit);
-                let (token, idx, next) = slots.reserve();
-                (
-                    token,
-                    Slots::Pair(
-                        pool::Vacant::new(first, idx, ()),
-                        pool::Vacant::new(second, next, ()),
-                    ),
-                )
+                let (_, first, second) = slots.reserve();
+                (first, Some(second))
             }
         };
-        Ok(Self {
-            bounds,
-            state: Guard::new(token, slots),
-        })
+        *state = Slots::Reserved(credit, G::store(shape, first, second));
+        Ok(())
     }
 
     pub fn try_publish(
@@ -127,7 +112,7 @@ const _: () = {
                 Guard<
                     'static,
                     'static,
-                    Slots<'static, 'static, 'static, &'static [u8], demand::Fallible>,
+                    Slots<'static, 'static, 'static, &'static [u8], demand::Fallible, Bounds>,
                 >,
             )>()
     );
@@ -138,7 +123,7 @@ const _: () = {
                 Guard<
                     'static,
                     'static,
-                    Slots<'static, 'static, 'static, &'static [u8], demand::Fallible>,
+                    Slots<'static, 'static, 'static, &'static [u8], demand::Fallible, Bounds>,
                 >,
             )>()
     );

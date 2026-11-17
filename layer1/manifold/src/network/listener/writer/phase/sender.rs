@@ -1,104 +1,219 @@
+use std::pin;
+
 use dope_core::driver::{self, route::Identity};
-use dope_net::link::{egress, pool, pool::pending::Handle, slot::transmit};
-use o3::{depot, depot::index::Initialized};
+use dope_net::{
+    link::{egress, event, pool, pool::pending::Handle, slot::transmit},
+    wire::send::reclaim,
+};
+use o3::depot;
 
 use crate::network::listener::{
-    self, handler,
+    self, conn, handler,
     writer::{
         self,
         deadline::{self, Slot},
     },
 };
 
-type Source<'a, 'n, 'p, 's, 'w, 'd, ID, A> = transmit::Sender<
+use super::{Wake, flow, state};
+
+pub(super) type Source<'a, 'n, 'p, 's, 'w, 'd, ID, A, T> = transmit::Sender<
     'a,
     'n,
     'w,
     'd,
     ID,
+    T,
     <A as handler::Application<'d, ID>>::Wire,
     writer::Record<'p, 's, 'd, ID, A>,
+    <A as handler::Application<'d, ID>>::Input,
     writer::Payload<'p, 's, 'd, ID, <A as handler::Application<'d, ID>>::Egress>,
     { listener::IOV_CAP },
     writer::Reserve<'d, <A as handler::Application<'d, ID>>::Egress>,
 >;
 
-type Admitted<'a, 'n, 'p, 's, 'w, 'd, ID, A> = depot::raw::Proof<
-    (
-        (
-            Source<'a, 'n, 'p, 's, 'w, 'd, ID, A>,
-            &'a mut deadline::Schedule<'d, ID>,
-        ),
-        pool::Key<'d, ID>,
-    ),
-    Initialized<()>,
->;
-
-pub(in crate::network::listener::writer) struct Sender<
-    'a,
-    'n,
-    'p,
-    's,
-    'w,
-    'd: 'w,
-    ID: Identity,
-    A: handler::Application<'d, ID>,
-> {
-    source: Source<'a, 'n, 'p, 's, 'w, 'd, ID, A>,
+pub(super) fn view<'a, 'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
+    source: &'a mut Source<'_, 'n, 'p, 's, 'w, 'd, ID, A, T>,
     schedule: &'a mut deadline::Schedule<'d, ID>,
-}
-
-impl<'a, 'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A> Sender<'a, 'n, 'p, 's, 'w, 'd, ID, A>
+) -> (
+    &'a crate::Flights<'d, ID>,
+    Slot<'a, 'p, 's, 'w, 'd, ID, A::Wire, A::Conn, A::Egress>,
+    Handle<'a, 'd, ID>,
+    egress::Queue<
+        'a,
+        'n,
+        'd,
+        { listener::IOV_CAP },
+        writer::Payload<'p, 's, 'd, ID, A::Egress>,
+        writer::Reserve<'d, A::Egress>,
+    >,
+)
 where
     A: handler::Application<'d, ID>,
 {
-    pub(in crate::network::listener::writer) fn view(
-        &mut self,
-    ) -> (
-        &crate::Flights<'d, ID>,
-        Slot<'_, 'p, 's, 'w, 'd, ID, A::Wire, A::Conn, A::Egress>,
-        Handle<'_, 'd, ID>,
-        egress::Queue<
-            '_,
-            'n,
-            'd,
-            { listener::IOV_CAP },
-            writer::Payload<'p, 's, 'd, ID, A::Egress>,
-            writer::Reserve<'d, A::Egress>,
-        >,
-    ) {
-        let pool::EgressMut {
-            flights,
-            connection: conn,
-            pending,
-            queue,
-        } = self.source.view();
-        let key = conn.key();
-        (
-            flights,
-            // SAFETY: `view` lent the initialized transmit sender for this exact
-            // key, and the writer's schedule is keyed by that lane.
-            Slot::from(unsafe { depot::raw::Proof::new(((conn, &mut *self.schedule), key)) }),
-            pending,
-            queue,
-        )
-    }
+    let pool::EgressMut {
+        flights,
+        connection: conn,
+        pending,
+        queue,
+    } = source.view();
+    let key = conn.key();
+    (
+        flights,
+        // SAFETY: the admitted sender and schedule are borrowed from the same writer.
+        Slot::from(unsafe { depot::raw::Proof::new(((conn, schedule), key)) }),
+        pending,
+        queue,
+    )
+}
 
-    pub(in crate::network::listener::writer) fn submit(
-        &mut self,
-        driver: &mut driver::Context<'_, 'd>,
-    ) -> transmit::Attempt {
-        self.source.submit(driver)
+pub(super) fn commit_end<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
+    source: &mut Source<'_, 'n, 'p, 's, 'w, 'd, ID, A, T>,
+    schedule: &mut deadline::Schedule<'d, ID>,
+    app: pin::Pin<&mut A>,
+    driver: &mut driver::Context<'_, 'd>,
+) where
+    A: handler::Application<'d, ID>,
+{
+    let (slots, mut slot, pending, _) = view::<ID, A, T>(source, schedule);
+    let key = slot.key();
+    let finish = slot.sending().finish(slots, driver);
+    pending.wait_send(slot.send_status().is_waiting());
+    let closed = match &finish {
+        transmit::Finalize::Rejected(failure) => {
+            slot.state.send.fail(conn::Transmit::Rejected(*failure))
+        }
+        transmit::Finalize::Armed(())
+        | transmit::Finalize::Settled
+        | transmit::Finalize::Abandoned => None,
+    };
+    match finish {
+        transmit::Finalize::Armed(()) => {
+            slot.ensure_send(driver.driver_ref().clock().now());
+        }
+        transmit::Finalize::Settled
+        | transmit::Finalize::Abandoned
+        | transmit::Finalize::Rejected(_) => slot.cancel_send(),
+    }
+    if let Some(body) = closed {
+        writer::release_egress(app, key, body, handler::Disposition::Closed);
     }
 }
 
-impl<'a, 'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A> From<Admitted<'a, 'n, 'p, 's, 'w, 'd, ID, A>>
-    for Sender<'a, 'n, 'p, 's, 'w, 'd, ID, A>
+pub(super) fn commit_chunk<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
+    source: &mut Source<'_, 'n, 'p, 's, 'w, 'd, ID, A, T>,
+    schedule: &mut deadline::Schedule<'d, ID>,
+    mut app: pin::Pin<&mut A>,
+    wake: Wake,
+    driver: &mut driver::Context<'_, 'd>,
+) -> flow::Flow
 where
     A: handler::Application<'d, ID>,
 {
-    fn from(proof: Admitted<'a, 'n, 'p, 's, 'w, 'd, ID, A>) -> Self {
-        let ((source, schedule), _) = proof.into_inner();
-        Self { source, schedule }
+    let mut projection = view::<ID, A, T>(source, schedule);
+    let (slots, slot, handle, egress) = &mut projection;
+    let key = slot.key();
+    match wake {
+        Wake::Progress => {
+            slot.progress(driver.driver_ref().clock().now());
+        }
+        Wake::Pending | Wake::Capacity => {
+            slot.ensure_send(driver.driver_ref().clock().now());
+        }
+        Wake::Ingress | Wake::Send => {}
     }
+    let result = if slot.is_closing() {
+        Ok(flow::Flow::Clear)
+    } else {
+        let pending = egress.pending();
+        let flow = slot.flow(pending);
+        let flow = match (flow, wake) {
+            (flow::Flow::Stalled, Wake::Capacity | Wake::Ingress | Wake::Progress | Wake::Send) => {
+                flow::Flow::Plain
+            }
+            (flow, _) => flow,
+        };
+        match flow {
+            flow::Flow::Inflight => Ok(flow::Flow::Inflight),
+            flow::Flow::Done => Ok(flow::Flow::Done),
+            flow::Flow::Plain => {
+                slot.advance_send(slots, *handle, driver);
+                let pending = egress.pending();
+                Ok(slot.flow(pending))
+            }
+            flow::Flow::Stalled | flow::Flow::Held | flow::Flow::Clear => {
+                use transmit::outcome;
+
+                let mode = slot.state.send.mode();
+                let progress = match &mode {
+                    state::Mode::Queued => slot.sending().flush_queue(slots, driver),
+                    state::Mode::Direct => slot.sending().flush_direct(slots, driver),
+                };
+                handle.wait_send(slot.send_status().is_waiting());
+                match progress {
+                    outcome::Progress::Submitted | outcome::Progress::Idle => {
+                        let pending = egress.pending();
+                        Ok(slot.flow(pending))
+                    }
+                    outcome::Progress::Rejected(error) => {
+                        slot.sending().discard();
+                        let failure = match mode {
+                            state::Mode::Queued => event::SendFailure::Queued(error),
+                            state::Mode::Direct => event::SendFailure::Direct(error),
+                        };
+                        Err(conn::Transmit::Rejected(failure))
+                    }
+                }
+            }
+            flow::Flow::Deferred => {
+                drop(projection);
+                let done = source.submit(driver, |body| {
+                    writer::release_payload(app.as_mut(), key, body, handler::Disposition::Sent);
+                });
+                projection = view::<ID, A, T>(source, schedule);
+                let slot = &projection.1;
+                match done {
+                    transmit::Attempt::Runnable(
+                        reclaim::Advance::Idle | reclaim::Advance::Ready,
+                    ) => Ok(flow::Flow::Deferred),
+                    transmit::Attempt::Waiting => {
+                        if slot.send_status().is_inflight() {
+                            Ok(flow::Flow::Inflight)
+                        } else {
+                            Ok(flow::Flow::Clear)
+                        }
+                    }
+                    transmit::Attempt::Quiescent(
+                        reclaim::Advance::Idle | reclaim::Advance::Ready,
+                    ) => Ok(flow::Flow::Clear),
+                    transmit::Attempt::Invalid(error) => Err(conn::Transmit::Invalid(error)),
+                    transmit::Attempt::Rejected(
+                        failure,
+                        reclaim::Advance::Idle | reclaim::Advance::Ready,
+                    ) => Err(conn::Transmit::Rejected(failure)),
+                }
+            }
+        }
+    };
+    let (_, mut slot, handle, egress) = projection;
+    let result = match result {
+        Ok(result) => result,
+        Err(failure) => {
+            if let Some(egress) = slot.state.send.fail(failure) {
+                writer::release_egress(app.as_mut(), key, egress, handler::Disposition::Closed);
+            }
+            flow::Flow::Clear
+        }
+    };
+    if !matches!(wake, Wake::Pending | Wake::Capacity)
+        && (matches!(result, flow::Flow::Inflight)
+            || matches!(egress.pending(), egress::Pending::Present))
+    {
+        slot.ensure_send(driver.driver_ref().clock().now());
+    }
+
+    if matches!(result, flow::Flow::Plain | flow::Flow::Deferred) {
+        handle.wake();
+    }
+    result
 }

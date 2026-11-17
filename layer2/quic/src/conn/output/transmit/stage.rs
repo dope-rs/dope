@@ -22,6 +22,17 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Stage<'a, D
         Self { conn }
     }
 
+    pub(super) fn exhaust_long(&mut self) -> bool {
+        if !self.conn.handshake.keys.has_write() {
+            self.conn.close_now();
+            return true;
+        }
+        let _ = self
+            .conn
+            .queue_close(Close::LocalTransport(conn::AEAD_LIMIT_REACHED));
+        false
+    }
+
     pub(super) fn snapshot(
         &mut self,
         work: usize,
@@ -68,14 +79,8 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment> Stage<'a, D
             self.conn.close_now();
             return Ok(Outcome::Closed);
         }
-        if self.conn.handshake.keys.long.is_exhausted() {
-            if !self.conn.handshake.keys.has_write() {
-                self.conn.close_now();
-                return Ok(Outcome::Closed);
-            }
-            let _ = self
-                .conn
-                .queue_close(Close::LocalTransport(conn::AEAD_LIMIT_REACHED));
+        if self.conn.handshake.keys.long.is_exhausted() && self.exhaust_long() {
+            return Ok(Outcome::Closed);
         }
         if !self.conn.handshake.keys.has_write() {
             return Ok(Outcome::Ready(None));

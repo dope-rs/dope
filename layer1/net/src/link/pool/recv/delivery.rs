@@ -1,8 +1,11 @@
 use std::marker;
 
-use dope_core::driver::{
-    route::{Identity, KeyTag},
-    schedule::{app::batch::Bound, ready},
+use dope_core::{
+    driver::{
+        route::{Identity, KeyTag, kind},
+        schedule::{app::batch::Bound, ready},
+    },
+    io::recv::Lease,
 };
 use o3::mem;
 use receive::{batch, mode};
@@ -31,7 +34,8 @@ where
 {
     prepared: Prepared<'a, 'w, 'd, ID, W, M::Ingress>,
     rearm: recv::Rearm<'a, 'd, ID>,
-    event: event::Data<'d, R>,
+    bytes: Lease<'d>,
+    receipt: R,
     input: marker::PhantomData<M>,
 }
 
@@ -85,9 +89,12 @@ where
         'd: 'w,
         W: 'w + 'd,
     {
-        let (bytes, receipt) = data.event.into_lease();
-        let next = data.prepared.scoped(bytes);
-        Data::<ID, W, input::Retained, R>::finish_owned(data.rearm, next, receipt)
+        Data::<ID, W, input::Retained, R>::scoped_with(
+            data.prepared,
+            data.rearm,
+            data.bytes,
+            |chunk| (chunk, data.receipt),
+        )
     }
 }
 
@@ -104,10 +111,74 @@ where
         'd: 'w,
         W: 'w + 'd,
     {
-        let target = data.rearm.key().target().dispatch();
-        let (bytes, receipt) = data.event.into_lease();
-        let next = data.prepared.retained(target, bytes);
-        Data::<ID, W, input::Retained, R>::finish_owned(data.rearm, next, receipt)
+        let Data {
+            mut prepared,
+            mut rearm,
+            mut bytes,
+            receipt,
+            input: marker::PhantomData,
+        } = data;
+        let key = rearm.key();
+        let (remaining, finished) = prepared.discard(&mut bytes);
+        if remaining.is_zero() {
+            let control = slot::Control::Discarded {
+                needs_rearm: prepared.needs_rearm,
+                finished,
+            };
+            drop(bytes);
+            drop(prepared);
+            return event::DispatchRecv::Control(
+                Data::<ID, W, input::Retained, R>::control(rearm, control),
+            );
+        }
+        let credit = match <W::Retained as mode::Stored>::arm(
+            prepared.credit,
+            key.target().dispatch(),
+            prepared.engine.ready_handle().target(),
+        ) {
+            Ok(credit) => credit,
+            Err(cause) => {
+                let control = slot::Control::Credit {
+                    cause,
+                    needs_rearm: prepared.needs_rearm,
+                };
+                drop(bytes);
+                drop(prepared);
+                return event::DispatchRecv::Control(
+                    Data::<ID, W, input::Retained, R>::control(rearm, control),
+                );
+            }
+        };
+        let read = <W::Receive as receive::Policy<W>>::read_lease::<ID>(
+            prepared.transaction,
+            bytes,
+            prepared.end,
+        )
+        .map(|cursor| cursor.map(Chunk::from_raw));
+        let (item, captured) = read.into_parts();
+        Prepared::<ID, W, W::Retained>::capture(
+            prepared.engine,
+            &mut prepared.needs_rearm,
+            captured,
+        );
+        match item {
+            Some(cursor) => {
+                prepared.engine.operations.recv.pause();
+                prepared.needs_rearm |= prepared.engine.operations.recv.has_cancel();
+                let chunk = cursor.retain(credit.claim().into_return());
+                if prepared.needs_rearm {
+                    rearm.queue();
+                }
+                event::DispatchRecv::Chunk(key, (chunk, receipt))
+            }
+            None => {
+                credit.cancel();
+                if prepared.needs_rearm {
+                    rearm.queue();
+                }
+                event::DispatchRecv::Control(event::ControlRecv::NoChunk(key))
+            }
+        }
     }
 }
 
@@ -122,30 +193,51 @@ where
         rearm: recv::Rearm<'a, 'd, ID>,
         event: event::Data<'d, R>,
     ) -> Self {
+        let (bytes, receipt) = event.into_lease();
         Self {
             prepared: prep,
             rearm,
-            event,
+            bytes,
+            receipt,
             input: marker::PhantomData,
         }
     }
 
-    pub(in crate::link::pool::recv) fn finish<C>(
+    fn scoped_with<C>(
+        mut prepared: Prepared<'a, 'w, 'd, ID, W, M::Ingress>,
         mut rearm: recv::Rearm<'_, 'd, ID>,
-        next: slot::Decision<C>,
+        mut bytes: Lease<'d>,
+        pack: impl FnOnce(Chunk<'w, 'd, W, Disabled>) -> C,
     ) -> event::DispatchRecv<'d, ID, C> {
         let key = rearm.key();
-        match next {
-            slot::Decision::Control(ctl) => event::DispatchRecv::Control(Self::control(rearm, ctl)),
-            slot::Decision::Chunk {
-                chunk,
-                needs_rearm: arm,
-            } => {
-                if arm {
-                    rearm.queue();
-                }
-                event::DispatchRecv::Chunk(key, chunk)
-            }
+        let (remaining, finished) = prepared.discard(&mut bytes);
+        if remaining.is_zero() {
+            let control = slot::Control::Discarded {
+                needs_rearm: prepared.needs_rearm,
+                finished,
+            };
+            drop(bytes);
+            drop(prepared);
+            return event::DispatchRecv::Control(Self::control(rearm, control));
+        }
+        let read = <W::Receive as receive::Policy<W>>::read_lease::<ID>(
+            prepared.transaction,
+            bytes,
+            prepared.end,
+        )
+        .map(|cursor| cursor.map(Chunk::from_raw));
+        let (item, captured) = read.into_parts();
+        Prepared::<ID, W, M::Ingress>::capture(
+            prepared.engine,
+            &mut prepared.needs_rearm,
+            captured,
+        );
+        if prepared.needs_rearm {
+            rearm.queue();
+        }
+        match item {
+            Some(chunk) => event::DispatchRecv::Chunk(key, pack(chunk)),
+            None => event::DispatchRecv::Control(event::ControlRecv::NoChunk(key)),
         }
     }
 
@@ -184,19 +276,6 @@ where
             }
         }
     }
-
-    fn finish_owned<C>(
-        rearm: recv::Rearm<'_, 'd, ID>,
-        next: slot::Decision<C>,
-        receipt: R,
-    ) -> event::DispatchRecv<'d, ID, (C, R)> {
-        match Self::finish(rearm, next) {
-            event::DispatchRecv::Control(control) => event::DispatchRecv::Control(control),
-            event::DispatchRecv::Chunk(key, chunk) => {
-                event::DispatchRecv::Chunk(key, (chunk, receipt))
-            }
-        }
-    }
 }
 
 impl<'a, 'w, 'd, ID: Identity + 'w, W, M, R> Data<'a, 'w, 'd, ID, W, M, R>
@@ -218,9 +297,57 @@ where
     where
         'w: 'bytes,
     {
-        let event = backing.insert(self.event);
-        let (next, unused) = self.prepared.data(event.lease_mut(), cap);
-        (Self::finish(self.rearm, next), unused)
+        let Self {
+            mut prepared,
+            mut rearm,
+            bytes,
+            receipt,
+            input: marker::PhantomData,
+        } = self;
+        let key = rearm.key();
+        let token = key.target().operation::<kind::Recv>().erase_route();
+        let event = backing.insert(event::Data::new(token, bytes).with_receipt(receipt));
+        let (remaining, finished) = prepared.discard(event.lease_mut());
+        if remaining.is_zero() {
+            let unused = cap.empty();
+            let control = slot::Control::Discarded {
+                needs_rearm: prepared.needs_rearm,
+                finished,
+            };
+            drop(prepared);
+            return (
+                event::DispatchRecv::Control(Self::control(rearm, control)),
+                unused,
+            );
+        }
+        let read = <W::Receive as receive::Policy<W>>::process::<ID>(
+            prepared.transaction,
+            event.lease_mut().as_mut_slice(),
+            batch::Grant::new(cap),
+            prepared.end,
+        );
+        let (produced, captured) = read.into_parts();
+        let (chunk, unused) = produced.into_parts();
+        Prepared::<ID, W, M::Ingress>::capture(
+            prepared.engine,
+            &mut prepared.needs_rearm,
+            captured,
+        );
+        let next = if receive::raw::Batch::is_empty(&chunk) {
+            drop(chunk);
+            event::DispatchRecv::Control(Self::control(
+                rearm,
+                slot::Control::NoChunk {
+                    needs_rearm: prepared.needs_rearm,
+                },
+            ))
+        } else {
+            if prepared.needs_rearm {
+                rearm.queue();
+            }
+            event::DispatchRecv::Chunk(key, batch::Items::from_raw(chunk))
+        };
+        (next, unused)
     }
 }
 
@@ -231,9 +358,8 @@ where
     M: input::Kind<W> + ScopedData,
 {
     pub fn scoped(self) -> event::DispatchRecv<'d, ID, Chunk<'w, 'd, W, Disabled>> {
-        let (bytes, _) = self.event.into_lease();
-        let next = self.prepared.scoped(bytes);
-        Self::finish(self.rearm, next)
+        drop(self.receipt);
+        Self::scoped_with(self.prepared, self.rearm, self.bytes, std::convert::identity)
     }
 }
 

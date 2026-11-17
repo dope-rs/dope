@@ -4,7 +4,7 @@ use dope_core::{
     driver::{
         receive::{Stale, credit::error::Arm},
         result, route,
-        route::{Identity, KeyTag, kind, table::conn},
+        route::{Identity, kind, table::conn},
     },
     io::{event::net::recv, recv::Lease, socket, transfer},
 };
@@ -261,6 +261,17 @@ pub enum SendFailure<E> {
     WriteShutdown(E),
 }
 
+impl SendSource {
+    pub(in crate::link) fn failure<E>(self, error: E) -> SendFailure<E> {
+        match self {
+            Self::Direct => SendFailure::Direct(error),
+            Self::Queued => SendFailure::Queued(error),
+            Self::Terminal => SendFailure::Terminal(error),
+            Self::WriteShutdown => SendFailure::WriteShutdown(error),
+        }
+    }
+}
+
 impl<E> SendFailure<E> {
     pub fn into_error(self) -> E {
         match self {
@@ -272,42 +283,17 @@ impl<E> SendFailure<E> {
     }
 }
 
-/// Fully settled send result. No kernel or queued-egress authority crosses
-/// this boundary.
-#[must_use = "the fully settled send outcome must be dispatched"]
-pub enum SendOutcome<'d, ID: Identity, D = ()> {
-    Queued {
-        key: pool::Key<'d, ID>,
-        acknowledged: transfer::Len,
-    },
-    Direct {
-        key: pool::Key<'d, ID>,
-        settled: D,
-    },
-    WriteShutdown {
-        key: pool::Key<'d, ID>,
-    },
-    Terminal {
-        key: pool::Key<'d, ID>,
-    },
-    Rejected {
-        key: pool::Key<'d, ID>,
-        failure: SendFailure<result::SubmitError>,
-    },
-    Failed {
-        key: pool::Key<'d, ID>,
-        failure: SendFailure<dope_core::Errno>,
-    },
-    Invalid {
-        key: pool::Key<'d, ID>,
-        error: transmit::Invalid,
-    },
-    Close(pool::Key<'d, ID>),
-    CloseSent {
-        key: pool::Key<'d, ID>,
-        acknowledged: transfer::Len,
-    },
-    Drop,
+/// The send result at its retained publication owner.
+#[must_use = "the send outcome must be dispatched"]
+pub enum SendOutcome {
+    Queued { acknowledged: transfer::Len },
+    WriteShutdown,
+    Terminal,
+    Rejected { failure: SendFailure<result::SubmitError> },
+    Failed { failure: SendFailure<dope_core::Errno> },
+    Invalid { error: transmit::Invalid },
+    Close,
+    Pending,
 }
 
 const _: () = {
@@ -349,6 +335,6 @@ const _: () = {
     );
     assert!(std::mem::size_of::<DirectStatus>() == std::mem::size_of::<usize>());
     assert!(
-        std::mem::size_of::<SendOutcome<'static, KeyTag<0>>>() == 5 * std::mem::size_of::<usize>()
+        std::mem::size_of::<SendOutcome>() <= 3 * std::mem::size_of::<usize>()
     );
 };

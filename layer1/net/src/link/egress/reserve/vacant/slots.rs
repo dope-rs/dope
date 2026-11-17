@@ -3,9 +3,9 @@ use o3::base::cell::region;
 use crate::link::egress::{
     NonEmpty, data,
     load::{Value, credit},
-    metadata::pool,
+    metadata::pool::{self, store::index::Index},
     reserve::{
-        Bounds, Publish, demand,
+        Geometry, Publish, demand,
         error::{self, Error},
         guard::Rollback,
         limit,
@@ -13,22 +13,34 @@ use crate::link::egress::{
 };
 
 #[must_use = "reserved slots must be committed or rolled back"]
-pub(super) enum Slots<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode> {
+pub(in crate::link::egress::reserve) enum Slots<
+    'queue,
+    'p,
+    'd,
+    B: data::raw::Payload<'d>,
+    D: demand::Mode,
+    G: Geometry,
+> {
     Empty,
-    First(pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, B::Position>),
-    Second(pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, B::Position>),
-    Pair(
-        pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, B::Position>,
-        pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, B::Position>,
-    ),
+    Reserved(Reserved<'queue, 'p, 'd, B, D>, G::Indices<Index<'d>>),
 }
 
-fn validate<B>(
-    bounds: Bounds,
+type Reserved<'queue, 'p, 'd, B, D> = credit::Reserve<
+    'queue,
+    'p,
+    'd,
+    B,
+    credit::Ready<'p, 'd>,
+    D,
+    <B as data::raw::Payload<'d>>::Position,
+>;
+
+fn validate<B, G: Geometry>(
+    bounds: G,
     first: Option<Value<B>>,
     second: Option<Value<B>>,
 ) -> Result<(Option<NonEmpty<B>>, Option<NonEmpty<B>>), Error<B>> {
-    let (first, second) = if first.is_none() && second.is_some() && !bounds.has_second() {
+    let (first, second) = if first.is_none() && second.is_some() && !bounds.second().is_active() {
         (second, None)
     } else {
         (first, second)
@@ -45,7 +57,7 @@ fn validate<B>(
             return Err(Error::invalid(
                 error::Part::First,
                 reason,
-                bounds,
+                bounds.bounds(),
                 Some(Value::Unchecked(load)),
                 second,
             ));
@@ -58,7 +70,7 @@ fn validate<B>(
             return Err(Error::invalid(
                 error::Part::Second,
                 reason,
-                bounds,
+                bounds.bounds(),
                 first.map(Value::Checked),
                 Some(Value::Unchecked(load)),
             ));
@@ -67,10 +79,12 @@ fn validate<B>(
     Ok((first, second))
 }
 
-impl<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode> Slots<'queue, 'p, 'd, B, D> {
+impl<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode, G: Geometry>
+    Slots<'queue, 'p, 'd, B, D, G>
+{
     pub(super) fn try_publish(
         self,
-        bounds: Bounds,
+        bounds: G,
         first: Option<Value<B>>,
         second: Option<Value<B>>,
         token: &mut region::Token<region::Identity<'d>>,
@@ -82,105 +96,159 @@ impl<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode> Slots<'queue, '
                 return Err(error);
             }
         };
-        let (node, spare, load, is_second) = match (self, first, second) {
-            (slots, None, None) => {
-                slots.rollback(token);
-                return Ok(Publish::Empty);
-            }
-            (slots @ (Self::Empty | Self::Second(_)), Some(first), second) => {
-                return Self::reject(
-                    slots,
-                    error::Mismatch::First(limit::Mismatch::Empty {
+        if first.is_none() && second.is_none() {
+            self.rollback(token);
+            return Ok(Publish::Empty);
+        }
+        let (credit, indices) = match self {
+            Self::Empty => {
+                let cause = match &first {
+                    Some(first) => error::Mismatch::First(limit::Mismatch::Empty {
                         actual: first.geometry().wire(),
                     }),
+                    None => {
+                        let Some(second) = &second else {
+                            unreachable!("loads");
+                        };
+                        error::Mismatch::UnexpectedSecond {
+                            wire: second.geometry().wire(),
+                            resident: second.geometry().resident(),
+                        }
+                    }
+                };
+                return Err(Error::changed(
+                    cause,
+                    bounds.bounds(),
+                    first.map(Value::Checked),
+                    second.map(Value::Checked),
+                ));
+            }
+            Self::Reserved(credit, indices) => (credit, indices),
+        };
+        let (index, second_index, is_second) = G::parts(indices);
+        if is_second {
+            if let Some(first_load) = &first {
+                let cause = error::Mismatch::First(limit::Mismatch::Empty {
+                    actual: first_load.geometry().wire(),
+                });
+                return Self::reject(
+                    Self::Reserved(credit, indices),
+                    cause,
                     bounds,
-                    Some(Value::Checked(first)),
+                    first.map(Value::Checked),
                     second.map(Value::Checked),
                     token,
                 );
             }
-            (slots @ (Self::Empty | Self::First(_)), first, Some(second)) => {
+        }
+        if !is_second && second_index.is_none() {
+            if let Some(second_load) = &second {
+                let cause = error::Mismatch::UnexpectedSecond {
+                    wire: second_load.geometry().wire(),
+                    resident: second_load.geometry().resident(),
+                };
                 return Self::reject(
-                    slots,
-                    error::Mismatch::UnexpectedSecond {
-                        wire: second.geometry().wire(),
-                        resident: second.geometry().resident(),
-                    },
+                    Self::Reserved(credit, indices),
+                    cause,
                     bounds,
                     first.map(Value::Checked),
-                    Some(Value::Checked(second)),
+                    second.map(Value::Checked),
                     token,
                 );
             }
-            (Self::First(node), Some(load), None) => (node, None, load, false),
-            (Self::Second(node), None, Some(load)) => (node, None, load, true),
-            (Self::Pair(first, second), Some(load), None) => (first, Some(second), load, false),
-            (Self::Pair(first, second), None, Some(load)) => (second, Some(first), load, true),
-            (Self::Pair(left, right), Some(first), Some(second)) => {
-                let a = match bind(left, first, bounds.first()) {
-                    Ok(part) => part,
-                    Err((left, first, cause)) => {
-                        return Self::reject(
-                            Self::Pair(left, right),
-                            error::Mismatch::First(cause),
-                            bounds,
-                            Some(Value::Checked(first)),
-                            Some(Value::Checked(second)),
-                            token,
-                        );
+        }
+        let (node, spare, load, is_second) = match second_index {
+            Some(second_index) => {
+                let mut credit = credit;
+                let left = pool::Vacant::new(
+                    credit::Claim::from(credit.split_pair(credit::Pair::new(
+                        bounds.first().resident(),
+                    ))),
+                    index,
+                    (),
+                );
+                let right = pool::Vacant::new(credit::Claim::from(credit), second_index, ());
+                match (first, second) {
+                    (Some(first), Some(second)) => {
+                        let a = match bind::<_, _, G, false>(left, first, bounds) {
+                            Ok(part) => part,
+                            Err((left, first, cause)) => {
+                                right.rollback(token);
+                                left.rollback(token);
+                                return Err(Error::changed(
+                                    error::Mismatch::First(cause),
+                                    bounds.bounds(),
+                                    Some(Value::Checked(first)),
+                                    Some(Value::Checked(second)),
+                                ));
+                            }
+                        };
+                        let b = match bind::<_, _, G, true>(right, second, bounds) {
+                            Ok(part) => part,
+                            Err((right, second, cause)) => {
+                                let (left, first) = a.into_parts();
+                                right.rollback(token);
+                                left.rollback(token);
+                                return Err(Error::changed(
+                                    error::Mismatch::Second(cause),
+                                    bounds.bounds(),
+                                    Some(Value::Checked(first)),
+                                    Some(Value::Checked(second)),
+                                ));
+                            }
+                        };
+                        a.publish(token);
+                        b.publish(token);
+                        return Ok(Publish::Published);
                     }
+                    (Some(load), None) => (left, Some(right), load, false),
+                    (None, Some(load)) => (right, Some(left), load, true),
+                    (None, None) => unreachable!("loads"),
+                }
+            }
+            None => {
+                let load = match (first, second) {
+                    (Some(load), None) | (None, Some(load)) => load,
+                    _ => unreachable!("loads"),
                 };
-                let b = match bind(right, second, bounds.second()) {
-                    Ok(part) => part,
-                    Err((right, second, cause)) => {
-                        let (left, first) = a.into_parts();
-                        return Self::reject(
-                            Self::Pair(left, right),
-                            error::Mismatch::Second(cause),
-                            bounds,
-                            Some(Value::Checked(first)),
-                            Some(Value::Checked(second)),
-                            token,
-                        );
-                    }
-                };
-                a.publish(token);
-                b.publish(token);
-                return Ok(Publish::Published);
+                (
+                    pool::Vacant::new(credit::Claim::from(credit), index, ()),
+                    None,
+                    load,
+                    is_second,
+                )
             }
         };
-        let limit = if is_second {
-            bounds.second()
+        let bound = if is_second {
+            bind::<_, _, G, true>(node, load, bounds)
         } else {
-            bounds.first()
+            bind::<_, _, G, false>(node, load, bounds)
         };
-        let commit = match bind(node, load, limit) {
+        let commit = match bound {
             Ok(commit) => commit,
             Err((node, load, cause)) => {
-                let (slots, cause, first, second) = if is_second {
-                    let slots = match spare {
-                        Some(first) => Self::Pair(first, node),
-                        None => Self::Second(node),
-                    };
+                let (cause, first, second) = if is_second {
+                    node.rollback(token);
+                    if let Some(first) = spare {
+                        first.rollback(token);
+                    }
                     (
-                        slots,
                         error::Mismatch::Second(cause),
                         None,
                         Some(Value::Checked(load)),
                     )
                 } else {
-                    let slots = match spare {
-                        Some(second) => Self::Pair(node, second),
-                        None => Self::First(node),
-                    };
+                    if let Some(second) = spare {
+                        second.rollback(token);
+                    }
+                    node.rollback(token);
                     (
-                        slots,
                         error::Mismatch::First(cause),
                         Some(Value::Checked(load)),
                         None,
                     )
                 };
-                return Self::reject(slots, cause, bounds, first, second, token);
+                return Err(Error::changed(cause, bounds.bounds(), first, second));
             }
         };
         if let Some(node) = spare {
@@ -193,22 +261,23 @@ impl<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode> Slots<'queue, '
     fn reject(
         self,
         cause: error::Mismatch,
-        bounds: Bounds,
+        bounds: G,
         first: Option<Value<B>>,
         second: Option<Value<B>>,
         token: &mut region::Token<region::Identity<'d>>,
     ) -> Result<Publish, Error<B>> {
-        let error = Error::changed(cause, bounds, first, second);
+        let error = Error::changed(cause, bounds.bounds(), first, second);
         self.rollback(token);
         Err(error)
     }
 }
 
-fn bind<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode>(
+fn bind<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode, G: Geometry, const SECOND: bool>(
     node: pool::Vacant<'queue, 'p, 'd, B, (), credit::Ready<'p, 'd>, D, B::Position>,
     load: NonEmpty<B>,
-    limit: limit::Limit,
+    bounds: G,
 ) -> Result<pool::Bound<'queue, 'p, 'd, B, D, B::Position>, BindFailure<'queue, 'p, 'd, B, D>> {
+    let limit = if SECOND { bounds.second() } else { bounds.first() };
     if let Err(cause) = limit.check(load.geometry().wire()) {
         return Err((node, load, cause));
     }
@@ -216,18 +285,21 @@ fn bind<'queue, 'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode>(
         .map_err(|(node, load, cause)| (node, load, limit::Mismatch::Credit(cause)))
 }
 
-impl<'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode> Rollback<'d> for Slots<'_, 'p, 'd, B, D> {
+impl<'p, 'd, B: data::raw::Payload<'d>, D: demand::Mode, G: Geometry> Rollback<'d>
+    for Slots<'_, 'p, 'd, B, D, G>
+{
     fn rollback(self, token: &mut region::Token<region::Identity<'d>>) {
-        match self {
-            Self::Empty => {}
-            Self::First(node) | Self::Second(node) => {
-                node.rollback(token);
-            }
-            Self::Pair(first, second) => {
-                second.rollback(token);
-                first.rollback(token);
-            }
+        let (credit, indices) = match self {
+            Self::Empty => return,
+            Self::Reserved(credit, indices) => (credit, indices),
+        };
+        let (first, second, _) = G::parts(indices);
+        let queue = credit.queue();
+        if let Some(second) = second {
+            queue.pool.store.recycle(token, second);
         }
+        queue.pool.store.recycle(token, first);
+        credit.rollback(token);
     }
 }
 

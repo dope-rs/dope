@@ -1,4 +1,4 @@
-use std::{cell::Cell, ops::ControlFlow, pin::Pin};
+use std::{cell::Cell, mem::MaybeUninit, ops::ControlFlow, pin::Pin};
 
 use dope_core::{
     driver::{
@@ -6,10 +6,11 @@ use dope_core::{
         route::{KeyTag, kind},
         schedule,
     },
-    io::{self, event::Kind, event::net::send, fd::handles},
+    io::{event::Kind, event::net::send, fd::handles},
 };
 use dope_manifold::app::dispatch::{self, event};
 use dope_runtime::executor;
+use o3::mem::slot;
 
 #[pin_project::pin_project]
 pub struct Observed<'a, 'd, M> {
@@ -79,27 +80,21 @@ impl<'d, M: event::Drive<'d, Access = dispatch::raw::Plain>> event::Drive<'d>
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ControlFlow<io::Event<'d>> {
-        let (owner, (), (done, mut driver)) = call.into_parts();
+    fn dispatch<'event>(
+        owner: Pin<&mut Self>,
+        done: executor::raw::Dispatch<'event, 'd>,
+        mut driver: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         let mut this = owner.project();
+        let (done, vacant) = done.into_event().take();
         let done = match done.into_kind() {
             Kind::Send(done) if this.rejected.get().is_none() => done,
             other => {
-                return M::dispatch(executor::raw::Call::new(
+                return M::dispatch(
                     this.endpoint,
-                    (),
-                    (other.into(), driver.narrow()),
-                ));
+                    executor::raw::Dispatch::new(vacant.insert(other.into())),
+                    driver.narrow(),
+                );
             }
         };
         if let Some(completed) = this.completed.take() {
@@ -108,19 +103,21 @@ impl<'d, M: event::Drive<'d, Access = dispatch::raw::Plain>> event::Drive<'d>
                 shutdown.matches(done.token()),
                 "terminal shutdown completion"
             );
-            let result = M::dispatch(executor::raw::Call::new(
+            let mut output = MaybeUninit::uninit();
+            let output = slot::Vacant::new(&mut output).insert(Kind::Send(done).into());
+            let result = M::dispatch(
                 this.endpoint.as_mut(),
-                (),
-                (Kind::Send(done).into(), driver.narrow()),
-            ));
+                executor::raw::Dispatch::new(output),
+                driver.narrow(),
+            );
             this.rejected.set(Some(result.is_break()));
             drop(result);
             drop(shutdown);
-            return M::dispatch(executor::raw::Call::new(
+            return M::dispatch(
                 this.endpoint,
-                (),
-                (Kind::Send(completed).into(), driver.narrow()),
-            ));
+                executor::raw::Dispatch::new(vacant.insert(Kind::Send(completed).into())),
+                driver.narrow(),
+            );
         }
         let space = driver.driver_ref().targets::<KeyTag<0>>();
         let target = space.parse(done.token()).ok().expect("datagram send route");

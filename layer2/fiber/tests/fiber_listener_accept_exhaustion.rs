@@ -18,7 +18,7 @@ use dope::{
 use dope_fiber::{
     BlockOn as _,
     net::server::{Config, Listener, Plan},
-    task::storage::{scope::Scope, set::Set},
+    task::storage::{fixed::schedule::Pool, scope::Scope},
 };
 use dope_test::{
     harness::{peer::Peer, scenario},
@@ -85,7 +85,7 @@ fn accepts_after_exhaustion_and_cancellation() {
                             |mut app| {
                                 let (mut io, peer) = if cancel_first {
                                     let mut tasks = pin!(
-                                        Set::try_new(Count::new(2)).expect("accept task storage")
+                                        Pool::try_new(Count::new(2)).expect("accept task storage")
                                     );
                                     let (result, peer) = Scope::with(tasks.as_mut(), |tasks| {
                                         app.drive_for(

@@ -27,8 +27,8 @@ impl io::Write for Output<'_> {
     }
 }
 
-pub(crate) fn drain(
-    conn: &mut rustls::Connection,
+pub(crate) fn drain<Data>(
+    conn: &mut rustls::ConnectionCommon<Data>,
     out: &mut pool::Cursor<pool::Layout, pool::Borrowed<'_>>,
 ) -> Result<(), error::Error> {
     if !conn.wants_write() {

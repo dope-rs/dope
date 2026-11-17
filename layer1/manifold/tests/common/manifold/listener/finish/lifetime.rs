@@ -22,7 +22,7 @@ use dope_net::{
     },
 };
 use dope_test::harness::{observe::Trace, signals::Gate};
-use o3::buffer::{bytes::TryRetain, resident};
+use o3::buffer::{bytes::TryRetain, resident, write::Sink as _};
 
 pub struct Lifetime {
     pub(crate) accept: Gate,
@@ -56,6 +56,18 @@ pub enum Event {
 pub struct Connection<'d> {
     deadline: Option<clock::Deadline<'d>>,
     remaining: Option<NonZero<u32>>,
+}
+
+fn write<'d, ID: route::Identity>(
+    conn: &mut conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Connection<'d>>,
+    driver: &mut driver::Context<'_, 'd>,
+) {
+    let mut output_slot = std::mem::MaybeUninit::uninit();
+    let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+    output.get_mut().parts().1.write_byte(b'x').expect("prefix capacity");
+    conn::write::Output::finish(output, conn::write::End::Open)
+        .map_err(conn::write::error::Mismatch::into_cause)
+        .expect("prefix publication");
 }
 
 impl<'d, ID: route::Identity> handler::Application<'d, ID> for Lifetime {
@@ -108,7 +120,10 @@ impl<'d, ID: route::Identity> handler::Application<'d, ID> for Lifetime {
         this.expire.hit();
         match &this.expiry {
             Expiry::Discard | Expiry::Reject => handler::Timeout::Discard,
-            Expiry::Clear => handler::Timeout::Continue(handler::Deadline::Clear),
+            Expiry::Clear => {
+                write(&mut conn, driver);
+                handler::Timeout::Continue(handler::Deadline::Clear)
+            }
             Expiry::Overflow | Expiry::Disabled => {
                 let now = driver.driver_ref().clock().now();
                 conn.state_mut().deadline = Some(now.into());
@@ -131,10 +146,13 @@ impl<'d, ID: route::Identity> handler::Application<'d, ID> for Lifetime {
 
     fn drain(
         self: Pin<&mut Self>,
-        conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
-        _: &mut driver::Context<'_, 'd>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
+        driver: &mut driver::Context<'_, 'd>,
     ) -> handler::Drain {
         let this = self.as_ref().get_ref();
+        if matches!(this.expiry, Expiry::Discard) {
+            write(&mut conn, driver);
+        }
         if let Expiry::Rearm { events, .. } = &this.expiry {
             events.record(Event::Drain(conn.id().index().into_usize()));
         }
@@ -214,14 +232,12 @@ impl<'d, ID: route::Identity> handler::Application<'d, ID> for Lifetime {
         }
         match &this.expiry {
             Expiry::Overflow => {
-                let Some(conn::Failure::Deadline(Error::Overflow(cause))) = conn.failure() else {
-                    panic!("deadline overflow");
-                };
-                assert_eq!(
-                    cause.origin(),
-                    conn.state().deadline.expect("failed origin").into_raw()
-                );
-                assert_eq!(cause.duration(), time::Duration::MAX);
+                let origin = conn.state().deadline.expect("failed origin").into_raw();
+                assert!(matches!(
+                    conn.failure(),
+                    Some(conn::Failure::Deadline(Error::Overflow(cause)))
+                        if cause.origin() == origin && cause.duration() == time::Duration::MAX
+                ));
             }
             Expiry::Disabled | Expiry::Reject => assert!(matches!(
                 conn.failure(),
@@ -249,6 +265,7 @@ pub struct DeadlineAdmission<'d> {
     pub(crate) activate: Rc<Cell<bool>>,
     pub(crate) completed: Gate,
     pub(crate) expired: Gate,
+    pub(crate) postpone: bool,
 }
 
 impl<'d, ID: route::Identity> handler::Application<'d, ID> for DeadlineAdmission<'d> {
@@ -283,6 +300,11 @@ impl<'d, ID: route::Identity> handler::Application<'d, ID> for DeadlineAdmission
     ) -> Outcome {
         let now = conn.work().clock().now();
         conn.deadline().try_ensure(now).expect("deadline");
+        if self.postpone {
+            conn.deadline()
+                .try_arm(now.clamp_add(time::Duration::from_millis(20)))
+                .expect("postponed deadline");
+        }
         self.target.set(Some(conn.wake_target()));
         Outcome::Continue
     }
@@ -321,5 +343,101 @@ impl<'w, 'd: 'w, ID: route::Identity> handler::Owned<'w, 'd, ID> for DeadlineAdm
         conn.deadline().cancel();
         self.completed.hit();
         Outcome::Continue
+    }
+}
+
+pub struct Released {
+    pub(crate) activated: Gate,
+    pub(crate) retired: Gate,
+}
+
+impl<'d, ID: route::Identity> handler::Application<'d, ID> for Released {
+    type Conn = bool;
+    type Build = convert::Infallible;
+    type Wire = Identity;
+    type WireFailure = failures::Close;
+    type Retirement = ();
+    type Egress = resident::Shared<'d>;
+    type Input = receive::Borrowed;
+    type Send = send::Silent;
+
+    fn connection(self: Pin<&Self>, _: &Seed) -> Result<bool, Self::Build> {
+        Ok(false)
+    }
+
+    fn build_failed(self: Pin<&mut Self>, cause: Self::Build) {
+        match cause {}
+    }
+
+    fn timing(&self) -> handler::Timing {
+        handler::Timing::managed()
+    }
+
+    fn deadline(self: Pin<&Self>, _: clock::Clock<'_, 'd>) -> Option<clock::Deadline<'d>> {
+        None
+    }
+
+    fn close(
+        self: Pin<&mut Self>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, bool>,
+    ) {
+        assert!(!*conn.state());
+        *conn.state_mut() = true;
+    }
+
+    fn activate<'e>(
+        self: Pin<&mut Self>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, bool>,
+        driver: &mut driver::Context<'_, 'd>,
+    ) {
+        if *conn.state() {
+            let at = driver.driver_ref().clock().now().into();
+            assert_eq!(conn.deadline().try_arm(at), Err(Error::Sealed));
+            let mut output = std::mem::MaybeUninit::uninit();
+            assert!(matches!(
+                conn.write().try_prefix(driver, &mut output),
+                Err(conn::write::error::Admission::Closed)
+            ));
+            self.activated.hit();
+        }
+    }
+}
+
+impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Released {
+    fn chunk<R: TryRetain>(
+        self: Pin<&mut Self>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, bool>,
+        _: R,
+        driver: &mut driver::Context<'_, 'd>,
+    ) -> Outcome {
+        let at = driver
+            .driver_ref()
+            .clock()
+            .now()
+            .clamp_add(time::Duration::from_secs(30));
+        conn.deadline().try_arm(at).expect("live deadline");
+        for _ in 0..2 {
+            let mut slot = std::mem::MaybeUninit::uninit();
+            let mut output = conn.write().try_prefix(driver, &mut slot).expect("queued output");
+            output.get_mut().parts().1.write_byte(b'x').expect("prefix capacity");
+            conn::write::Output::finish(output, conn::write::End::Open)
+                .map_err(conn::write::error::Mismatch::into_cause)
+                .expect("queued publication");
+        }
+        Outcome::Failed(receive::Failure::Contract)
+    }
+}
+
+impl<'d, ID: route::Identity> retire::Policy<'d, Released, ID> for () {
+    fn select() -> Option<Self> {
+        Some(())
+    }
+
+    fn retire(self, app: Pin<&mut Released>, conn: conn::Retired<'_, '_, 'd, ID, Identity, bool>) {
+        assert!(matches!(
+            conn.failure(),
+            Some(conn::Failure::Application(receive::Failure::Contract))
+        ));
+        app.retired.hit();
     }
 }

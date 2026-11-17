@@ -26,6 +26,53 @@ use dope_test::{
 use o3::base::time::Positive;
 
 #[test]
+fn released_backlog_keeps_authority_sealed() {
+    use common::manifold::listener::finish::lifetime::Released;
+    use dope_manifold::network::listener::conn::write;
+    use dope_net::link::egress;
+
+    let mut finish = Completion::new();
+    let activated = Gate::new();
+    let retired = Gate::new();
+    let prepared = Listener::new::<1>(Default::default())
+        .direct(0)
+        .egress(egress::Config::shared(egress::Credit::fixed::<
+            2,
+            { 2 * write::HEADER_CAPACITY as u32 },
+        >()))
+        .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Balanced>>((
+            Released {
+                activated: activated.clone(),
+                retired: retired.clone(),
+            },
+            Identity,
+        ))
+        .expect("listener layout");
+    let mut reports =
+        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
+    prepared
+        .with_run(
+            &mut finish,
+            |case| {
+                for count in 1..=2 {
+                    let before = activated.hits();
+                    let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+                    peer.write_all(b"REQ").expect("request");
+                    reached(case.try_wait(&retired, count), retired.hits(), count);
+                    assert!(activated.hits() > before, "activation after release");
+                }
+            },
+            recovery::Policy::new(|event| reports.push(event), recover),
+            native,
+        )
+        .expect("listener run");
+    assert!(
+        reports.events().expect("reclaimed events").is_empty(),
+        "unexpected reclaimed operations: {reports:?}"
+    );
+}
+
+#[test]
 fn persistent_and_clear_deadline() {
     for (expiry, count) in [
         (Expiry::Discard, 0),
@@ -34,6 +81,7 @@ fn persistent_and_clear_deadline() {
         (Expiry::Disabled, 1),
         (Expiry::Reject, 0),
     ] {
+        let sends = matches!(expiry, Expiry::Clear);
         let closes = u32::from(matches!(
             expiry,
             Expiry::Overflow | Expiry::Disabled | Expiry::Reject
@@ -79,6 +127,13 @@ fn persistent_and_clear_deadline() {
                     assert_eq!(expire.hits(), count);
                     assert_eq!(begun.hits(), 0);
                     assert_eq!(closed.hits(), closes);
+                    if sends {
+                        peer.read_wait(Some(Duration::from_secs(1)))
+                            .expect("read bound");
+                        let mut response = [0];
+                        peer.read_exact(&mut response).expect("timeout response");
+                        assert_eq!(response, [b'x']);
+                    }
                     assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
                 },
                 recovery::Policy::new(|event| reports.push(event), recover),
@@ -133,6 +188,9 @@ fn drain_bound() {
                         reached(case.try_wait(&closed, 1), closed.hits(), 1);
                         assert_eq!(expire.hits(), 0);
                         assert_eq!(begun.hits(), 1);
+                        let mut response = [0];
+                        peer.read_exact(&mut response).expect("drain response");
+                        assert_eq!(response, [b'x']);
                         assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
                     }
                     if matches!(drain, handler::Drain::Complete) {
@@ -321,7 +379,7 @@ fn overdue_application_backlog_remains_admitted() {
 }
 
 #[test]
-fn retained_native_input_cannot_cancel_expired_application_deadline() {
+fn retained_native_input_observes_actual_deadline() {
     use std::cell::Cell;
 
     use common::{
@@ -335,7 +393,7 @@ fn retained_native_input_cannot_cancel_expired_application_deadline() {
     use dope_net::wire::domain;
     use dope_runtime::executor::{Executor, session};
 
-    for activation in [false, true] {
+    for (activation, postpone) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut finish = Completion::new();
         let completed = Gate::new();
         let expired = Gate::new();
@@ -367,6 +425,7 @@ fn retained_native_input_cannot_cancel_expired_application_deadline() {
                             activate: Rc::clone(&activate),
                             completed: completed.clone(),
                             expired: expired.clone(),
+                            postpone,
                         },
                         hash,
                         &mut session,
@@ -425,7 +484,7 @@ fn retained_native_input_cannot_cancel_expired_application_deadline() {
                                             Duration::from_secs(1),
                                             Until {
                                                 gate: &completed,
-                                                hits: 1,
+                                                hits: if postpone && activation { 2 } else { 1 },
                                             },
                                         )
                                         .expect("settle held native input")
@@ -439,8 +498,9 @@ fn retained_native_input_cannot_cancel_expired_application_deadline() {
                                 )
                                 .expect("listener teardown");
                             assert_eq!(
-                                expired, 1,
-                                "application callback cancelled a due deadline; activation={activation}",
+                                expired,
+                                u32::from(!postpone),
+                                "actual deadline admission; activation={activation}, postpone={postpone}",
                             );
                         },
                     )

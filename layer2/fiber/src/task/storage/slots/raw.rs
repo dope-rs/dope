@@ -76,6 +76,14 @@ impl<F, O> Task<F, O> {
         }
     }
 
+    pub(crate) fn take(self: pin::Pin<&mut Self>) -> Option<O> {
+        if self.state != State::Staged {
+            return None;
+        }
+        // SAFETY: this exclusive slot retains its initialized terminal output.
+        Some(unsafe { Done::exact(self) }.take())
+    }
+
     pub(crate) fn visit<I, R>(
         self: pin::Pin<&mut Self>,
         input: I,
@@ -88,22 +96,33 @@ impl<F, O> Task<F, O> {
         if state == State::Staged {
             return Phase::Done(input);
         }
+        // SAFETY: the retained exclusive slot is live after the phase selection.
+        Phase::Live(unsafe { self.visit_live(input, run) })
+    }
+
+    /// # Safety
+    /// This exact exclusive slot must retain its live pinned fiber.
+    pub(crate) unsafe fn visit_live<I, R>(
+        self: pin::Pin<&mut Self>,
+        input: I,
+        run: impl for<'b> FnOnce(pin::Pin<&'b mut F>, I) -> Action<O, R>,
+    ) -> R {
         // SAFETY: Live selects fiber, and the enclosing Slot pin pins this field.
         let this = unsafe { self.get_unchecked_mut() };
         let fiber = unsafe { pin::Pin::new_unchecked(&mut *this.value.fiber) };
         match run(fiber, input) {
-            Action::Keep(result) => Phase::Live(result),
+            Action::Keep(result) => result,
             Action::Complete(output, result) => {
                 // SAFETY: Live selects this initialized pinned fiber.
                 unsafe { this.value.drop_fiber() };
                 this.value.output = ManuallyDrop::new(output);
                 this.state = State::Staged;
-                Phase::Live(result)
+                result
             }
         }
     }
 
-    pub(super) fn cancel(self: pin::Pin<&mut Self>, before: impl FnOnce()) {
+    pub(crate) fn cancel(self: pin::Pin<&mut Self>, before: impl FnOnce()) {
         if self.state != State::Live {
             return;
         }

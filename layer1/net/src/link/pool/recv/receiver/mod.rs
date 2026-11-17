@@ -1,31 +1,21 @@
-use std::ops::ControlFlow;
-
 use dope_core::driver::route::Identity;
 use o3::mem::quota;
-
-use crate::{
-    link::pool::recv::storage::tail::Slot,
-    wire::receive::{Chunk, mode::Disabled},
-};
 
 pub(in crate::link::pool::recv) mod observed;
 pub(in crate::link::pool::recv) mod resume;
 
 use dope_core::driver::{self, retained::flight::cancel::Outcome, route, schedule::maint};
 use input::Dispatch;
-use storage::{queue::Ops as _, tail};
+use observed::{Delivery as _, Observation, Observed};
 
 use crate::{
     link::{
-        duplex,
         duplex::Cancel,
         egress::{data, reserve::demand},
         event,
         pool::{
-            self, pending,
-            recv::{
-                Deferral, Failure, Ready, Resumption, arrival, delivery, input, reserve, storage,
-            },
+            self,
+            recv::{Failure, Ready, Resumption, arrival, delivery, input, reserve},
         },
     },
     wire::{self, open::Runtime as _},
@@ -67,17 +57,38 @@ where
 
     /// Reserves the statically selected ingress policy for one observed data
     /// completion.
-    pub fn data<A>(
+    pub fn data<A, O>(
         self,
         done: A,
         capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
-    ) -> reserve::Reservation<'a, 'w, 'd, ID, W, M>
+        consume: impl for<'loan> FnOnce(reserve::Reservation<'loan, 'w, 'd, ID, W, M>) -> O,
+    ) -> (Option<pool::Entry<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>>, O)
     where
         A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
         M::Reserve: reserve::Choice<W, M::Ingress>,
         input::Receipt<W, M>: 'a,
     {
-        <M::Reserve as reserve::Choice<W, M::Ingress>>::reserve(self.pool, done, capture)
+        let (event, timing) = done.observe().into_parts();
+        let key = match self.pool.keys.parse(event.token()) {
+            Ok(key) => key.connection(),
+            Err(_) => {
+                drop(event);
+                return (None, consume(event::Reservation::Drop));
+            }
+        };
+        let mut entry = match self.pool.entry(key) {
+            Ok(entry) => entry,
+            Err(_) => {
+                drop(event);
+                return (None, consume(event::Reservation::Drop));
+            }
+        };
+        let next = match reserve::Plan::observe(&mut entry, event, timing, capture) {
+            Ok(plan) => <M::Reserve as reserve::Choice<W, M::Ingress>>::reserve(plan),
+            Err(next) => next,
+        };
+        let output = consume(next);
+        (Some(entry), output)
     }
 
     pub fn arm(
@@ -169,12 +180,35 @@ where
         Ok(())
     }
 
-    pub fn dispatch<A>(&mut self, item: A) -> event::Dispatch<'d, ID>
+    pub fn dispatch<A>(
+        self,
+        item: A,
+    ) -> (
+        Option<pool::Entry<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>>,
+        event::Dispatch<'d, ID>,
+    )
     where
         A: arrival::Arrival<'d, Observed = event::Control<'d>>,
         M::Ingress: Dispatch<W>,
     {
-        <M::Ingress as Dispatch<W>>::dispatch(self.pool, item.observe())
+        let (item, timing) = item.observe().into_parts();
+        let key = match self.pool.keys.parse(item.token()) {
+            Ok(key) => key.connection(),
+            Err(_) => return (None, event::Dispatch::Retired(item.retire())),
+        };
+        let mut entry = match self.pool.entry(key) {
+            Ok(entry) => entry,
+            Err(_) => return (None, event::Dispatch::Retired(item.retire())),
+        };
+        let next = match Observed::<ID, W, S, M>::observe(&mut entry, item, timing) {
+            Observation::Complete(done) => done,
+            Observation::Ready(next, storage) => {
+                <M::Ingress as Dispatch<W>>::Delivery::<'_, 'd, input::Receipt<W, M>>::ready(
+                    next, storage,
+                )
+            }
+        };
+        (Some(entry), next)
     }
 
     pub fn resume(&mut self, target: route::Target<'d, ID>) -> Resumption<'d, ID>
@@ -196,97 +230,5 @@ where
         M::Ingress: Dispatch<W>,
     {
         <M::Ingress as Dispatch<W>>::pop(self.pool, item)
-    }
-
-    pub fn defer(
-        &mut self,
-        key: pool::Key<'d, ID>,
-        chunk: Chunk<'w, 'd, W, Disabled>,
-    ) -> Deferral<'w, 'd, W>
-    where
-        M::Kind: input::Replay<W>,
-    {
-        let Some((slot, mut recv)) =
-            Slot::receive::<M::Ingress, _>(&mut self.pool.prepared.slab, key.parts())
-        else {
-            return Deferral::Unavailable(chunk);
-        };
-        let (mut entry, tail) = slot.queue::<W, M::Kind>().split();
-        let Some(vacant) = tail.vacant() else {
-            return Deferral::Occupied(chunk);
-        };
-        vacant.insert(chunk);
-        let slot = entry.get_mut();
-        slot.engine.operations.recv.pause();
-        if slot.terminal.is_read_done() && slot.engine.operations.recv.has_cancel() {
-            recv.rearm.queue();
-        } else {
-            recv.rearm.remove();
-        }
-        slot.io().ready_handle().activate();
-        Deferral::Ready
-    }
-
-    /// Stops at an application-held tail without removing its cursor.
-    pub fn take_tail<'b>(
-        &'b mut self,
-        item: &delivery::Resumed<'d, ID>,
-    ) -> ControlFlow<(), Option<tail::Taken<'b, 'w, 'd, W>>>
-    where
-        M::Kind: input::Replay<W>,
-        'd: 'b,
-        'w: 'b,
-    {
-        let key = item.key();
-        let Some(slot) = Slot::new(&mut self.pool.prepared.slab, key.parts()) else {
-            return ControlFlow::Continue(None);
-        };
-        let (entry, tail) = slot.queue::<W, M::Kind>().split();
-        let Some(occupied) = tail.occupied() else {
-            return ControlFlow::Continue(None);
-        };
-        if entry.get().is_app_held() {
-            return ControlFlow::Break(());
-        }
-        ControlFlow::Continue(Some(tail::Taken::new(occupied)))
-    }
-
-    pub fn finish_tail(&mut self, item: &delivery::Resumed<'d, ID>)
-    where
-        M::Kind: input::Replay<W>,
-    {
-        let key = item.key();
-        let (wake, close) = {
-            let slab = &mut self.pool.prepared.slab;
-            let Some((slot, mut recv)) = slab.get_mut(key.parts()) else {
-                return;
-            };
-            let queued = recv.storage.has_queued();
-            let close = slot.engine.operations.lifecycle.is_closing();
-            let arm = if slot.terminal.is_read_done() {
-                None
-            } else {
-                slot.engine.operations.recv.resume(close)
-            };
-            if arm.is_some_and(duplex::Rearm::is_needed) && !queued {
-                recv.rearm.queue();
-            }
-            let wake = queued
-                && !close
-                && (slot.terminal.is_read_done() || !slot.engine.operations.recv.is_paused());
-            (wake.then(|| slot.io().ready_handle()), close)
-        };
-        if let Some(ready) = wake {
-            ready.activate();
-        }
-        if close && let Some(handle) = pending::Pending::of(self.pool).at(key) {
-            handle.wake();
-        }
-    }
-
-    pub fn close_after(&mut self, key: pool::Key<'d, ID>) {
-        if let Some(slot) = self.pool.get_mut(key) {
-            slot.engine.operations.lifecycle.drain();
-        }
     }
 }

@@ -1,8 +1,12 @@
 use dope_sys::{
-    io::socket::option::{
-        tuning,
-        tuning::{Occupied as _, Table as _},
+    io::{
+        reactor::complete::{Outcome as _, Packet as _},
+        socket::option::{
+            tuning,
+            tuning::{Occupied as _, Table as _},
+        },
     },
+    kernel::Returned as _,
     probe::Stopped,
     table::token::{Tuning as _, host::Flight as _},
 };
@@ -16,10 +20,14 @@ use crate::{
     },
     io,
     io::{
-        event::{Kind, batch::Flow, net::connect},
+        event::{
+            Kind,
+            batch::Flow,
+            net::{connect, tuning as completion},
+        },
         outputs,
     },
-    ring::cqe::{Envelope, Occupied, Rejected, Tune, Tuning},
+    ring::cqe::{Envelope, Occupied, Rejected, Returned, Tune, Tuning},
 };
 
 pub(crate) struct Tuned<'state, 'q, 'd> {
@@ -33,31 +41,37 @@ enum Terminal<'q, 'd> {
 }
 
 impl<'state, 'q, 'd> Tuned<'state, 'q, 'd> {
-    pub(super) fn complete(self, outcome: Result<(), Errno>) -> io::Event<'d> {
+    pub(super) fn complete<'event>(
+        self,
+        outcome: Result<u32, Errno>,
+        output: o3::mem::slot::Vacant<'event, io::Event<'d>>,
+    ) -> o3::mem::slot::Occupied<'event, io::Event<'d>> {
         let Self { state, flight } = self;
         let option_failed = state.option_failed();
         state.clear();
-        match flight {
+        output.insert(match flight {
             Terminal::Connect(bound) => outputs::connected(
                 bound.complete(),
-                outcome.map_err(|errno| classify(errno, option_failed)),
+                outcome.map(|_| ()).map_err(|errno| classify(errno, option_failed)),
             ),
-            Terminal::Tuning(bound) => Kind::Tuning((bound, outcome).into()).into(),
-        }
+            Terminal::Tuning(bound) => {
+                Kind::Tuning(completion::Completion::from_value(bound, outcome)).into()
+            }
+        })
     }
 
-    pub(super) fn reclaim(self, result: Result<(), Errno>) -> io::Reclaimed {
+    pub(super) fn reclaim(self, result: Result<u32, Errno>) -> io::Reclaimed {
         let Self { state, flight } = self;
         let option_failed = state.option_failed();
         state.clear();
         match flight {
             Terminal::Connect(bound) => io::Reclaimed::Connect {
                 echo: fault::Echo::new(bound.end(Flow::Last)),
-                result: result.map_err(|errno| classify(errno, option_failed)),
+                result: result.map(|_| ()).map_err(|errno| classify(errno, option_failed)),
             },
             Terminal::Tuning(bound) => io::Reclaimed::Tuning {
                 echo: fault::Echo::new(bound.end(Flow::Last)),
-                result,
+                result: result.map(|_| ()),
             },
         }
     }
@@ -67,11 +81,8 @@ impl<'state, 'q, 'd> Tuned<'state, 'q, 'd> {
         txn: Tune,
         packet: Envelope<'d>,
         control: route::Control,
-    ) -> Result<(Self, Result<(), Errno>), Rejected<'d>> {
+    ) -> Result<(Self, Result<u32, Errno>), Rejected<'d>> {
         use dope_sys::table::token::host::Drain as _;
-        let outcome = packet.unit();
-        let ((packet, _), outcome) =
-            Stopped::attach((packet, fault::Subject::Control(control)), outcome)?;
         let state = match states.bind(txn.slot().raw()) {
             Ok(state) => state,
             Err(missing) => {
@@ -82,6 +93,15 @@ impl<'state, 'q, 'd> Tuned<'state, 'q, 'd> {
                 return Err(packet.reject(fault::Subject::Control(control), cause));
             }
         };
+        let (expected, value) = state.output();
+        let outcome = match packet.0.parts().outcome.bytes() {
+            Ok(Ok(actual)) if actual.get() as usize == expected => Ok(Ok(value)),
+            Ok(Ok(actual)) => Err(Returned::value(actual)),
+            Ok(Err(error)) => Ok(Err(error)),
+            Err(error) => Err(error),
+        };
+        let ((packet, _), outcome) =
+            Stopped::attach((packet, fault::Subject::Control(control)), outcome)?;
         let target = state.target();
         let Some(flight) = drain.bind(target) else {
             state.clear();

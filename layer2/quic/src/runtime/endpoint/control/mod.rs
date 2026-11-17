@@ -11,7 +11,6 @@ use crate::runtime::endpoint::reactor::buffers;
 use crate::runtime::mux::app;
 use crate::runtime::mux::manage;
 use crate::runtime::mux::protocol;
-use crate::runtime::mux::protocol::control::Control as _;
 use crate::runtime::mux::router::observed;
 use crate::runtime::mux::{handler, router};
 use crate::runtime::receive::Storage;
@@ -107,8 +106,6 @@ where
         handle: id::Handle<id::Driver<'d>, ID>,
         packet: datagram::Packet<'pool>,
     ) -> Result<(), mem::Rejected<Self, errors::SendFailure<datagram::Packet<'pool>>>> {
-        use crate::runtime::mux::protocol::dgram::Dgram as _;
-
         let maximum = self.mux.as_mut().output().byte_limit();
         if let Some(required) =
             num::NonZero::new(packet.resident()).filter(|required| required.get() > maximum)

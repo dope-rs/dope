@@ -34,7 +34,7 @@ struct Status {
     paused: bool,
 }
 
-pub(super) struct Plan<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w + 'd, S, M: input::Mode<W>>
+pub struct Plan<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w + 'd, S, M: input::Mode<W>>
 where
     'd: 'w,
     input::Receipt<W, M>: 'a,
@@ -54,28 +54,19 @@ where
     M: input::Mode<W>,
     input::Receipt<W, M>: 'a,
 {
-    pub(super) fn observe<T, B: data::raw::Payload<'d>, const IOV: usize, D, A>(
-        pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-        item: A,
+    pub(in crate::link::pool::recv) fn observe<T, B: data::raw::Payload<'d>, const IOV: usize, D>(
+        entry: &'a mut pool::Entry<'_, '_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
+        event: event::Data<'d>,
+        timing: arrival::Timing<input::Receipt<W, M>>,
         capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
     ) -> Result<Self, super::Reservation<'a, 'w, 'd, ID, W, M>>
     where
         T: crate::Transport,
         D: demand::Mode,
-        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        let (event, timing) = item.observe().into_parts();
         let target = event.token();
-        let key = match pool.keys.parse(target) {
-            Ok(key) => key,
-            Err(_) => return Err(event::Reservation::Drop),
-        };
-        let slab = &mut pool.prepared.slab;
-        let rt = &mut pool.prepared.runtime;
-        let (slot, recv) = match slab.get_mut(key.parts()) {
-            Some(bound) => bound,
-            None => return Err(event::Reservation::Drop),
-        };
+        let (rt, slot, recv) = entry.receive();
+        let key = slot.key();
         let close = slot.is_recv_done();
         let (arm, origin) = match &timing {
             arrival::Timing::Fresh(more) => {

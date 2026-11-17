@@ -4,13 +4,6 @@ use std::mem::size_of;
 
 use o3::mem;
 
-use crate::reply::retain;
-
-pub(in crate::reply) enum Tag {}
-
-pub(in crate::reply) type Grant<'credits, A> =
-    mem::raw::Grant<retain::raw::Lane<'credits, 1, Tag>, 1, A>;
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(in crate::reply) struct Unit;
 
@@ -61,4 +54,4 @@ impl Entries {
     }
 }
 
-const _: () = assert!(size_of::<Grant<'_, Unit>>() == size_of::<usize>());
+const _: () = assert!(size_of::<Unit>() == 0);

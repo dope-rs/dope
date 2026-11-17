@@ -1,4 +1,4 @@
-use std::ops;
+use std::{ops, pin};
 
 use dope::{
     core::driver::route::{Identity, KeyTag},
@@ -157,23 +157,16 @@ where
     type Access = dispatch::raw::Retained;
 
     /// Retains successful completions until their waiter wake has application credit.
-    fn dispatch<'app, 'driver, 'turn>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ops::ControlFlow<io::Event<'d>> {
-        let (mut owner, (), (done, turn, driver)) = call.into_parts();
-        let kind = done.into_kind();
-        if matches!(&kind, Kind::Accept(_) | Kind::Tuning(_))
+    fn dispatch<'event>(
+        mut owner: pin::Pin<&mut Self>,
+        done: executor::raw::Dispatch<'event, 'd>,
+        turn: schedule::Turn<'_, 'd>,
+        driver: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
+        let kind = done.as_ref();
+        if matches!(kind, Kind::Accept(_) | Kind::Tuning(_))
             && turn.app().remaining() == 0
-            && match &kind {
+            && match kind {
                 Kind::Accept(done) => {
                     matches!(done.outcome(), io::event::net::accept::Outcome::Accepted(_))
                 }
@@ -181,13 +174,9 @@ where
                 _ => false,
             }
         {
-            return ops::ControlFlow::Break(kind.into());
+            return ops::ControlFlow::Break(done);
         }
-        event::Turn::dispatch(executor::raw::Call::new(
-            owner.as_mut().project().inner,
-            (),
-            (kind.into(), turn, driver),
-        ))
+        event::Turn::dispatch(owner.as_mut().project().inner, done, turn, driver)
     }
 }
 

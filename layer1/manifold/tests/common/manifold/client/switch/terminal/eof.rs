@@ -76,8 +76,6 @@ impl Stateful for Decode {
     }
 
     type Storage<S> = S;
-    type Preview<'a> = &'a Head;
-    type Outcome<'d> = Head;
 
     fn storage<'d, S>(&self, source: S, _: &ParseState) -> S {
         source
@@ -94,19 +92,21 @@ impl Stateful for Decode {
     fn restart<'a, 'd, S>(&self, storage: &'a mut S, _: &ParseState) -> storage::Edit<'a, S> {
         Self::edit(storage)
     }
+}
 
+impl Decode {
     fn decode<'d, S, T, F>(
         &self,
         storage: &mut S,
         state: &mut ParseState,
         budget: &resident::Budget<'d>,
         limit: Limit,
-        _: impl FnOnce(Result<Self::Preview<'_>, &Self::Error>) -> codec::Admission<F>,
+        _: impl FnOnce(Result<&Head, &switch::Error>) -> codec::Admission<F>,
     ) -> codec::Step<T>
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
         T: response::Outcome,
-        F: FnOnce(Result<Self::Outcome<'d>, Self::Error>, &mut ParseState) -> T::Accepted,
+        F: FnOnce(Result<Head, switch::Error>, &mut ParseState) -> T::Accepted,
     {
         state.parsed = true;
         match storage.as_ref().len() {
@@ -122,7 +122,7 @@ impl Stateful for Decode {
         mut input: storage::Owner<'slot, 'id, S, ParseState>,
         budget: &resident::Budget<'d>,
         limit: Limit,
-        admit: impl FnOnce(Result<Self::Preview<'_>, &Self::Error>) -> codec::Admission<F>,
+        admit: impl FnOnce(Result<&Head, &switch::Error>) -> codec::Admission<F>,
     ) -> (
         storage::Owner<'slot, 'id, S, ParseState>,
         Result<codec::Finish<T>, T>,
@@ -130,7 +130,7 @@ impl Stateful for Decode {
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
         T: response::Outcome,
-        F: FnOnce(Result<Self::Outcome<'d>, Self::Error>, &mut ParseState) -> T::Accepted,
+        F: FnOnce(Result<Head, switch::Error>, &mut ParseState) -> T::Accepted,
     {
         let (storage, state) = input.parts();
         let result = codec::Input::with(storage, budget, limit, |input| {
@@ -138,9 +138,7 @@ impl Stateful for Decode {
         });
         (input, result)
     }
-}
 
-impl Decode {
     fn finish_once<'id, 'input, 'd, R: buffer::Cursor>(
         &self,
         state: &mut ParseState,
@@ -234,7 +232,6 @@ impl<'d> Stored<'d> for Eof {
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        use codec::Stateful as _;
         self.decode.decode(storage, state, budget, limit, |_| {
             codec::Admission::Ready(|result, state: &mut ParseState| self.deliver(result, state))
         })
@@ -253,7 +250,6 @@ impl<'d> Stored<'d> for Eof {
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        use codec::Stateful as _;
         self.decode.finish(input, budget, limit, |_| {
             codec::Admission::Ready(|result, state: &mut ParseState| self.deliver(result, state))
         })

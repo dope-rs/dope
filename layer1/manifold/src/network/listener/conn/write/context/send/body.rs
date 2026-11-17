@@ -1,7 +1,10 @@
 use conn::write;
 use dope_core::driver::{self, route::Identity};
 use dope_net::{
-    link::egress::{self, data},
+    link::{
+        egress::{self, data},
+        slot::transmit::outcome::Progress,
+    },
     wire,
 };
 use egress::reserve::{error, exact};
@@ -71,19 +74,19 @@ where
     if slot.send_status().is_closed() {
         return Admit::Closed(load);
     }
-    let conn::Output::Open {
+    let Some(conn::Open {
         slots,
         permit,
         held,
         queue,
-    } = &mut scope.output
+    }) = scope.output
     else {
         return Admit::Closed(load);
     };
     let slots = *slots;
     let ready = *permit;
     let target = slot.io().wake_target();
-    'admit: {
+    let progress = 'admit: {
         let flow = slot.flow(queue.pending());
         let (direct, _) = held.sources();
         let direct = if !matches!(&flow, Clear) {
@@ -101,8 +104,7 @@ where
                             .send
                             .begin(access::Direct::body(flight, inject(load)));
                         slot.ensure_send(now);
-                        slot.advance_send(slots, ready, driver);
-                        break 'admit;
+                        break 'admit slot.advance_send(slots, ready, driver);
                     }
                     Claim::Waiting => Direct::Waiting,
                 },
@@ -147,7 +149,12 @@ where
             exact::Outcome::Rejected(rejected) => return Admit::Unavailable(rejected),
         };
         publish(value);
-    }
-    lease.commit().run(|| ready.wake());
+        Progress::Idle
+    };
+    lease.commit().run(|| {
+        if !matches!(progress, Progress::Submitted) {
+            ready.wake();
+        }
+    });
     Admit::Committed
 }

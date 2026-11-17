@@ -337,6 +337,15 @@ pub trait Lifecycle<'w, 'd: 'w, ID: Identity = KeyTag<0>>: Receive<'d, ID> {
         token: &mut region::Token<region::Identity<'d, 1>>,
     );
 
+    fn settled(
+        &mut self,
+        _: conn::Id<'d, ID>,
+        payload: Self::Send,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        drop(payload);
+    }
+
     fn cancel(&mut self, payload: Self::Send, token: &mut region::Token<region::Identity<'d, 1>>);
 
     /// Observes the exact owned wire receive failure before transport teardown.

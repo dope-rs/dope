@@ -203,28 +203,21 @@ where
 {
     type Access = raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                schedule::Turn<'turn, 'd>,
-                raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ControlFlow<io::Event<'d>> {
-        let (owner, (), (done, turn, mut driver)) = call.into_parts();
+    fn dispatch<'event>(
+        owner: Pin<&mut Self>,
+        done: executor::raw::Dispatch<'event, 'd>,
+        turn: schedule::Turn<'_, 'd>,
+        mut driver: raw::Context<'_, 'd, Self::Access>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         let mut this = owner.project();
-        let kind = done.into_kind();
-        let check =
-            matches!(this.phase, Phase::Native) && matches!(&kind, io::event::Kind::Socket(_));
-        let result = event::Turn::dispatch(executor::raw::Call::new(
+        let check = matches!(this.phase, Phase::Native)
+            && matches!(done.as_ref(), io::event::Kind::Socket(_));
+        let result = event::Turn::dispatch(
             raw::Projection::inner_mut(this.inner.as_mut()),
-            (),
-            (kind.into(), turn.reborrow(), driver.reborrow()),
-        ));
+            done,
+            turn.reborrow(),
+            driver.reborrow(),
+        );
         if check {
             assert!(result.is_continue(), "native creation consumed");
             assert!(turn.maint().remaining() >= 2, "retry quota available");
@@ -282,10 +275,11 @@ where
             && let Some(ready) = this.registry.ready_target()
         {
             let observed = this.events.take();
-            let [first, second] = observed.conn.as_slice() else {
-                panic!("two primary targets");
-            };
-            let targets = [*first, *second];
+            let targets: [_; 2] = observed
+                .conn
+                .as_slice()
+                .try_into()
+                .expect("two primary targets");
             this.events.set(observed);
             for target in targets {
                 assert!(

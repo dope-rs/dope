@@ -4,13 +4,10 @@ use dope_core::driver::{self, route, route::Identity, schedule};
 use dope_net::{
     link::{
         egress::data::{self, compose, exec},
-        event::{self, ParkError},
+        event::ParkError,
         pool::{
             self,
-            recv::{
-                arrival, input,
-                reserve::{Choice, Reservation},
-            },
+            recv::{input, reserve::Choice},
         },
     },
     wire::terminal,
@@ -26,9 +23,15 @@ use crate::{
     network::listener::{
         self, conn, handler,
         runtime::control,
-        writer::{memory, phase},
+        writer::{self, memory, phase},
     },
 };
+
+pub(crate) struct Context<'a, 'p, 's, 'd, ID: Identity, A: handler::Application<'d, ID>> {
+    closing: writer::Closing<'a, 'a, 'a, 'p, 'd, ID, A>,
+    writes: &'p memory::Arena<'s, 'd, ID, A::Egress>,
+    authority: &'a mut <A::Input as receive::Resources>::Authority<'d>,
+}
 
 impl<'n, 'p, 's, 'w, 'd: 'w, ID: Identity + 'd, A, E> ingress::Policy<'n, 'w, 'd, ID>
     for listener::Listener<'n, 'p, 's, 'w, 'd, ID, A, E>
@@ -36,6 +39,8 @@ where
     A: handler::Application<'d, ID>,
     A::WireFailure: failures::Policy<'w, 'd, A, ID>,
     A::Input: Policy<'w, 'd, ID, A>,
+    <A::Input as input::Mode<A::Wire>>::Reserve:
+        Choice<A::Wire, <A::Input as input::Mode<A::Wire>>::Ingress>,
     E: env::Spec<Wire = A::Wire>,
 {
     type Transport = E::Transport;
@@ -47,30 +52,30 @@ where
     >;
     type Input = A::Input;
 
-    fn storage<'a>(self: pin::Pin<&'a mut Self>) -> &'a mut crate::Inbound<'n, 'w, 'd, ID, Self> {
-        &mut *self.project().owner.pool_mut()
+    type Context<'a> = Context<'a, 'p, 's, 'd, ID, A> where Self: 'a;
+
+    fn parts<'a>(
+        self: pin::Pin<&'a mut Self>,
+    ) -> (&'a mut crate::Inbound<'n, 'w, 'd, ID, Self>, Self::Context<'a>) {
+        let this = self.project();
+        let writer::Owner { pool, writes, deadlines } = this.owner;
+        (pool, Context {
+            closing: (this.app, this.accept, deadlines),
+            writes: *writes,
+            authority: this.receive_authority,
+        })
     }
 
-    fn reserve<'a, R>(
-        self: pin::Pin<&'a mut Self>,
-        data: R,
-        _: &region::Token<region::Identity<'d, 0>>,
-    ) -> Reservation<'a, 'w, 'd, ID, Self::Wire, Self::Input>
+    fn receipt<'ctx>(
+        _: &mut Self::Context<'ctx>,
+        _: pool::Key<'d, ID>,
+        _: &Self::State,
+        _: &region::Token<region::Identity<'d>>,
+    ) -> <Self::Input as input::Mode<Self::Wire>>::Receipt
     where
-        R: arrival::Arrival<
-                'd,
-                input::Receipt<Self::Wire, Self::Input>,
-                Observed = event::Data<'d>,
-            >,
-        input::Receipt<Self::Wire, Self::Input>: 'a,
-        <Self::Input as input::Mode<Self::Wire>>::Reserve:
-            Choice<Self::Wire, <Self::Input as input::Mode<Self::Wire>>::Ingress>,
+        Self: 'ctx,
     {
-        self.project()
-            .owner
-            .pool_mut()
-            .recv()
-            .data(data, |_, _| Default::default())
+        Default::default()
     }
 
     fn admit(
@@ -82,118 +87,143 @@ where
         control::admit_deadline(self, target, turn, driver)
     }
 
-    fn receive<'input>(
-        self: pin::Pin<&mut Self>,
-        key: pool::Key<'d, ID>,
+    fn receive<'ctx, 'a, 'input>(
+        context: &mut Self::Context<'ctx>,
+        mut entry: ingress::Entry<'a, 'n, 'w, 'd, ID, Self>,
         input: crate::Incoming<'input, 'w, 'd, Self::Wire, Self::Input>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> crate::Receiving<'w, 'd, Self::Wire, Self::Input> {
-        <A::Input as Policy<'w, 'd, ID, A>>::receive(self, key, input, turn, driver)
+    ) -> (Option<ingress::Entry<'a, 'n, 'w, 'd, ID, Self>>, crate::Receiving<'w, 'd, Self::Wire, Self::Input>)
+    where
+        Self: 'ctx,
+    {
+        let Context { closing: (app, _, deadlines), writes, authority } = context;
+        let progress = match entry.egress_mut() {
+            Some(view) => {
+                let mut egress = writer::Egress::<ID, A>::new(view, *writes, deadlines);
+                <A::Input as Policy<'w, 'd, ID, A>>::receive(
+                    app.as_mut(), &mut egress, authority, input, turn, driver,
+                )
+            }
+            None => ingress::Progress::Done(receive::Outcome::Continue),
+        };
+        (Some(entry), progress)
     }
 
-    fn finish(
-        mut self: pin::Pin<&mut Self>,
-        key: pool::Key<'d, ID>,
+    fn finish<'ctx, 'a>(
+        context: &mut Self::Context<'ctx>,
+        mut entry: ingress::Entry<'a, 'n, 'w, 'd, ID, Self>,
         finish: ingress::Finish,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) {
+    ) -> Option<ingress::Entry<'a, 'n, 'w, 'd, ID, Self>>
+    where
+        Self: 'ctx,
+    {
         let wake = match finish {
             ingress::Finish::Empty(ingress::Empty::Discarded { finished }) => {
                 if finished {
-                    let mut this = self.as_mut().project();
-                    let Some(mut egress) = this.owner.egress_mut(key) else {
-                        return;
-                    };
-                    A::discarded(
-                        this.app.as_mut(),
-                        egress.context(turn.reborrow().app()),
-                        driver,
-                    );
+                    let (app, _, deadlines) = &mut context.closing;
+                    let Some(view) = entry.egress_mut() else { return Some(entry) };
+                    let mut egress = writer::Egress::<ID, A>::new(view, context.writes, deadlines);
+                    A::discarded(app.as_mut(), egress.context(turn.reborrow().app()), driver);
                 }
                 phase::Wake::Progress
             }
             ingress::Finish::Empty(ingress::Empty::NoChunk) | ingress::Finish::Chunk => {
                 phase::Wake::Ingress
             }
-            ingress::Finish::CloseAfter => return phase::close_ready(self, key, turn, driver),
+            ingress::Finish::CloseAfter => {
+                return if phase::finish(&mut entry, context.closing.0.as_ref()) {
+                    writer::close(Ok(entry), context.writes, &mut context.closing, turn, driver)
+                } else {
+                    Some(entry)
+                };
+            }
         };
-        phase::commit_chunk(self, key, wake, turn, driver);
+        phase::advance_entry(entry, context.writes, &mut context.closing, wake, turn, driver)
     }
 
-    fn terminal(
-        mut self: pin::Pin<&mut Self>,
-        key: pool::Key<'d, ID>,
+    fn terminal<'ctx, 'a>(
+        context: &mut Self::Context<'ctx>,
+        mut entry: ingress::Entry<'a, 'n, 'w, 'd, ID, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> ingress::Terminal {
+    ) -> (Option<ingress::Entry<'a, 'n, 'w, 'd, ID, Self>>, ingress::Terminal)
+    where
+        Self: 'ctx,
+    {
         {
-            let mut this = self.as_mut().project();
-            let Some(mut egress) = this.owner.egress_mut(key) else {
-                return ingress::Terminal::Idle;
+            let (app, _, deadlines) = &mut context.closing;
+            let Some(view) = entry.egress_mut() else {
+                return (Some(entry), ingress::Terminal::Idle);
             };
+            let mut egress = writer::Egress::<ID, A>::new(view, context.writes, deadlines);
             let cause = match egress.connection.terminal.finish_recv() {
-                terminal::Receive::Idle => return ingress::Terminal::Idle,
-                terminal::Receive::Pending => return ingress::Terminal::Pending,
+                terminal::Receive::Idle => return (Some(entry), ingress::Terminal::Idle),
+                terminal::Receive::Pending => return (Some(entry), ingress::Terminal::Pending),
                 terminal::Receive::Eof => {
-                    return ingress::Terminal::Ended(receive::End::Read);
+                    return (Some(entry), ingress::Terminal::Ended(receive::End::Read));
                 }
                 terminal::Receive::Ready(terminal::Terminal::Clean) => {
-                    return ingress::Terminal::Ended(receive::End::Both);
+                    return (Some(entry), ingress::Terminal::Ended(receive::End::Both));
                 }
                 terminal::Receive::Ready(terminal::Terminal::Failed(cause)) => cause,
             };
             <A::WireFailure as failures::Policy<'w, 'd, A, ID>>::wire_failed(
-                this.app.as_mut(),
-                egress.context(turn.reborrow().app()),
-                cause,
+                app.as_mut(), egress.context(turn.reborrow().app()), cause,
             );
         }
-        control::close_slot(self, key, turn, driver);
-        ingress::Terminal::Closed
+        (
+            writer::close(Ok(entry), context.writes, &mut context.closing, turn, driver),
+            ingress::Terminal::Closed,
+        )
     }
 
-    fn eof(
-        mut self: pin::Pin<&mut Self>,
-        key: pool::Key<'d, ID>,
+    fn eof<'ctx, 'a>(
+        context: &mut Self::Context<'ctx>,
+        mut entry: ingress::Entry<'a, 'n, 'w, 'd, ID, Self>,
         end: receive::End,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) {
+    ) -> Option<ingress::Entry<'a, 'n, 'w, 'd, ID, Self>>
+    where
+        Self: 'ctx,
+    {
         {
-            let mut this = self.as_mut().project();
-            let Some(mut egress) = this.owner.egress_mut(key) else {
-                return;
-            };
+            let (app, _, deadlines) = &mut context.closing;
+            let Some(view) = entry.egress_mut() else { return Some(entry) };
+            let mut egress = writer::Egress::<ID, A>::new(view, context.writes, deadlines);
             egress.connection.end_discard();
             let mut conn = egress.context(turn.reborrow().app());
             conn.close_after();
-            A::eof(this.app.as_mut(), conn, end, driver);
+            A::eof(app.as_mut(), conn, end, driver);
         }
-        phase::commit_chunk(self, key, phase::Wake::Ingress, turn, driver);
+        phase::advance_entry(
+            entry, context.writes, &mut context.closing, phase::Wake::Ingress, turn, driver,
+        )
     }
 
-    fn close(
-        mut self: pin::Pin<&mut Self>,
-        key: pool::Key<'d, ID>,
+    fn close<'ctx, 'a>(
+        context: &mut Self::Context<'ctx>,
+        mut entry: ingress::Entry<'a, 'n, 'w, 'd, ID, Self>,
         cause: ingress::CloseCause,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) {
-        if let Some(slot) = self.as_mut().project().owner.pool_mut().get_mut(key) {
-            match cause {
-                ingress::CloseCause::Io(error) => slot.state.fail(conn::Failure::Receive(error)),
-                ingress::CloseCause::Receive(ParkError::Submit(error)) => {
-                    slot.state.fail(conn::Failure::Submit(error));
-                }
-                ingress::CloseCause::Receive(error) => slot.state.fail(conn::Failure::Park(error)),
-                ingress::CloseCause::Application(error) => {
-                    slot.state.fail(conn::Failure::Application(error));
-                }
-                ingress::CloseCause::Local | ingress::CloseCause::Transport => {}
+    ) -> Option<ingress::Entry<'a, 'n, 'w, 'd, ID, Self>>
+    where
+        Self: 'ctx,
+    {
+        let slot = entry.get_mut();
+        match cause {
+            ingress::CloseCause::Io(error) => slot.state.fail(conn::Failure::Receive(error)),
+            ingress::CloseCause::Receive(ParkError::Submit(error)) => {
+                slot.state.fail(conn::Failure::Submit(error));
             }
+            ingress::CloseCause::Receive(error) => slot.state.fail(conn::Failure::Park(error)),
+            ingress::CloseCause::Application(error) => slot.state.fail(conn::Failure::Application(error)),
+            ingress::CloseCause::Local | ingress::CloseCause::Transport => {}
         }
-        control::close_slot(self, key, turn, driver);
+        writer::close(Ok(entry), context.writes, &mut context.closing, turn, driver)
     }
 }

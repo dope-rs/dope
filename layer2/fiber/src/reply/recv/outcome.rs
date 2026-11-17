@@ -37,8 +37,10 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E>
 
     /// Transfers the first data item's accounting to one clone-aware owner and
     /// consumes the unique completion capability.
+    /// Runs `before` once after retention admission, before removing any data.
     pub fn try_retain(
         self,
+        before: impl FnOnce(),
     ) -> Result<Option<retain::Retained<'arena, 'credits, 'region, D>>, rc::Error> {
         let Slot {
             state,
@@ -46,13 +48,15 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E>
             owner: _,
         } = self.slot;
         let Some(front) = state.data.front() else {
+            before();
             return Ok(None);
         };
-        // SAFETY: Completion retains this exact slot owner and its unchanged
-        // first member; failure restores the member before its front can pop.
+        // SAFETY: Completion retains this exact slot owner; front keeps the
+        // unchanged member until successful retention consumes it once.
         let amount = payload::Value::new(front.get().amount.usage());
-        let held = unsafe { owners.payload.remove(amount) }.try_retain()?;
-        Ok(Some(retain::Retained::new(front.pop().value, held)))
+        unsafe { owners.payload.remove(amount) }
+            .try_retain(before, || front.pop().value)
+            .map(Some)
     }
 }
 

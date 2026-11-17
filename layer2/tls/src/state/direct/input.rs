@@ -1,4 +1,4 @@
-use std::io::{self, BufRead as _, Write as _};
+use std::io::{self, BufRead as _};
 
 use dope::core::driver::route;
 use o3::buffer::write::consume;
@@ -70,17 +70,12 @@ impl Input<'_> {
         (output, Plain { bytes, len })
     }
 
-    fn process<R: roles::Protocol, ID: route::Identity>(
-        state: &mut Connection<'_, R, ID>,
+    fn process<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd>(
+        state: &mut Connection<'d, R, ID>,
     ) -> Result<(), error::Error> {
         let output = state.native.process_new_packets()?;
         state.peer_closed |= output.peer_has_closed();
-        if !state.local_closed && !state.native.is_handshaking() {
-            // Empty plaintext publishes Rustls's queued KeyUpdate records.
-            consume::Error::check(state.native.writer().write(&[])?, 0)
-                .map_err(|_| error::Error::InvalidBufferProgress)?;
-        }
-        Ok(())
+        state.publish_update()
     }
 
     /// Promotes the first complete record when it contains earlier input.

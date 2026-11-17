@@ -349,6 +349,15 @@ where
         N::sent().call((&mut self.session, conn, pending, token));
     }
 
+    fn settled(
+        &mut self,
+        conn: conn::Id<'d, ID>,
+        payload: Self::Send,
+        token: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        self.session.settled(conn, payload, token);
+    }
+
     fn cancel(&mut self, payload: Self::Send, token: &mut region::Token<region::Identity<'d, 1>>) {
         N::cancel().call((&mut self.session, payload, token));
     }

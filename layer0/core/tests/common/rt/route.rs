@@ -137,23 +137,27 @@ impl life::Operation<(), ()> for Round<'_> {
                         .wait(turn.reactor(), Some(timeout))
                         .expect("receive turn");
                     let dispatch = context.dispatch(turn.reactor(), |event, _| {
-                        let event::Kind::Recv(done) = event.into_kind() else {
-                            panic!("receive event")
-                        };
+                        let done = match event.into_inner().into_kind() {
+                            event::Kind::Recv(done) => Ok(done),
+                            other => Err(std::mem::discriminant(&other)),
+                        }
+                        .expect("receive event");
                         let (target, _, outcome) = done.into_parts();
-                        let recv::Outcome::Data(buffer) = outcome else {
-                            panic!("receive data")
-                        };
+                        let buffer = match outcome {
+                            recv::Outcome::Data(buffer) => Ok(buffer),
+                            other => Err(std::mem::discriminant(&other)),
+                        }
+                        .expect("receive data");
                         assert_eq!(
                             packet.worker,
                             Some(target.slot().index().get() as usize),
                             "wrong worker"
                         );
-                        let datagram::Decoded::Packet { source, payload } =
-                            datagram::Decoded::decode(buffer)
-                        else {
-                            panic!("complete datagram")
-                        };
+                        let (source, payload) = match datagram::Decoded::decode(buffer) {
+                            datagram::Decoded::Packet { source, payload } => Ok((source, payload)),
+                            other => Err(std::mem::discriminant(&other)),
+                        }
+                        .expect("complete datagram");
                         assert_eq!(source, sender.local_addr().expect("sender address"));
                         assert_eq!(payload.as_ref(), packet.bytes);
                         seen += 1;

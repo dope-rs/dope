@@ -43,6 +43,12 @@ impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
         reserve::Plan::new(self.entries, bounds)
     }
 
+    pub fn prefix<const BYTES: usize>(
+        &self,
+    ) -> Result<reserve::Plan<'a, 'p, 'd, B, D, reserve::Prefix<BYTES>>, error::Lane> {
+        reserve::Plan::new(self.entries, reserve::Prefix::new())
+    }
+
     pub fn offer<S>(
         &self,
         value: egress::NonEmpty<S>,
@@ -124,9 +130,11 @@ impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, G: bound::Bound, c
     Queue<'a, 'p, 'd, IOV, B, demand::Guaranteed<G, PREFIX>>
 {
     /// Returns the retained queue-capacity proof, or `None` for direct-only storage.
-    pub fn prove(&self) -> Option<reserve::Plan<'a, 'p, 'd, B, demand::Guaranteed<G, PREFIX>>> {
-        let bounds = self.entries.pool.bounds()?;
-        Some(reserve::Plan::proven(self.entries, bounds))
+    pub fn prove(
+        &self,
+    ) -> Option<(G::Finite, reserve::Plan<'a, 'p, 'd, B, demand::Guaranteed<G, PREFIX>>)> {
+        let (proof, bounds) = self.entries.pool.bounds()?;
+        Some((proof, reserve::Plan::proven(self.entries, bounds)))
     }
 }
 

@@ -85,11 +85,12 @@ impl<'d> handler::Application<'d, KeyTag<0>> for App<'d> {
         let this = self.get_mut();
         if matches!(this.phase, Phase::Sealing) {
             this.phase = Phase::Sealed;
-            let sent = conn.write().try_bounded(driver, |_, mut prefix| {
-                prefix.write_byte(b's').unwrap();
-                prefix.commit(None, ())
-            });
-            assert!(matches!(sent, Ok(write::Outcome::Committed(()))));
+            let mut output_slot = std::mem::MaybeUninit::uninit();
+            let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+            output.get_mut().parts().1.write_byte(b's').unwrap();
+            write::Output::finish(output, write::End::Open)
+                .map_err(write::error::Mismatch::into_cause)
+                .expect("prefix publication");
         }
     }
 
@@ -120,11 +121,12 @@ impl<'d> handler::Borrowed<'d, KeyTag<0>> for App<'d> {
         .expect("input before seal notice");
         assert_eq!(chunk.as_ref(), [byte]);
         *conn.state_mut() = byte == b'b';
-        let sent = conn.write().try_bounded(driver, |_, mut prefix| {
-            prefix.write_byte(byte).unwrap();
-            prefix.commit(None, ())
-        });
-        assert!(matches!(sent, Ok(write::Outcome::Committed(()))));
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+        output.get_mut().parts().1.write_byte(byte).unwrap();
+        write::Output::finish(output, write::End::Open)
+            .map_err(write::error::Mismatch::into_cause)
+            .expect("prefix publication");
         receive::Outcome::Continue
     }
 }

@@ -81,6 +81,7 @@ impl<'d> executor::raw::Layout<'d> for Owner<'_> {
 unsafe impl<'d> executor::raw::App<'d> for Owner<'_> {
     const ROUTES: settings::Routes = settings::Routes::EMPTY;
     const COORDS: usize = 1;
+    const PARK: bool = true;
 
     fn install<'app, 'owner>(
         call: executor::raw::Install<'app, 'owner, 'd, Self>,
@@ -110,9 +111,7 @@ unsafe impl<'d> executor::raw::App<'d> for Owner<'_> {
             schedule::Progress::Quiescent
         }
     }
-    fn select_park() -> Option<Self::ParkPlan> {
-        Some(())
-    }
+    fn select_park() -> Self::ParkPlan {}
 
     unsafe fn park<'app, 'driver, 'turn>(
         app: Pin<&'app mut Self>,
@@ -217,26 +216,24 @@ impl<'a, 'life, 'd: 'life, Q> lending::Execute<'life, 'd, Owner<'a>, Q> for Crea
 pub struct Borrowed<'state, 'app, 'd: 'app, 'a>(pub Pin<&'state Client<'app, 'd, 'a>>);
 
 impl<'d> executor::raw::Layout<'d> for Borrowed<'_, '_, 'd, '_> {
-    type ParkPlan = Infallible;
+    type ParkPlan = ();
 }
 
 // SAFETY: this application retains only its exact callback-local client borrow.
 unsafe impl<'d> executor::raw::App<'d> for Borrowed<'_, '_, 'd, '_> {
     const ROUTES: settings::Routes = settings::Routes::EMPTY;
     const COORDS: usize = 0;
+    const PARK: bool = false;
 
-    fn select_park() -> Option<Self::ParkPlan> {
-        None
-    }
+    fn select_park() -> Self::ParkPlan {}
 
     unsafe fn park<'app, 'driver, 'turn>(
         _: Pin<&'app mut Self>,
-        plan: &mut Self::ParkPlan,
+        _: &mut Self::ParkPlan,
         _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
         'd: 'driver + 'turn,
     {
-        match *plan {}
     }
 
     fn install<'app, 'owner>(

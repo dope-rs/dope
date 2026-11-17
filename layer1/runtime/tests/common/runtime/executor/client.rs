@@ -41,6 +41,7 @@ impl<'d, const PARK: bool> executor::raw::Layout<'d> for Rejected<'_, PARK> {
 unsafe impl<'d, const PARK: bool> executor::raw::App<'d> for Rejected<'_, PARK> {
     const ROUTES: settings::Routes = settings::Routes::EMPTY;
     const COORDS: usize = schedule::LIMIT + 1;
+    const PARK: bool = PARK;
 
     fn admit(
         _: Pin<&Self>,
@@ -70,9 +71,7 @@ unsafe impl<'d, const PARK: bool> executor::raw::App<'d> for Rejected<'_, PARK> 
     fn stopping(_: Pin<&Self>, _: executor::raw::Progress<'_, '_, 'd>) -> schedule::Progress<'d> {
         schedule::Progress::Quiescent
     }
-    fn select_park() -> Option<Self::ParkPlan> {
-        PARK.then_some(())
-    }
+    fn select_park() -> Self::ParkPlan {}
 
     /// # Safety
     /// The owner and plan must pass installation and coordinator admission.

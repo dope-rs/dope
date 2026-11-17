@@ -404,15 +404,10 @@ impl<T: complete::raw::Token, const N: usize> tuning::raw::Chain<T, N> for Reser
         token: T,
     ) {
         let Self { queue, count } = self;
-        let mut entries = [const { mem::MaybeUninit::uninit() }; N];
-        // The reservation's exact count fits both arrays and initializes this prefix.
-        for (entry, value) in entries.iter_mut().zip(values).take(count.get()) {
-            entry.write(Self::option(slot, options.pop(), value, token));
+        for value in values.iter_mut().take(count.get()) {
+            let entry = Self::option(slot, options.pop(), value, token);
+            queue.0.push_one(ptr::NonNull::from(&entry));
         }
-        queue.0.push(
-            ptr::NonNull::from(&entries).cast::<sq::Submit<'_, T>>(),
-            count,
-        );
     }
 }
 

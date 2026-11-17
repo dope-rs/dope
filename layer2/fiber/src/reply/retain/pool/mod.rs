@@ -118,12 +118,19 @@ impl<'credits, 'region> Pool<'credits, 'region> {
         &tail::View::new(&self.storage).header().lanes
     }
 
-    fn bind<'arena>(&'arena self, index: Index) -> Key<'arena, 'credits, 'region> {
+    fn bind<'arena>(
+        &'arena self,
+        index: Index,
+        source: &'credits retain::raw::State,
+    ) -> Key<'arena, 'credits, 'region> {
         // SAFETY: the arena and this tail share the exact validated entry count;
         // Resident derives from the allocation pointer and retains its provenance.
         let resident = unsafe {
             alloc::raw::Resident::new(tail::View::new(&self.storage), index.get() as u32)
         };
+        // SAFETY: the consumed Registration owns this vacant slot; all earlier
+        // references and release settlement ended before its index was reused.
+        unsafe { resident.get().bind(source) };
         Key { resident }
     }
 
@@ -170,12 +177,18 @@ pub(in crate::reply) struct Released<'arena, 'credits> {
 
 pub(in crate::reply) struct LeaseEdge<'arena, 'credits, 'region, A = payload::Used> {
     active: Active<'arena, 'credits, 'region>,
+    source: &'credits retain::raw::State,
     amount: PhantomData<A>,
 }
 
 impl<'arena, 'credits, 'region> Key<'arena, 'credits, 'region> {
     fn state(self) -> &'arena Entry<'credits> {
         self.resident.get()
+    }
+
+    fn source(self) -> &'credits retain::raw::State {
+        // SAFETY: bind initialized the source before publishing this Key.
+        unsafe { self.state().source() }
     }
 
     fn activate(self, lane: LaneIndex) -> Active<'arena, 'credits, 'region> {
@@ -194,15 +207,6 @@ impl<'arena, 'credits, 'region> Key<'arena, 'credits, 'region> {
             .core
             .lanes
             .cancel_entry(lane, self.state().index());
-    }
-
-    fn release_data<A>(self, lane: LaneIndex, grant: payload::Grant<'credits, A>)
-    where
-        A: mem::raw::Amount<3, usize>,
-    {
-        let lanes = &self.parts().core.lanes;
-        lanes.release_data(grant);
-        lanes.wake_local(lane, self.state().index());
     }
 
     #[inline]
@@ -236,11 +240,12 @@ impl<'arena, 'credits, 'region> Active<'arena, 'credits, 'region> {
     }
 
     pub(in crate::reply::retain) fn drop_bytes(self) {
-        let Some(grant) = self.state().bytes.release() else {
+        let Some(amount) = self.state().bytes.release() else {
             return;
         };
         let parts = self.key.parts();
-        parts.core.lanes.release_data(grant);
+        // SAFETY: the final byte edge consumes its entry's stored amount.
+        unsafe { parts.core.lanes.release_data(self.key.source(), amount) };
         parts.finish();
     }
 
@@ -250,11 +255,12 @@ impl<'arena, 'credits, 'region> Active<'arena, 'credits, 'region> {
     }
 
     pub(in crate::reply::retain) fn drop_values(self) {
-        let Some(grant) = self.state().values.release() else {
+        let Some(amount) = self.state().values.release() else {
             return;
         };
         let parts = self.key.parts();
-        parts.core.lanes.release_data(grant);
+        // SAFETY: the final value edge consumes its entry's stored amount.
+        unsafe { parts.core.lanes.release_data(self.key.source(), amount) };
         parts.finish();
     }
 
@@ -281,10 +287,14 @@ impl<'arena, 'credits, 'region> Active<'arena, 'credits, 'region> {
 }
 
 impl<'arena, 'credits, 'region, A> LeaseEdge<'arena, 'credits, 'region, A> {
-    fn try_new(active: Active<'arena, 'credits, 'region>) -> Result<Self, rc::Error> {
+    fn try_new(
+        active: Active<'arena, 'credits, 'region>,
+        source: &'credits retain::raw::State,
+    ) -> Result<Self, rc::Error> {
         active.state().leases.try_hold()?;
         Ok(Self {
             active,
+            source,
             amount: PhantomData,
         })
     }
@@ -305,11 +315,12 @@ impl Released<'_, '_> {
 }
 
 impl<'credits, A: mem::raw::Amount<3, usize>> Return for LeaseEdge<'_, 'credits, '_, A> {
-    type Item = payload::Grant<'credits, A>;
+    type Item = A;
 
-    fn return_item(self, grant: Self::Item) {
+    fn return_item(self, amount: Self::Item) {
         let parts = self.active.key.parts();
-        parts.core.lanes.release_data(grant);
+        // SAFETY: the sealed Lease returns its unchanged original amount once.
+        unsafe { parts.core.lanes.release_data(self.source, amount) };
     }
 }
 
@@ -339,6 +350,6 @@ const _: () = {
     assert!(size_of::<Option<Key<'static, 'static, 'static>>>() == size_of::<usize>());
     assert!(size_of::<Active<'static, 'static, 'static>>() == size_of::<usize>());
     assert!(size_of::<Released<'static, 'static>>() == size_of::<usize>());
-    assert!(size_of::<LeaseEdge<'static, 'static, 'static>>() == size_of::<usize>());
+    assert!(size_of::<LeaseEdge<'static, 'static, 'static>>() == 2 * size_of::<usize>());
     assert!(size_of::<Lease<LeaseEdge<'static, 'static, 'static>>>() == 4 * size_of::<usize>());
 };

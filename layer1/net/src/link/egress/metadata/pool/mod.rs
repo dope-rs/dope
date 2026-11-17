@@ -68,7 +68,7 @@ impl<'p, T, M, D: demand::Mode, P: position::State> Pool<'p, '_, T, M, D, P> {
 impl<'p, T, M, G: bound::Bound, const PREFIX: usize, P: position::State>
     Pool<'p, '_, T, M, demand::Guaranteed<G, PREFIX>, P>
 {
-    pub(in crate::link::egress) const fn bounds(&self) -> Option<reserve::Bounds> {
+    pub(in crate::link::egress) const fn bounds(&self) -> Option<(G::Finite, reserve::Bounds)> {
         self.mode.bounds()
     }
 }

@@ -26,7 +26,8 @@ pub(super) struct Waiting<'d> {
 
 struct Granted<'p, 'd> {
     key: ready::Retained<'d>,
-    grant: credit::Grant<'p>,
+    account: credit::Account<'p, 'd>,
+    amount: credit::Amount,
 }
 
 enum Kind {
@@ -50,10 +51,9 @@ struct Record<'p, 'd> {
 impl Drop for Record<'_, '_> {
     fn drop(&mut self) {
         if let Kind::Granted = self.kind {
-            // SAFETY: Granted owns this initialized acquisition; taking it
-            // through Ready clears the kind before any later record drop.
-            let granted = unsafe { mem::ManuallyDrop::take(&mut self.payload.granted) };
-            granted.grant.release();
+            // SAFETY: this final record owns the initialized acquisition.
+            let granted = unsafe { &*self.payload.granted };
+            unsafe { granted.account.release(granted.amount) };
         }
     }
 }
@@ -144,21 +144,26 @@ impl<'a, 'p, 'd> Ready<'a, 'p, 'd> {
     ) -> bool {
         // SAFETY: Ready exclusively borrows the initialized Granted variant.
         let granted = unsafe { &*self.0.payload.granted };
-        granted.key == key && granted.grant.amount() == amount.amount()
+        granted.key == key && granted.amount == amount.amount()
     }
 
-    pub(in crate::link::egress::load::credit::wait) fn take(self) -> credit::Grant<'p> {
-        self.vacate().1
-    }
-
-    pub(in crate::link::egress::load::credit::wait) fn vacate(
-        self,
-    ) -> (Idle<'a, 'p, 'd>, credit::Grant<'p>) {
-        // SAFETY: Ready owns this initialized acquisition; clearing the kind
-        // prevents Record::drop from releasing the transferred grant.
-        let granted = unsafe { mem::ManuallyDrop::take(&mut self.0.payload.granted) };
+    pub(in crate::link::egress::load::credit::wait) fn take(self) -> credit::wait::Resume<'p, 'd> {
+        // SAFETY: Ready exclusively owns this initialized acquisition.
+        let granted = unsafe { &*self.0.payload.granted };
+        let output = credit::wait::Resume::Granted {
+            account: granted.account,
+            amount: granted.amount,
+        };
         self.0.kind = Kind::Idle;
-        (Idle(self.0), granted.grant)
+        output
+    }
+
+    pub(in crate::link::egress::load::credit::wait) fn cancel(self) -> Idle<'a, 'p, 'd> {
+        // SAFETY: Ready consumes this initialized acquisition before returning Idle.
+        let granted = unsafe { &*self.0.payload.granted };
+        self.0.kind = Kind::Idle;
+        unsafe { granted.account.release(granted.amount) };
+        Idle(self.0)
     }
 }
 impl<'pool, 'p, 'd> Selected<'_, 'pool, 'p, 'd> {
@@ -177,10 +182,14 @@ impl<'pool, 'p, 'd> Selected<'_, 'pool, 'p, 'd> {
         // it cannot run application code or change this selected credit.
         match owner.ready().try_activate(waiting.key) {
             Ok(()) => {
-                let grant = lane.account().acquire(waiting.amount.amount());
+                let account = lane.account();
+                let amount = waiting.amount.amount();
+                // SAFETY: Selected retains the eligible current demand; activation cannot reenter.
+                unsafe { account.acquire(amount) };
                 self.record.payload.granted = mem::ManuallyDrop::new(Granted {
                     key: waiting.key,
-                    grant,
+                    account,
+                    amount,
                 });
                 self.record.kind = Kind::Granted;
             }

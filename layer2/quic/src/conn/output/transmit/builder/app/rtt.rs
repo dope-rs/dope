@@ -136,8 +136,7 @@ pub(in crate::conn::output::transmit) fn build<
                 let mut left = conn::PACKET_STREAM_CAPACITY;
                 let mut work = log::RetryWork::new(&mut left);
                 while track && let Some(vacant) = build.streams.vacancy() {
-                    let room = limit
-                        .saturating_sub(frames.len().saturating_add(conn::STREAM_FRAME_OVERHEAD));
+                    let room = limit.saturating_sub(frames.len());
                     let transmit = &mut build.connection.streams.state.transmit;
                     let (mut chosen, map) = transmit.selection();
                     let next = chosen
@@ -171,14 +170,11 @@ pub(in crate::conn::output::transmit) fn build<
         }
 
         let mut schedule = journal::Schedule::new(build);
-        let mut fresh = Some(0u64);
+        let mut fresh = 0u64;
         if select {
             loop {
                 let step = schedule.next(
                     |mut selected, context| -> Result<ControlFlow<()>, transmit::Admission> {
-                        let Some(total) = fresh else {
-                            return Ok(ControlFlow::Break(()));
-                        };
                         let (credit, boundary) = {
                             let entry = selected.state();
                             let view = entry.view();
@@ -191,7 +187,7 @@ pub(in crate::conn::output::transmit) fn build<
                                 view.boundary(0),
                             )
                         };
-                        let budget = selected.budget(total);
+                        let budget = selected.budget(fresh);
                         let flow = credit.min(budget);
                         if flow == 0 && matches!(boundary, send::Boundary::More) {
                             let pending = selected.state().view().has_pending();
@@ -254,16 +250,16 @@ pub(in crate::conn::output::transmit) fn build<
                         let Some(prepared) = selected.prepare(take) else {
                             return Ok(ControlFlow::Continue(()));
                         };
-                        let range = prepared.range();
-                        if !prepared.write(&mut frames, limit).map_err(|error| {
+                        let Some(bytes) = prepared.write(&mut frames, limit).map_err(|error| {
                             transmit::Admission::Payload {
                                 error,
                                 requested: limit,
                             }
-                        })? {
+                        })?
+                        else {
                             return Ok(ControlFlow::Break(()));
-                        }
-                        fresh = total.checked_add(range.len());
+                        };
+                        fresh += u64::from(bytes);
                         commit.flags.set_elicit(true);
                         Ok(ControlFlow::Continue(()))
                     },

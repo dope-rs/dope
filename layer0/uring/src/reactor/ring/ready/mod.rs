@@ -89,17 +89,23 @@ impl<T: complete::raw::Token, L: memory::raw::Receive> ready::Complete for Ready
 }
 
 impl<T: complete::raw::Token, L: memory::raw::Receive> Ready<T, L> {
+    fn prepare(&mut self) -> (&mut sq::raw::State, ring::ffi::Binding<'_>) {
+        let register::raw::Buffered { owner, storage } = &mut self.owner;
+        owner.publish();
+        storage.flush();
+        (
+            owner.ring.mapped.sq(),
+            ring::ffi::Binding::registered(&owner.auth),
+        )
+    }
+
     /// Retains the idle queue's exclusive admitted submission vacancy.
     pub(crate) fn try_idle(
         &mut self,
     ) -> Result<Option<sq::raw::Vacancy<'_, T>>, <Uring as Source>::Poll> {
-        let register::raw::Buffered { owner, storage } = &mut self.owner;
-        owner.publish();
-        storage.flush();
-        owner
-            .ring
-            .sq()
-            .try_idle(ring::ffi::Binding::registered(&owner.auth))
+        let (queue, binding) = self.prepare();
+        sq::raw::Queue::new(queue)
+            .try_idle(binding)
             .map_err(Poll::Submit)
     }
 }
@@ -125,9 +131,8 @@ impl<T: complete::raw::Token, L: memory::raw::Receive> ready::Ready for Ready<T,
         Self: 'q;
 
     fn enter(&mut self) -> ring::Enter<'_, T> {
-        self.owner.publish();
-        self.owner.storage_mut().flush();
-        self.owner.enter()
+        let (queue, binding) = self.prepare();
+        ring::Enter::new(queue, binding)
     }
 
     fn submission(&mut self) -> sq::raw::Queue<'_, T> {
@@ -164,7 +169,9 @@ impl<T: complete::raw::Token, L: memory::raw::Receive> ready::Ready for Ready<T,
             Some(value) => Some(Timeout::try_from(value).map_err(Poll::from)?),
             None => None,
         };
-        match self.enter().try_wait(wait) {
+        let (queue, binding) = self.prepare();
+        let submit = ring::enter::publish(queue);
+        match ring::enter::wait(binding, submit, wait) {
             Ok(()) => Ok(()),
             Err(errno)
                 if errno.code().get() == libc::ETIME

@@ -56,9 +56,10 @@ fn wait_socket<'d>(
     let mut event = None;
     assert!(matches!(
         driver::Context::dispatch(driver, turn.reactor(), |completion, _source| {
+            let (completion, vacant) = completion.take();
             let done = match completion.into_kind() {
                 Kind::Socket(done) => done,
-                event => return ControlFlow::Break(event.into()),
+                event => return ControlFlow::Break(vacant.insert(event.into())),
             };
             assert!(
                 owner.operation::<kind::Socket>().matches(done.token()),

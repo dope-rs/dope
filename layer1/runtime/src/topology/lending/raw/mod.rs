@@ -69,10 +69,10 @@ where
     /// Consume this exact native-quiesced owner; never project or finish its backing again.
     pub(crate) unsafe fn finish_tail<'call, 'finish, 'owner, 'epoch>(
         call: executor::raw::Finish<'call, 'finish, 'owner, 'epoch, 'd, Self>,
-        plan: Option<<Self as executor::raw::Layout<'d>>::ParkPlan>,
+        plan: <Self as executor::raw::Layout<'d>>::ParkPlan,
     ) -> (
         Borrowed<'parent, H>,
-        Option<<H as executor::raw::Layout<'d>>::ParkPlan>,
+        <H as executor::raw::Layout<'d>>::ParkPlan,
     ) {
         let (mut app, install, finish) = call.into_parts();
         let tail = app.as_mut().project().tail;
@@ -82,7 +82,7 @@ where
         // SAFETY: the consumed owner makes its old backing inaccessible. Moving
         // this Pin handle preserves the actual provider's address and full loan.
         let head = unsafe { ptr::read(head.get_unchecked_mut()) };
-        (head, plan.and_then(|plan| plan.3))
+        (head, plan.3)
     }
 }
 

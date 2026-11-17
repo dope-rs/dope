@@ -40,10 +40,10 @@ pub struct Rejection<'d> {
 }
 
 #[must_use = "cancellation either transfers the item to the kernel or returns it for retry"]
-pub enum Cancellation<'d> {
-    Submitted(Tuning<'d, Cancelled>),
+pub enum Cancellation<'d, V = ()> {
+    Submitted(Tuning<'d, Cancelled, V>),
     Retry {
-        item: Tuning<'d>,
+        item: Tuning<'d, Live, V>,
         error: result::SubmitError,
     },
 }
@@ -51,11 +51,11 @@ pub enum Cancellation<'d> {
 #[doc(hidden)]
 #[must_use = "a pending establishment owns its descriptor and completion authority"]
 #[repr(C)]
-pub struct Tuning<'d, State = Live> {
+pub struct Tuning<'d, State = Live, V = ()> {
     fd: handles::Descriptor<'d>,
     flight: flight::Flight<'d, kind::Tuning>,
     permit: <Engine as engine::Cancel<indices::SlotIndex>>::Permit,
-    state: marker::PhantomData<State>,
+    state: marker::PhantomData<(State, V)>,
 }
 
 #[doc(hidden)]
@@ -79,7 +79,7 @@ impl<T, C> Mismatch<T, C> {
     }
 }
 
-impl<'d, State> Tuning<'d, State> {
+impl<'d, State, V> Tuning<'d, State, V> {
     #[doc(hidden)]
     pub const fn fd(&self) -> &handles::Descriptor<'d> {
         &self.fd
@@ -94,17 +94,29 @@ impl<'d> Tuning<'d> {
         Engine: engine::Cancel<indices::SlotIndex, Permit = P>,
     {
         match finish {
-            device::Finish::Applied(fd) => option::Tuning::Applied(fd),
-            device::Finish::Pending(fd, target, permit) => option::Tuning::Pending(Self {
-                fd,
-                flight: target.commit(),
-                permit,
-                state: marker::PhantomData,
-            }),
+            device::Finish::Applied(fd, ()) => option::Tuning::Applied(fd),
+            device::Finish::Pending(fd, target, permit) => {
+                option::Tuning::Pending(Self::new(fd, target, permit))
+            }
+        }
+    }
+}
+
+impl<'d, V> Tuning<'d, Live, V> {
+    pub(super) fn new(
+        fd: handles::Descriptor<'d>,
+        target: flight::Reserved<'d, kind::Tuning>,
+        permit: <Engine as engine::Cancel<indices::SlotIndex>>::Permit,
+    ) -> Self {
+        Self {
+            fd,
+            flight: target.commit(),
+            permit,
+            state: marker::PhantomData,
         }
     }
 
-    fn commit(self) -> Tuning<'d, Cancelled> {
+    fn commit(self) -> Tuning<'d, Cancelled, V> {
         Tuning {
             fd: self.fd,
             flight: self.flight,
@@ -113,7 +125,7 @@ impl<'d> Tuning<'d> {
         }
     }
 
-    pub fn cancel(self, driver: &mut driver::Context<'_, 'd>) -> Cancellation<'d> {
+    pub fn cancel(self, driver: &mut driver::Context<'_, 'd>) -> Cancellation<'d, V> {
         if !self.flight.is_pending() {
             return Cancellation::Submitted(self.commit());
         }
@@ -185,12 +197,11 @@ impl<'d> From<Error<handles::Descriptor<'d>, Vacancy>> for Rejection<'d> {
     }
 }
 
-impl<'d, State> Tuning<'d, State> {
-    #[doc(hidden)]
-    pub fn complete(
+impl<'d, State, V> Tuning<'d, State, V> {
+    fn resolve(
         self,
         done: tuning::Completion<'d>,
-    ) -> Result<(handles::Descriptor<'d>, Result<(), Errno>), Mismatch<Self, tuning::Completion<'d>>>
+    ) -> Result<(handles::Descriptor<'d>, Result<u32, Errno>), Mismatch<Self, tuning::Completion<'d>>>
     {
         let outcome = match done.resolve(self.flight.target()) {
             Ok(outcome) => outcome,
@@ -198,6 +209,31 @@ impl<'d, State> Tuning<'d, State> {
         };
         drop(self.flight);
         Ok((self.fd, outcome))
+    }
+}
+
+impl<'d, State> Tuning<'d, State> {
+    #[doc(hidden)]
+    pub fn complete(
+        self,
+        done: tuning::Completion<'d>,
+    ) -> Result<(handles::Descriptor<'d>, Result<(), Errno>), Mismatch<Self, tuning::Completion<'d>>>
+    {
+        let (fd, result) = self.resolve(done)?;
+        Ok((fd, result.map(|_| ())))
+    }
+}
+
+impl<'d, State> Tuning<'d, State, u32> {
+    pub fn complete(
+        self,
+        done: tuning::Completion<'d>,
+    ) -> Result<
+        (handles::Descriptor<'d>, Result<Option<u32>, Errno>),
+        Mismatch<Self, tuning::Completion<'d>>,
+    > {
+        let (fd, result) = self.resolve(done)?;
+        Ok((fd, result.map(crate::io::socket::peer::uid)))
     }
 }
 
@@ -241,6 +277,7 @@ const _: () = {
         mem::align_of::<Rejection<'_>>() == mem::align_of::<(handles::Descriptor<'_>, Cause)>()
     );
     assert!(mem::size_of::<Tuning<'_, Cancelled>>() == mem::size_of::<Tuning<'_>>());
+    assert!(mem::size_of::<Tuning<'_, Live, u32>>() == mem::size_of::<Tuning<'_>>());
     assert!(mem::size_of::<Connection<'_, Cancelled>>() == mem::size_of::<Connection<'_>>());
 };
 

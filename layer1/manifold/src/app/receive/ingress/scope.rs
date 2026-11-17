@@ -58,14 +58,17 @@ where
             policy,
             data,
             |prep| prep.scoped(),
-            |mut policy, next, turn, driver| match next {
+            |context, entry, next, turn, driver| match next {
                 event::DispatchRecv::Control(next) => {
-                    ingress::apply_control(policy, next, turn, driver);
+                    ingress::apply_control::<ID, P>(context, entry, next, turn, driver)
                 }
-                event::DispatchRecv::Chunk(key, chunk) => {
-                    ingress::prepare_terminal(policy.as_mut(), key);
-                    let done = P::receive(policy.as_mut(), key, chunk, turn.reborrow(), driver);
-                    let _ = flow::settle(policy, key, done, turn, driver);
+                event::DispatchRecv::Chunk(_, chunk) => {
+                    ingress::prepare_terminal::<ID, P>(&entry);
+                    let (entry, done) = P::receive(context, entry, chunk, turn.reborrow(), driver);
+                    let entry = entry?;
+                    match flow::settle::<ID, P>(context, entry, done, turn, driver) {
+                        ControlFlow::Break(entry) | ControlFlow::Continue(entry) => entry,
+                    }
                 }
             },
         )
@@ -84,32 +87,31 @@ where
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         M::Reserve: Choice<W, M::Ingress>,
     {
-        let (key, chunk, work) = {
-            let mut recv = P::storage(policy.as_mut()).recv();
-            let Some(taken) = recv.take_tail(item)? else {
-                return ControlFlow::Continue(false);
-            };
-            let replay = if first {
-                Replay::First
-            } else {
-                Replay::Waiting
-            };
-            let work = match <Self as Strategy<W, M>>::Admission::replay(
-                replay,
-                item.ready(),
-                turn.reborrow(),
-                driver,
-            ) {
-                schedule::Capacity::Available(work) => work,
-                schedule::Capacity::Exhausted => return ControlFlow::Break(()),
-            };
-            (item.key(), taken.commit(), work)
+        let (pool, mut context) = P::parts(policy.as_mut());
+        let Ok(mut entry) = pool.entry(item.key()) else {
+            return ControlFlow::Continue(false);
         };
+        let Some(taken) = entry.take_tail()? else {
+            return ControlFlow::Continue(false);
+        };
+        let replay = if first { Replay::First } else { Replay::Waiting };
+        let work = match <Self as Strategy<W, M>>::Admission::replay(
+            replay, item.ready(), turn.reborrow(), driver,
+        ) {
+            schedule::Capacity::Available(work) => work,
+            schedule::Capacity::Exhausted => return ControlFlow::Break(()),
+        };
+        let chunk = taken.commit();
         let (driver, step) = work.into();
-        ingress::prepare_terminal(policy.as_mut(), key);
-        let done = P::receive(policy.as_mut(), key, chunk, step.reborrow(), driver);
-        flow::settle(policy.as_mut(), key, done, step.reborrow(), driver)?;
-        P::storage(policy).recv().finish_tail(item);
+        ingress::prepare_terminal::<ID, P>(&entry);
+        let (entry, done) = P::receive(&mut context, entry, chunk, step.reborrow(), driver);
+        let Some(entry) = entry else { return ControlFlow::Break(()) };
+        let entry = match flow::settle::<ID, P>(&mut context, entry, done, step, driver) {
+            ControlFlow::Break(_) => return ControlFlow::Break(()),
+            ControlFlow::Continue(entry) => entry,
+        };
+        let Some(mut entry) = entry else { return ControlFlow::Break(()) };
+        entry.finish_tail();
         ControlFlow::Continue(true)
     }
 }

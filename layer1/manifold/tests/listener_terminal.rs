@@ -38,7 +38,7 @@ fn terminal(event: Observation<'_>) {
     };
     assert!(match event {
         Observation::Deadline(armed) => armed.is_ok(),
-        Observation::Write(result) => matches!(result, Ok(write::Outcome::Committed(()))),
+        Observation::Write(result) => matches!(result, Ok(())),
         Observation::Owned(result) => matches!(result, Admit::Committed),
         Observation::Replay(result) => matches!(result, Some(Ok(()))),
         Observation::Failure(cause) => matches!(

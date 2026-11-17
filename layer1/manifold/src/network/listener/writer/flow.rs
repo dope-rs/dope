@@ -16,17 +16,12 @@ use crate::network::listener::writer::{deadline::Slot, memory::access, state};
 
 pub(in crate::network::listener) enum Flow {
     Clear,
+    Done,
     Inflight,
     Plain,
     Stalled,
     Held,
     Deferred,
-}
-
-pub(in crate::network::listener) enum Handoff {
-    Clear,
-    Armed,
-    Restage,
 }
 
 pub(in crate::network::listener) fn flow<
@@ -50,6 +45,7 @@ pub(in crate::network::listener) fn flow<
     let held = control.send_status().retention();
     match send.motion() {
         Motion::Empty => {}
+        Motion::Done => return Flow::Done,
         Motion::Consumed => return Flow::Plain,
         Motion::Waiting if held == outcome::Retention::Clear => return Flow::Stalled,
         Motion::Ready | Motion::Waiting => {
@@ -78,28 +74,20 @@ impl<'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw:
         flow(self.source, &self.state.send, pending)
     }
 
-    pub(in crate::network::listener) fn after_send(&mut self, pending: egress::Pending) -> Handoff {
-        match self.flow(pending) {
-            Flow::Inflight => Handoff::Armed,
-            Flow::Plain | Flow::Deferred => Handoff::Restage,
-            Flow::Clear | Flow::Stalled | Flow::Held => Handoff::Clear,
-        }
-    }
-
     pub(in crate::network::listener) fn advance_send(
         &mut self,
         slots: &crate::Flights<'d, ID>,
         pending: pending::Handle<'_, 'd, ID>,
         driver: &mut driver::Context<'_, 'd>,
-    ) {
+    ) -> outcome::Progress {
         let state = &mut *self.state;
         let (result, step) = match state.send.prepare() {
             Err(error) => {
                 state.send.invalidate(error);
                 self.io().close();
-                return;
+                return outcome::Progress::Idle;
             }
-            Ok(access::Prepared::Idle) => return,
+            Ok(access::Prepared::Idle) => return outcome::Progress::Idle,
             Ok(access::Prepared::Plain(input, step)) => {
                 // SAFETY: prepare borrows this connection's pinned Flight header.
                 // Its direct state keeps the exact lease until send retirement;
@@ -119,10 +107,11 @@ impl<'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw:
                 )
             }
         };
-        match step.finish(result) {
-            access::Finish::Ready => {}
-            access::Finish::Rejected => self.source.discard(),
+        let progress = step.finish(result);
+        if let outcome::Progress::Rejected(_) = progress {
+            self.source.discard();
         }
         pending.wait_send(self.send_status().is_waiting());
+        progress
     }
 }

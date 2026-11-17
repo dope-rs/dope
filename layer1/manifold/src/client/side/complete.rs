@@ -39,7 +39,7 @@ where
     ) where
         A::Continuation: Flush<'p, 'w, 'd, ID, A, S, E, Self>,
         Self: liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: ClosePhase<'d, ID, A, S, E>,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: ClosePhase<'p, 'w, 'd, ID, A, S, E, Self>,
     {
         <A::Continuation as Flush<'p, 'w, 'd, ID, A, S, E, Self>>::flush(machine, turn, driver);
     }
@@ -110,7 +110,7 @@ where
     ) where
         A::Continuation: Flush<'p, 'w, 'd, ID, A, S, E, Self>,
         Self: liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-        engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: ClosePhase<'d, ID, A, S, E>,
+        engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: ClosePhase<'p, 'w, 'd, ID, A, S, E, Self>,
     {
         let target = machine.as_ref().backoff();
         let this = machine.as_mut().project();

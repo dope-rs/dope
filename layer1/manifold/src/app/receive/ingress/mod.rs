@@ -30,6 +30,17 @@ pub(crate) use scope::Scope;
 pub(in crate::app::receive) use single::Single;
 pub(crate) use strategy::{Admission, Replay, Strategy};
 
+pub(crate) type Entry<'a, 'p, 'w, 'd, ID, P> = pool::Entry<
+    'a, 'p, 'w, 'd, ID,
+    <P as Policy<'p, 'w, 'd, ID>>::Transport,
+    <P as Policy<'p, 'w, 'd, ID>>::Wire,
+    <P as Policy<'p, 'w, 'd, ID>>::State,
+    <P as Policy<'p, 'w, 'd, ID>>::Input,
+    <P as Policy<'p, 'w, 'd, ID>>::Payload,
+    IOV_CAP,
+    <P as Policy<'p, 'w, 'd, ID>>::Reserve,
+>;
+
 pub(crate) const IOV_CAP: usize = 32;
 
 #[derive(Clone, Copy)]
@@ -84,94 +95,79 @@ pub(crate) enum Terminal {
 const _: () = assert!(mem::size_of::<Progress<convert::Infallible>>() == mem::size_of::<Outcome>());
 
 fn prepare_terminal<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID>>(
-    policy: pin::Pin<&mut P>,
-    key: pool::Key<'d, ID>,
+    entry: &Entry<'_, 'p, 'w, 'd, ID, P>,
 ) {
-    let storage = P::storage(policy);
-    if storage
-        .get_mut(key)
-        .is_some_and(|slot| slot.terminal.has_send())
-        && let Some(handle) = pool::pending::Pending::of(storage).at(key)
-    {
-        handle.wake();
+    if entry.get().terminal.has_send() {
+        entry.pending().wake();
     }
 }
 
-fn finish_eof<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID>>(
-    mut policy: pin::Pin<&mut P>,
-    key: pool::Key<'d, ID>,
+fn finish_eof<'ctx, 'a, 'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID> + 'ctx>(
+    context: &mut P::Context<'ctx>,
+    entry: Entry<'a, 'p, 'w, 'd, ID, P>,
     end: End,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
-) {
-    let dead = P::storage(policy.as_mut())
-        .get_mut(key)
-        .is_some_and(|slot| slot.is_discarded());
-    if dead {
-        P::close(policy, key, CloseCause::Transport, turn, driver);
+) -> Option<Entry<'a, 'p, 'w, 'd, ID, P>> {
+    if entry.get().is_discarded() {
+        P::close(context, entry, CloseCause::Transport, turn, driver)
     } else {
-        P::eof(policy.as_mut(), key, end, turn, driver);
-        prepare_terminal(policy, key);
+        let entry = P::eof(context, entry, end, turn, driver)?;
+        prepare_terminal::<ID, P>(&entry);
+        Some(entry)
     }
 }
 
-fn discard_transport<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID>>(
-    mut policy: pin::Pin<&mut P>,
-    key: pool::Key<'d, ID>,
-) {
-    if let Some(slot) = P::storage(policy.as_mut()).get_mut(key) {
-        slot.discard();
-    }
-}
-
-fn discard_with_cause<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID>>(
-    mut policy: pin::Pin<&mut P>,
-    key: pool::Key<'d, ID>,
+fn discard_with_cause<'ctx, 'a, 'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID> + 'ctx>(
+    context: &mut P::Context<'ctx>,
+    entry: Entry<'a, 'p, 'w, 'd, ID, P>,
     err: CloseCause,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
-) {
-    prepare_terminal(policy.as_mut(), key);
-    match P::terminal(policy.as_mut(), key, turn.reborrow(), driver) {
-        Terminal::Closed | Terminal::Pending => {}
+) -> Option<Entry<'a, 'p, 'w, 'd, ID, P>> {
+    prepare_terminal::<ID, P>(&entry);
+    let (entry, terminal) = P::terminal(context, entry, turn.reborrow(), driver);
+    let mut entry = entry?;
+    match terminal {
+        Terminal::Closed | Terminal::Pending => Some(entry),
         Terminal::Ended(_) | Terminal::Idle => {
-            discard_transport(policy.as_mut(), key);
-            P::close(policy, key, err, turn, driver);
+            entry.get_mut().discard();
+            P::close(context, entry, err, turn, driver)
         }
     }
 }
 
-fn finish_chunk<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID>>(
-    mut policy: pin::Pin<&mut P>,
-    key: pool::Key<'d, ID>,
+fn finish_chunk<'ctx, 'a, 'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID> + 'ctx>(
+    context: &mut P::Context<'ctx>,
+    entry: Entry<'a, 'p, 'w, 'd, ID, P>,
     done: Outcome,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
-) {
+) -> Option<Entry<'a, 'p, 'w, 'd, ID, P>> {
     match done {
         done @ (Outcome::Continue | Outcome::CloseAfter) => {
-            match P::terminal(policy.as_mut(), key, turn.reborrow(), driver) {
-                Terminal::Ended(end) => {
-                    finish_eof(policy, key, end, turn, driver);
-                }
-                Terminal::Closed => {}
+            let (entry, terminal) = P::terminal(context, entry, turn.reborrow(), driver);
+            let mut entry = entry?;
+            match terminal {
+                Terminal::Ended(end) => finish_eof::<ID, P>(context, entry, end, turn, driver),
+                Terminal::Closed => Some(entry),
                 Terminal::Idle if matches!(done, Outcome::CloseAfter) => {
-                    P::storage(policy.as_mut()).recv().close_after(key);
-                    P::finish(policy, key, Finish::CloseAfter, turn, driver);
+                    entry.get_mut().close_after();
+                    P::finish(context, entry, Finish::CloseAfter, turn, driver)
                 }
                 Terminal::Pending | Terminal::Idle => {
-                    P::finish(policy, key, Finish::Chunk, turn, driver);
+                    P::finish(context, entry, Finish::Chunk, turn, driver)
                 }
             }
         }
         Outcome::Failed(err) => {
-            discard_with_cause(policy, key, CloseCause::Application(err), turn, driver);
+            discard_with_cause::<ID, P>(context, entry, CloseCause::Application(err), turn, driver)
         }
     }
 }
 
 fn drive_control<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A>(
-    mut policy: pin::Pin<&mut P>,
+    policy: pin::Pin<&mut P>,
     ctrl: A,
     turn: schedule::Turn<'a, 'd>,
     driver: &'a mut driver::Context<'c, 'd>,
@@ -180,127 +176,119 @@ fn drive_control<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A>(
     P: Policy<'p, 'w, 'd, ID>,
     A: arrival::Arrival<'d, Observed = event::Control<'d>>,
 {
-    let next = P::storage(policy.as_mut()).recv().dispatch(ctrl);
+    let (pool, mut context) = P::parts(policy);
+    let (entry, next) = pool.recv().dispatch(ctrl);
     let next = match next {
         event::Dispatch::Settled => return,
         event::Dispatch::Ready(next) => next,
-        event::Dispatch::Observed {
-            completion: done,
-            next,
-        } => {
+        event::Dispatch::Observed { completion: done, next } => {
             driver.reclaim(done);
             next
         }
         event::Dispatch::Retired(done)
-        | event::Dispatch::Stale {
-            completion: done,
-            cause: Stale,
-        } => {
+        | event::Dispatch::Stale { completion: done, cause: Stale } => {
             driver.reclaim(done);
             return;
         }
-        event::Dispatch::Rejected {
-            completion: done,
-            key,
-            error,
-        } => {
+        event::Dispatch::Rejected { completion: done, error, .. } => {
             driver.reclaim(done);
-            discard_with_cause(policy, key, CloseCause::Receive(error), turn, driver);
+            if let Some(entry) = entry {
+                drop(discard_with_cause::<ID, P>(
+                    &mut context, entry, CloseCause::Receive(error), turn, driver,
+                ));
+            }
             return;
         }
         event::Dispatch::Parked(parked) => {
-            apply_parked(policy, parked, turn, driver);
+            if let Some(entry) = entry {
+                drop(apply_parked::<ID, P>(&mut context, entry, parked, turn, driver));
+            }
             return;
         }
     };
-    apply_control(policy, next, turn, driver);
+    if let Some(entry) = entry {
+        drop(apply_control::<ID, P>(&mut context, entry, next, turn, driver));
+    }
 }
 
-fn discard_pending<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
-    policy: pin::Pin<&mut P>,
-    key: pool::Key<'d, ID>,
+fn discard_pending<'ctx, 'a, 'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
+    context: &mut P::Context<'ctx>,
+    entry: Entry<'a, 'p, 'w, 'd, ID, P>,
     mut pending: Chunk<'w, 'd, P::Wire, Disabled>,
     cause: event::ParkError,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
-) where
-    P: Policy<'p, 'w, 'd, ID>,
+) -> Option<Entry<'a, 'p, 'w, 'd, ID, P>>
+where
+    P: Policy<'p, 'w, 'd, ID> + 'ctx,
 {
     pending.drive((), &mut access::Discard);
     drop(pending);
-    discard_with_cause(policy, key, CloseCause::Receive(cause), turn, driver);
+    discard_with_cause::<ID, P>(context, entry, CloseCause::Receive(cause), turn, driver)
 }
 
-fn apply_control<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
-    mut policy: pin::Pin<&mut P>,
+fn apply_control<'ctx, 'a, 'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
+    context: &mut P::Context<'ctx>,
+    entry: Entry<'a, 'p, 'w, 'd, ID, P>,
     next: event::ControlRecv<'d, ID>,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
-) where
-    P: Policy<'p, 'w, 'd, ID>,
+) -> Option<Entry<'a, 'p, 'w, 'd, ID, P>>
+where
+    P: Policy<'p, 'w, 'd, ID> + 'ctx,
 {
-    let (key, end) = match next {
-        event::ControlRecv::Eof(key) => (key, Control::Eof),
-        event::ControlRecv::Cancelled(key) => (key, Control::Cancelled),
-        event::ControlRecv::Failed { key, error } => {
-            return P::close(policy, key, CloseCause::Io(error), turn, driver);
+    let end = match next {
+        event::ControlRecv::Eof(_) => Control::Eof,
+        event::ControlRecv::Cancelled(_) => Control::Cancelled,
+        event::ControlRecv::Failed { error, .. } => {
+            return P::close(context, entry, CloseCause::Io(error), turn, driver);
         }
-        event::ControlRecv::Credit { key, cause } => {
+        event::ControlRecv::Credit { cause, .. } => {
             return P::close(
-                policy,
-                key,
-                CloseCause::Receive(event::ParkError::Credit(cause)),
-                turn,
-                driver,
+                context, entry, CloseCause::Receive(event::ParkError::Credit(cause)), turn, driver,
             );
         }
-        event::ControlRecv::NoChunk(key) => (key, Control::Empty(Empty::NoChunk)),
-        event::ControlRecv::Discarded { key, finished } => {
-            (key, Control::Empty(Empty::Discarded { finished }))
+        event::ControlRecv::NoChunk(_) => Control::Empty(Empty::NoChunk),
+        event::ControlRecv::Discarded { finished, .. } => {
+            Control::Empty(Empty::Discarded { finished })
         }
     };
-    prepare_terminal(policy.as_mut(), key);
-    match P::terminal(policy.as_mut(), key, turn.reborrow(), driver) {
-        Terminal::Ended(end) => {
-            finish_eof(policy, key, end, turn.reborrow(), driver);
-        }
-        Terminal::Closed | Terminal::Pending => {}
+    prepare_terminal::<ID, P>(&entry);
+    let (entry, terminal) = P::terminal(context, entry, turn.reborrow(), driver);
+    let entry = entry?;
+    match terminal {
+        Terminal::Ended(end) => finish_eof::<ID, P>(context, entry, end, turn, driver),
+        Terminal::Closed | Terminal::Pending => Some(entry),
         Terminal::Idle => match end {
             Control::Eof => {
-                let notify = P::storage(policy.as_mut())
-                    .get_mut(key)
-                    .is_some_and(|slot| !slot.is_discarded() && !slot.terminal.is_done());
-                if notify {
-                    P::eof(policy, key, End::Read, turn.reborrow(), driver);
+                let slot = entry.get();
+                if !slot.is_discarded() && !slot.terminal.is_done() {
+                    P::eof(context, entry, End::Read, turn, driver)
                 } else {
-                    P::close(policy, key, CloseCause::Transport, turn.reborrow(), driver);
+                    P::close(context, entry, CloseCause::Transport, turn, driver)
                 }
             }
-            Control::Cancelled => {
-                P::close(policy, key, CloseCause::Local, turn.reborrow(), driver);
-            }
-            Control::Empty(empty) => {
-                P::finish(policy, key, Finish::Empty(empty), turn.reborrow(), driver);
-            }
+            Control::Cancelled => P::close(context, entry, CloseCause::Local, turn, driver),
+            Control::Empty(empty) => P::finish(context, entry, Finish::Empty(empty), turn, driver),
         },
     }
 }
 
-fn apply_parked<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
-    policy: pin::Pin<&mut P>,
+fn apply_parked<'ctx, 'a, 'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
+    context: &mut P::Context<'ctx>,
+    entry: Entry<'a, 'p, 'w, 'd, ID, P>,
     parked: event::ParkRecv<'d, ID>,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
-) where
-    P: Policy<'p, 'w, 'd, ID>,
+) -> Option<Entry<'a, 'p, 'w, 'd, ID, P>>
+where
+    P: Policy<'p, 'w, 'd, ID> + 'ctx,
 {
     match parked {
-        event::ParkRecv::Closing(key) => {
-            P::close(policy, key, CloseCause::Transport, turn, driver);
+        event::ParkRecv::Closing(_) => P::close(context, entry, CloseCause::Transport, turn, driver),
+        event::ParkRecv::Failed { error, .. } => {
+            discard_with_cause::<ID, P>(context, entry, CloseCause::Receive(error), turn, driver)
         }
-        event::ParkRecv::Failed { key, error } => {
-            discard_with_cause(policy, key, CloseCause::Receive(error), turn, driver);
-        }
-        event::ParkRecv::Deferred => {}
+        event::ParkRecv::Deferred => Some(entry),
     }
 }

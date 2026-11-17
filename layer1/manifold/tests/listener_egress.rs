@@ -49,28 +49,25 @@ fn observed(events: &[Event], expected: handler::Disposition) {
     ] if input == b"request" && peer == conn && conn == retired && body == RESPONSE && *cause == expected && after + 1 == *before));
 }
 
-fn direct(event: DirectWrite<'_>) {
+fn direct(event: DirectWrite) {
     assert!(matches!(
         event,
         DirectWrite {
             body: Some(_),
             allocations: (0, 0),
-            result: Ok(write::Outcome::Committed(()))
+            result: Ok(())
         }
     ));
 }
 
-fn bounded(event: BoundedEvent<'_>) {
+fn bounded(event: BoundedEvent) {
     assert!(match event {
         BoundedEvent::Resident(body) => body == Some(egress::ResidentSize::ZERO),
         BoundedEvent::Write {
             body,
             allocations,
             result,
-        } =>
-            body.is_some()
-                && allocations == (0, 0)
-                && matches!(result, Ok(write::Outcome::Committed(()))),
+        } => body.is_some() && allocations == (0, 0) && matches!(result, Ok(())),
         BoundedEvent::Deferred {
             body,
             called,
@@ -80,14 +77,11 @@ fn bounded(event: BoundedEvent<'_>) {
                 && !called
                 && matches!(
                     result,
-                    Ok(write::Outcome::Deferred(write::Deferred::Capacity))
+                    Err(write::error::Admission::Deferred(write::Deferred::Capacity))
                 ),
         BoundedEvent::Activated { body, result } =>
             !matches!(body, Some(Some(_)))
-                && matches!(
-                    result,
-                    Ok(write::Outcome::Committed(()) | write::Outcome::Deferred(_))
-                ),
+                && matches!(result, Ok(()) | Err(write::error::Admission::Deferred(_))),
     });
 }
 
@@ -114,7 +108,7 @@ fn owned_releases_after_send_or_abort() {
             assert!(
                 queue
                     .chunks(dope_core::io::transfer::NonZero::fixed_size::<
-                        { write::Prefix::CAPACITY },
+                        { write::HEADER_CAPACITY },
                     >())
                     .is_none()
             );
@@ -292,7 +286,7 @@ fn bounded_needs_egress() {
         .direct(0)
         .egress(egress::Config::shared(egress::Credit::fixed::<
             1,
-            { write::Prefix::CAPACITY as u32 - 1 },
+            { write::HEADER_CAPACITY as u32 - 1 },
         >()))
         .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>((
             Bounded {
@@ -333,7 +327,7 @@ fn unbounded_needs_direct() {
         .direct(0)
         .egress(egress::Config::shared(egress::Credit::fixed::<
             1,
-            { 2 * write::Prefix::CAPACITY as u32 },
+            { 2 * write::HEADER_CAPACITY as u32 },
         >()))
         .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>((
             Direct {

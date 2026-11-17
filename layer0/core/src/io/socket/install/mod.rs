@@ -8,7 +8,7 @@ use std::{mem, net, os::fd};
 
 use dope_sys::{
     Errno, engine,
-    io::socket::{Domain, Kind, Origin, Prepare, Socket as _, addr},
+    io::socket::{Domain, Kind, Prepare, Socket as _, addr},
     kernel,
 };
 pub use error::Error;
@@ -76,10 +76,7 @@ impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
         } else {
             crate::Backend::open(domain, Kind::Dgram)
         }
-        .map_err(|error| match error.origin() {
-            Origin::Socket(errno) => Error::syscall(Operation::Socket, errno),
-            Origin::Setup(error) => Error::setup(error),
-        })?;
+        .map_err(|error| Error::create(error.origin()))?;
         let handle = socket::Handle::new(handle);
         handle.try_reuse(config).map_err(Error::reuse)?;
         if let Some(fast) = fast {
@@ -144,6 +141,25 @@ const _: () = {
 };
 
 impl<'borrow, 'context, 'd> Install<'borrow, 'context, 'd> {
+    /// Binds a Unix listener without converting its address to an Internet address.
+    pub fn bind_unix(
+        mut driver: driver::Context<'context, 'd>,
+        addr: &socket::Unix,
+        depth: socket::Backlog,
+    ) -> Result<Descriptor<'d>, Error> {
+        let entry = reserve(&mut driver)?;
+        let handle = crate::Backend::listener(Domain::Unix)
+            .map_err(|error| Error::create(error.origin()))?;
+        let handle = socket::Handle::new(handle);
+        handle
+            .bind(addr)
+            .map_err(|errno| Error::syscall(Operation::Bind, errno))?;
+        handle
+            .listen(depth.get())
+            .map_err(|errno| Error::syscall(Operation::Listen, errno))?;
+        entry.install(handle.into_inner())
+    }
+
     pub fn bind_stream(
         mut driver: driver::Context<'context, 'd>,
         addr: net::SocketAddr,

@@ -140,6 +140,10 @@ impl<K: kind::Long> LongWrite<K> {
         self.usage.is_exhausted()
     }
 
+    pub(in crate::conn) fn limit(&self, packets: usize) -> usize {
+        self.usage.remaining().min(packets as u64) as usize
+    }
+
     pub(in crate::conn) fn permit(&self) -> Result<LongPermit<'_, K>, crypto::Error> {
         self.usage.record()?;
         Ok(LongPermit {

@@ -80,7 +80,7 @@ fn multishot_slot_reuse() {
                                 .wait(turn.reactor(), Some(Duration::from_millis(50)))
                                 .expect("accept progress");
                             let dispatch = driver.dispatch(turn.reactor(), |event, _| {
-                                let done = match event.into_kind() {
+                                let done = match event.into_inner().into_kind() {
                                     Kind::Accept(done) => Some(done),
                                     _ => None,
                                 }

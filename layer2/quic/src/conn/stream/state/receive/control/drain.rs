@@ -30,15 +30,11 @@ impl<'a, B: stream::Recv, D: buffer::raw::Segment> Drain<'a, B, D> {
             control: mut ctrl,
             remaining: mut left,
         } = self;
-        if state.receive.map.meta().has_data() {
+        if let Some(limit) = state.receive.connection_window.pending() {
             if left == 0 {
                 return Ok(());
             }
-            ctrl.try_data(
-                &mut state.receive.max_data,
-                state.receive.connection_window.desired(),
-            )?;
-            state.receive.map.clear_data();
+            ctrl.try_data(&mut state.receive.max_data, limit)?;
             left -= 1;
         }
 

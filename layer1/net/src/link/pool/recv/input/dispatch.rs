@@ -2,19 +2,14 @@ use dope_core::driver::{route, route::Identity};
 
 use crate::{
     link::{
-        duplex,
         egress::{data, reserve::demand},
-        event,
         pool::{
             self,
             change::drain,
             recv::{
-                Readiness, Ready, Resumption, arrival, delivery, input,
-                receiver::{
-                    observed::{self, Delivery as _, Observation, Observed},
-                    resume::Resume,
-                },
-                storage::{self, queue::Ops as _, tail},
+                Readiness, Ready, Resumption, delivery, input,
+                receiver::{observed, resume::Resume},
+                storage::{self, queue::Ops as _},
             },
         },
         slot::recv::Capture,
@@ -34,27 +29,6 @@ pub trait Dispatch<W: wire::Spec>: Sized + storage::raw::Mode + drain::Policy<W>
     where
         W: 'w + 'd,
     {
-    }
-
-    fn dispatch<'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D>(
-        pool: &mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-        item: arrival::Input<event::Control<'d>>,
-    ) -> event::Dispatch<'d, ID>
-    where
-        'd: 'w,
-        T: crate::Transport,
-        W: wire::Spec + 'w + 'd,
-        M: input::Mode<W, Ingress = Self>,
-        B: data::raw::Payload<'d>,
-        D: demand::Mode,
-    {
-        let (item, timing) = item.into_parts();
-        match Observed::<ID, W, S, M>::observe(pool, item, timing) {
-            Observation::Complete(done) => done,
-            Observation::Ready(next, storage) => {
-                Self::Delivery::<'_, 'd, input::Receipt<W, M>>::ready(next, storage)
-            }
-        }
     }
 
     fn resume<'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D>(
@@ -111,27 +85,8 @@ pub trait Dispatch<W: wire::Spec>: Sized + storage::raw::Mode + drain::Policy<W>
         B: data::raw::Payload<'d>,
         D: demand::Mode,
     {
-        let Some((slot, mut recv)) =
-            tail::Slot::receive::<M::Ingress, _>(&mut pool.prepared.slab, key.parts())
-        else {
-            return;
-        };
-        let (mut entry, tail) = tail::Store::pending(slot);
-        let slot = entry.get_mut();
-        let queued = recv.storage.has_queued();
-        let close = slot.engine.operations.lifecycle.is_closing();
-        let ended = slot.terminal.is_read_done();
-        let next = slot.engine.operations.recv.resume_app(close || ended);
-        let wake = !close
-            && ((queued && (ended || next.is_some() && !slot.engine.operations.recv.is_paused()))
-                || (tail && next.is_some())
-                || (slot.terminal.is_pending() && next.is_some()));
-        let ready = wake.then(|| slot.io().ready_handle());
-        if next.is_some_and(duplex::Rearm::is_needed) && !queued {
-            recv.rearm.queue();
-        }
-        if let Some(ready) = ready {
-            ready.activate();
+        if let Ok(mut entry) = pool.entry(key) {
+            entry.resume();
         }
     }
 

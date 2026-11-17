@@ -25,6 +25,123 @@ use crate::common::storage::replies::{
 };
 
 #[test]
+fn completion_retains_owner_while_pending() {
+    use std::{pin::Pin, task::Poll};
+
+    use dope::core::driver::route::{Epoch, KeyTag, indices::SlotIndex};
+    use dope_fiber::{
+        context::Context,
+        reply::{Arena, layout},
+        reply::recv::Extract as _,
+    };
+
+    use crate::common::storage::replies::support::{Error as ReplyError, Finish, limit};
+    use dope_fiber::reply::recv::outcome::Terminal;
+
+    let owners = Drops::new();
+    let failures = Drops::new();
+    let values = Drops::new();
+    Setup::throughput().with_turn(
+        |turn, mut driver| {
+            let site = driver.driver_ref();
+            let target = site
+                .targets::<KeyTag<0>>()
+                .bind(SlotIndex::ZERO, Epoch::INITIAL)
+                .dispatch();
+            let ready = site.ready().make_slot(target).expect("reply wake slot");
+            let layout = layout::Layout::single(layout::Entries::new(2), limit(1, 1, 1))
+                .expect("reply layout");
+            Arena::try_with(layout, driver.region_token().proof(), |arena| {
+                let lane = arena.try_lane(LaneIndex::ZERO).expect("reply lane");
+                let mut response = recv::Response::<_, Finish>::new();
+                response
+                    .try_attach(driver.region_token(), lane)
+                    .expect("reply attachment");
+                let mut owner = Some(Counted::data(&owners));
+                let mut complete = |reply: Result<(), Counted<'_>>| {
+                    drop(owner.take().expect("completion owner"));
+                    reply.map_err(|failure| failure.failure.expect("failure cause"))
+                };
+                Context::with_target(
+                    ready.target(),
+                    turn.turn().app(),
+                    driver.reborrow(),
+                    |mut cx| {
+                        assert!(
+                            Pin::new(&mut response)
+                                .poll_reply(cx.as_mut(), Finish::extract, &mut complete)
+                                .is_pending()
+                        );
+                        assert_eq!(owners.count(), 0);
+                        assert!(
+                            lane.select(cx.as_mut().region_token())
+                                .try_fail(Counted::from(&Cause::new(7, &failures)))
+                                .is_ok()
+                        );
+                        assert_eq!(
+                            Pin::new(&mut response).poll_reply(
+                                cx.as_mut(),
+                                Finish::extract,
+                                &mut complete,
+                            ),
+                            Poll::Ready(Err(7))
+                        );
+                        assert_eq!((owners.count(), failures.count()), (1, 1));
+                        assert!(
+                            Pin::new(&mut response)
+                                .poll_reply(cx.as_mut(), Finish::extract, complete)
+                                .is_pending()
+                        );
+                        let mut response = recv::Response::<_, RetainOne>::new();
+                        assert!(response.try_attach(cx.as_mut().region_token(), lane).is_ok());
+                        assert!(
+                            lane.select(cx.as_mut().region_token())
+                                .try_push(Counted::mixed(&values))
+                                .is_ok()
+                        );
+                        lane.complete(cx.as_mut().region_token());
+                        let mut owner = Some(Counted::data(&owners));
+                        let output = Pin::new(&mut response).poll_reply(
+                            cx.as_mut(),
+                            |_, slot| {
+                                let mut before = || drop(owner.take().expect("completion owner"));
+                                match slot.terminal()? {
+                                    Terminal::Complete(done) => done
+                                        .try_retain(before)
+                                        .map_err(ReplyError::Retain)
+                                        .transpose(),
+                                    Terminal::Failed(fault) => {
+                                        let cause = fault.into_error().failure;
+                                        before();
+                                        Some(Err(ReplyError::Failed(cause)))
+                                    }
+                                }
+                            },
+                            |reply| {
+                                assert_eq!((owners.count(), values.count()), (2, 0));
+                                reply.map(|retained| {
+                                    let (value, held) = retained.into_parts();
+                                    drop(value);
+                                    drop(held);
+                                    values.count()
+                                })
+                            },
+                        );
+                        assert_eq!(output, Poll::Ready(Ok(1)));
+                    },
+                );
+            })
+            .expect("reply arena");
+        },
+        recovery::Policy::new(
+            |event| assert!(matches!(event, Reclaimed::Shutdown)),
+            recover,
+        ),
+        runtime::check_scope,
+    );
+}
+
+#[test]
 fn deferral_holds_credit() {
     use std::{cell::Cell, pin::Pin, task::Poll};
 

@@ -11,9 +11,6 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Invalid {
-    Stale {
-        actual: transfer::Len,
-    },
     Excess {
         actual: transfer::Len,
         maximum: transfer::Len,
@@ -25,14 +22,12 @@ pub enum Invalid {
     },
     Overflow(reclaim::Overflow),
     Egress(egress::Invalid),
-    SettleActive,
     SettleStale,
 }
 
 impl From<sending::Invalid> for Invalid {
     fn from(error: sending::Invalid) -> Self {
         match error {
-            sending::Invalid::Stale { sent } => Self::Stale { actual: sent },
             sending::Invalid::Excess {
                 sent,
                 limit,

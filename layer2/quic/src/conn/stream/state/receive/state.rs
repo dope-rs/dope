@@ -26,7 +26,9 @@ impl<'state, B: crate::stream::Recv, D: buffer::raw::Segment> Status<'state, B, 
 
     pub(in crate::conn) fn has_ctrl(&self) -> bool {
         let map = &self.state.receive.map;
-        map.meta().has_ctrl() || map.has_work()
+        map.meta().has_ctrl()
+            || map.has_work()
+            || self.state.receive.connection_window.pending().is_some()
     }
 
     pub(in crate::conn) fn can_ctrl(&self, ctrl: &control::Pending) -> bool {

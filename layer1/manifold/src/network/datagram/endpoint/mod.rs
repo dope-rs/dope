@@ -2,7 +2,7 @@ use std::{mem, net, ops, pin};
 
 use dope_core::{
     driver::route::{Identity, KeyTag},
-    io::{self, datagram::Residency},
+    io::datagram::Residency,
 };
 use dope_runtime::executor;
 use o3::buffer::{self, pool};
@@ -52,10 +52,10 @@ where
     H: datagram::Ingress<'d, ID, Mode = ingress::Access> + datagram::Access<'d, ID>,
     H::Hooks: hook::Bundle<Buffer = B, Send = M, Settlement = hook::Disabled>,
 {
-    fn dispatch<'app>(
-        call: executor::raw::Call<'app, Self, (), io::Event<'d>>,
-    ) -> ops::ControlFlow<io::Event<'d>> {
-        let (mut endpoint, (), event) = call.into_parts();
+    fn dispatch<'event>(
+        mut endpoint: pin::Pin<&mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         let this = endpoint.as_mut().project();
         let mut socket = this.socket;
         let event = match socket.as_mut().project().receive.route(event) {
@@ -80,18 +80,11 @@ where
 {
     type Access = dispatch::raw::Plain;
 
-    fn dispatch<'app, 'driver>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ops::ControlFlow<io::Event<'d>> {
-        let (mut endpoint, (), (event, mut driver)) = call.into_parts();
+    fn dispatch<'event>(
+        mut endpoint: pin::Pin<&mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+        mut driver: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         let clock = driver.driver_ref().clock();
         let this = endpoint.as_mut().project();
         <H::Mode as ingress::Drive<'d, ID, H, <H::Hooks as hook::Bundle>::Settlement>>::dispatch(

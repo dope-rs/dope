@@ -1,9 +1,6 @@
 use std::{marker, mem, ops, pin};
 
-use dope_core::{
-    driver::{self, schedule, settings},
-    io,
-};
+use dope_core::driver::{self, schedule, settings};
 use o3::base::cell::region;
 
 use super::forward;
@@ -57,8 +54,9 @@ where
     const ROUTES: settings::Routes = T::ROUTES;
     const WAKE_ROUTES: settings::Routes = T::WAKE_ROUTES;
     const COORDS: usize = <T as executor::raw::App<'d>>::COORDS;
+    const PARK: bool = T::PARK;
 
-    fn select_park() -> Option<Self::ParkPlan> {
+    fn select_park() -> Self::ParkPlan {
         <T as executor::raw::App<'d>>::select_park()
     }
 
@@ -109,10 +107,13 @@ where
         forward::install(call)
     }
 
-    fn dispatch<'app, 'driver, 'turn>(
-        call: executor::raw::Dispatch<'app, 'driver, 'turn, 'd, Self>,
-    ) -> ops::ControlFlow<io::Event<'d>> {
-        forward::dispatch(call)
+    fn dispatch<'event>(
+        app: pin::Pin<&mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+        turn: schedule::Turn<'_, 'd>,
+        driver: driver::Context<'_, 'd>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
+        forward::dispatch(app, event, turn, driver)
     }
 
     fn shutdown<'app, 'turn, 'driver>(

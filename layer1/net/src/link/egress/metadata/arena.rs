@@ -1,5 +1,5 @@
 use std::{
-    array, marker,
+    array, cell, marker,
     mem::{align_of, size_of},
     num,
 };
@@ -9,7 +9,7 @@ use dope_core::driver::{
     route::{Identity, KeyTag},
     schedule::app,
 };
-use o3::{alloc, base::cell::region, mem, mem::quota};
+use o3::{alloc, base::cell::region, mem::quota};
 
 use crate::link::{
     egress::{
@@ -233,7 +233,7 @@ const _: () = {
 };
 
 pub struct Store<'d> {
-    pub(in crate::link::egress) shared: mem::raw::Pool<2, credit::Tag, u32>,
+    pub(in crate::link::egress) shared: cell::Cell<[u32; 2]>,
     pub(in crate::link::egress) config: egress::Config,
     pub(in crate::link::egress) count: metadata::LaneCount,
     pub(in crate::link::egress) lanes: Box<[lane::Lane<'d>]>,
@@ -244,16 +244,10 @@ impl<'d> Store<'d> {
     /// Forgotten affine handles cannot retain usable access across this
     /// exclusive borrow; their abandoned accounting does not enter the new epoch.
     fn reopen(&mut self) {
-        use mem::raw::Source as _;
-
         for lane in &mut self.lanes {
-            // SAFETY: these are the exact states minted with this shared pool;
-            // the exclusive Store borrow excludes every usable prior arena loan.
-            // All bound states and their shared surplus are then rebuilt together.
-            let reserve = unsafe { self.shared.lane(&lane.credit) }.reserve();
-            *lane = lane::Lane::new(mem::raw::State::new(reserve));
+            *lane = lane::Lane::new(lane.reserve);
         }
-        self.shared = mem::raw::Pool::new(self.config.shared_limit());
+        self.shared.set(self.config.shared_limit());
     }
 
     pub fn try_new(
@@ -279,10 +273,10 @@ impl<'d> Store<'d> {
         let states = alloc::BoxSliceExt::try_from_fn(count as usize, |index| {
             let reserve =
                 array::from_fn(|axis| reserve[axis] + u32::from((index as u32) < extra[axis]));
-            lane::Lane::new(mem::raw::State::new(reserve))
+            lane::Lane::new(reserve)
         })?;
         Ok(Self {
-            shared: mem::raw::Pool::new(config.shared_limit()),
+            shared: cell::Cell::new(config.shared_limit()),
             config,
             count: lanes,
             lanes: states,

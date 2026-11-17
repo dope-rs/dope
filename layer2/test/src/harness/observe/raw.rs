@@ -1,19 +1,16 @@
 use std::{ops::ControlFlow, pin::Pin};
 
-use dope_core::{
-    driver::{
-        route,
-        route::{KeyTag, kind},
-        schedule, settings,
-    },
-    io,
+use dope_core::driver::{
+    route,
+    route::{KeyTag, kind},
+    schedule, settings,
 };
 use dope_runtime::executor;
 
 use crate::harness::observe::Trace;
 
 impl<'d, const N: usize> executor::raw::Layout<'d> for &Trace<route::Erased<'d, kind::Any>, N> {
-    type ParkPlan = std::convert::Infallible;
+    type ParkPlan = ();
 }
 
 // SAFETY: the borrowed trace has no pinned owners or operation authorities.
@@ -21,26 +18,27 @@ unsafe impl<'d, const N: usize> executor::raw::App<'d> for &Trace<route::Erased<
     const ROUTES: settings::Routes = settings::Routes::singleton::<KeyTag<0>>();
     const WAKE_ROUTES: settings::Routes = Self::ROUTES;
     const COORDS: usize = 0;
+    const PARK: bool = false;
 
-    fn select_park() -> Option<Self::ParkPlan> {
-        None
-    }
+    fn select_park() -> Self::ParkPlan {}
 
     /// # Safety
-    /// The selected plan is uninhabited, so this operation cannot be invoked.
+    /// The root and driver authority belong to the same installation.
     unsafe fn park<'app, 'driver, 'turn>(
         _: Pin<&'app mut Self>,
-        plan: &mut Self::ParkPlan,
+        _: &mut Self::ParkPlan,
         _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
         'd: 'driver + 'turn,
     {
-        match *plan {}
     }
 
-    fn dispatch<'app, 'driver, 'turn>(
-        _: executor::raw::Dispatch<'app, 'driver, 'turn, 'd, Self>,
-    ) -> ControlFlow<io::Event<'d>> {
+    fn dispatch<'event>(
+        _: Pin<&mut Self>,
+        _: executor::raw::Dispatch<'event, 'd>,
+        _: schedule::Turn<'_, 'd>,
+        _: dope_core::driver::Context<'_, 'd>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         ControlFlow::Continue(())
     }
 

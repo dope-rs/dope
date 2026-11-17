@@ -1,4 +1,7 @@
-use o3::{alloc, depot::capacity};
+use o3::{
+    alloc,
+    depot::{arena::slab::external::OccupiedSlot, capacity, index::Initialized, raw::Proof},
+};
 use table::borrows;
 
 use crate::driver::{route, route::indices, route::table};
@@ -49,6 +52,25 @@ impl<T, Tag: route::Tag> Slab<T, Tag> {
 
     pub fn contains(&self, parts: table::Parts<Tag>) -> bool {
         self.get(parts).is_some()
+    }
+
+    pub fn value(live: Proof<(&Self, indices::SlotIndex), Initialized<()>>) -> &T {
+        // SAFETY: the proof retains this original table's initialized physical slot.
+        let live = unsafe { live.map(|(owner, index)| (&owner.inner, index.index().into())) };
+        table::Storage::value(live).into_inner().0
+    }
+
+    pub fn occupied<C>(
+        live: Proof<((&mut Self, C), indices::SlotIndex), Initialized<()>>,
+    ) -> (table::entries::occupied::Entry<'_, T, Tag>, C) {
+        // SAFETY: the original exclusive table, initialized slot and context stay paired.
+        let live = unsafe {
+            live.map(|((owner, context), index)| {
+                ((&mut owner.inner, context), index.index().into())
+            })
+        };
+        let (entry, context) = OccupiedSlot::from_live(live);
+        (table::entries::occupied::Entry(entry), context)
     }
 
     pub fn key_at(&self, slot: indices::SlotIndex) -> Option<table::Key<Tag>> {

@@ -39,10 +39,10 @@ type Request = egress::NonEmpty<Shared>;
 pub struct Requests<'d> {
     pub(crate) pending: fair::Lanes<'d, Request, usize>,
     pub(crate) assigned: [Cell<bool>; 4],
-    pub(crate) peers: [Option<SocketAddr>; 4],
+    pub(crate) peers: [Option<(conn::Id<'d, KeyTag<0>>, SocketAddr)>; 4],
     pub(crate) next: Rc<Cell<usize>>,
     pub(crate) order: Rc<Trace<usize, 4>>,
-    pub(crate) admitted: Rc<Trace<SocketAddr, 4>>,
+    pub(crate) admitted: Rc<Trace<(SocketAddr, u8), 4>>,
 }
 
 pub struct Lane<'d> {
@@ -52,6 +52,7 @@ pub struct Lane<'d> {
     pub(crate) conn: Gate,
     pub(crate) moved: Gate,
     pub(crate) sent: Gate,
+    pub(crate) settled: Gate,
 }
 
 impl Lane<'_> {
@@ -116,6 +117,19 @@ impl<'d> Plain<'d> for Lane<'d> {
 }
 
 impl<'d> Output<'d> for Lane<'d> {
+    fn settled(
+        &mut self,
+        connection: conn::Id<'d, KeyTag<0>>,
+        payload: Self::Send,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        let index = connection.index().into_usize();
+        let (expected, _) = self.requests.peers[index].expect("connected endpoint");
+        assert_eq!(connection, expected);
+        assert_eq!(payload.as_ref().first().copied(), Some(b'0' + index as u8));
+        self.settled.hit();
+    }
+
     fn sent() -> impl for<'a, 't> Call<(
         &'a mut Self,
         conn::Id<'d, KeyTag<0>>,
@@ -166,7 +180,7 @@ impl<'d> Source<'d> for Lane<'d> {
         if !assigned.get() {
             let position = self.requests.next.get();
             let length = Self::REQUESTS[position];
-            let marker = if length == 5 { b'5' } else { b'8' };
+            let marker = b'0' + index as u8;
             let value =
                 Shared::try_from(&mut vec![marker; length]).expect("request storage freeze");
             let value = egress::Load::new(value)
@@ -191,9 +205,10 @@ impl<'d> Source<'d> for Lane<'d> {
                     drop(permit);
                 });
                 self.requests.order.record(length);
-                self.requests
-                    .admitted
-                    .record(self.requests.peers[index].expect("connected endpoint"));
+                self.requests.admitted.record((
+                    self.requests.peers[index].expect("connected endpoint").1,
+                    b'0' + index as u8,
+                ));
                 self.moved.hit();
                 return;
             }
@@ -217,8 +232,9 @@ impl<'d> session::Connected<'d> for Lane<'d> {
         peer: socket::Addr,
         context: turns::Startup<'_, '_, 'd, Self::ConnState, Self::Send>,
     ) {
-        self.requests.peers[context.connection().index().into_usize()] =
-            Some(peer.into_std().expect("TCP peer address"));
+        let connection = context.connection();
+        self.requests.peers[connection.index().into_usize()] =
+            Some((connection, peer.into_std().expect("TCP peer address")));
         self.conn.hit();
     }
 }

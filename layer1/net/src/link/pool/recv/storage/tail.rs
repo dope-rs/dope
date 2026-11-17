@@ -10,7 +10,7 @@ use dope_core::driver::{
 };
 use o3::{
     alloc::BoxSliceExt,
-    depot::arena::slab::external::errors,
+    depot::{arena::slab::external::errors, index::Initialized, raw::Proof},
     mem::{raw, slot},
 };
 
@@ -74,6 +74,11 @@ pub struct Table<T, Tag: route::Tag, S, R = ()> {
 impl<T, Tag: route::Tag, S, R> Table<T, Tag, S, R> {
     pub(in crate::link::pool) fn access(&mut self) -> borrows::Access<'_, T, Tag> {
         self.slab.access()
+    }
+
+    pub(in crate::link::pool) fn value(live: Proof<(&Self, SlotIndex), Initialized<()>>) -> &T {
+        // SAFETY: the unchanged paired table retains its admitted initialized slab.
+        Slab::value(unsafe { live.map(|(table, index)| (&table.slab, index)) })
     }
 }
 
@@ -174,9 +179,7 @@ pub trait Store: Seal + Sized {
     fn try_new<T, Tag: route::Tag>(cap: conn::Capacity) -> crate::Result<Table<T, Tag, Self>>;
 
     /// Keeps the admitted resident while observing its deferred tail.
-    fn pending<T, Tag: route::Tag>(
-        slot: Slot<'_, T, Tag, Self>,
-    ) -> (occupied::Entry<'_, T, Tag>, bool);
+    fn pending<T, Tag: route::Tag>(slot: &mut Slot<'_, T, Tag, Self>) -> bool;
 
     fn clear<'a, 'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, T>(
         slot: Slot<'a, types::Connection<'w, 'd, ID, W, T>, ID, Self>,
@@ -192,10 +195,8 @@ impl Store for () {
         })
     }
 
-    fn pending<T, Tag: route::Tag>(
-        slot: Slot<'_, T, Tag, Self>,
-    ) -> (occupied::Entry<'_, T, Tag>, bool) {
-        (slot.entry, false)
+    fn pending<T, Tag: route::Tag>(_: &mut Slot<'_, T, Tag, Self>) -> bool {
+        false
     }
 
     fn clear<'a, 'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, T>(
@@ -229,11 +230,18 @@ impl<'w, 'd: 'w, W: wire::Spec + 'w> Store for Queued<'w, 'd, W> {
         })
     }
 
-    fn pending<T, Tag: route::Tag>(
-        slot: Slot<'_, T, Tag, Self>,
-    ) -> (occupied::Entry<'_, T, Tag>, bool) {
-        let (entry, chunk) = slot.split();
-        (entry, chunk.get().is_some())
+    fn pending<T, Tag: route::Tag>(slot: &mut Slot<'_, T, Tag, Self>) -> bool {
+        use o3::depot::raw::Proof;
+
+        // SAFETY: the selected resident belongs to this table's fixed tail extent.
+        let chunk: &mut slot::Storage<Chunk<'w, 'd, W, Disabled>> = unsafe {
+            Proof::new((
+                slot.tail.chunks.as_mut(),
+                slot.entry.key().slot().index().get() as usize,
+            ))
+        }
+        .into();
+        chunk.get().is_some()
     }
 
     fn clear<'a, 'v, 'owner: 'v, ID: Identity + 'v, V: wire::Spec + 'v + 'owner, T>(
@@ -248,7 +256,7 @@ impl<'w, 'd: 'w, W: wire::Spec + 'w> Store for Queued<'w, 'd, W> {
 }
 
 impl<'a, 'w, 'd: 'w, W: wire::Spec + 'w> Taken<'a, 'w, 'd, W> {
-    pub(in crate::link::pool::recv) fn new(
+    pub(in crate::link::pool) fn new(
         occupied: raw::Occupied<'a, Chunk<'w, 'd, W, Disabled>>,
     ) -> Self {
         Self { occupied }
@@ -292,18 +300,27 @@ impl<T, Tag: route::Tag, S> Slot<'_, T, Tag, S> {
 }
 
 impl<'a, T, Tag: route::Tag, S> Slot<'a, T, Tag, S> {
-    pub(in crate::link::pool) fn new<R>(
-        table: &'a mut Table<T, Tag, S, R>,
-        parts: table::Parts<Tag>,
-    ) -> Option<Self> {
-        let entry = table.slab.access().occupied(parts)?;
-        Some(Self {
-            entry,
-            tail: &mut table.tail,
-        })
+    pub(in crate::link::pool) fn from_live<R>(
+        live: Proof<(&'a mut Table<T, Tag, S, R>, SlotIndex), Initialized<()>>,
+    ) -> (Self, &'a mut R) {
+        // SAFETY: all parts come from the original exclusively borrowed table.
+        let live = unsafe {
+            live.map(|(table, index)| {
+                (
+                    (&mut table.slab, (&mut table.tail, &mut table.storage)),
+                    index,
+                )
+            })
+        };
+        let (entry, (tail, storage)) = Slab::occupied(live);
+        (Self { entry, tail }, storage)
     }
 
-    pub(in crate::link::pool::recv) fn queue<'w, 'd: 'w, W: wire::Spec + 'w, M>(
+    pub(in crate::link::pool) fn into_mut(self) -> &'a mut T {
+        self.entry.into_mut()
+    }
+
+    pub(in crate::link::pool) fn queue<'w, 'd: 'w, W: wire::Spec + 'w, M>(
         self,
     ) -> Slot<'a, T, Tag, Queued<'w, 'd, W>>
     where
@@ -317,7 +334,7 @@ impl<'a, T, Tag: route::Tag, S> Slot<'a, T, Tag, S> {
 }
 
 impl<'a, 'w, 'd: 'w, T, Tag: route::Tag, W: wire::Spec + 'w> Slot<'a, T, Tag, Queued<'w, 'd, W>> {
-    pub(in crate::link::pool::recv) fn split(
+    pub(in crate::link::pool) fn split(
         self,
     ) -> (
         occupied::Entry<'a, T, Tag>,
@@ -342,23 +359,6 @@ impl<'a, 'w, 'd: 'w, T, Tag: route::Tag, W: wire::Spec + 'w> Slot<'a, T, Tag, Qu
 impl<'a, 'w: 'a, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w + 'd, U, S>
     Slot<'a, types::Connection<'w, 'd, ID, W, U>, ID, S>
 {
-    pub(in crate::link::pool) fn receive<P: storage::raw::Mode, R>(
-        table: &'a mut Stored<'d, types::Connection<'w, 'd, ID, W, U>, ID, S, P, R>,
-        parts: table::Parts<ID>,
-    ) -> Borrowed<'a, 'd, ID, P, Self, R> {
-        let entry = table.slab.access().occupied(parts)?;
-        // SAFETY: Table owns matching fixed extents and this exact occupied resident.
-        use o3::depot::raw::Proof;
-        let bound = unsafe { Proof::new((&mut table.storage, entry.get().key)) }.into();
-        Some((
-            Self {
-                entry,
-                tail: &mut table.tail,
-            },
-            bound,
-        ))
-    }
-
     pub(in crate::link::pool) fn at<P: storage::raw::Mode, R>(
         table: &'a mut Stored<'d, types::Connection<'w, 'd, ID, W, U>, ID, S, P, R>,
         index: SlotIndex,

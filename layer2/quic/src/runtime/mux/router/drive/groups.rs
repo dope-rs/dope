@@ -33,7 +33,7 @@ pub(super) fn flush_group<
     now: time::Instant,
 ) -> Result<Step, errors::Transmit<A::Identity, DOMAIN>> {
     let queued = slots.len_in::<{ mux::FLUSH_QUEUE }>();
-    if queued < MIN_GSO_PACKETS - 1 || outgoing.cache.batch.is_none() {
+    if queued < MIN_GSO_PACKETS - 1 || outgoing.cache.gso.is_none() {
         return Ok(Step::Idle);
     }
     let classify = |slot: &registry::Slot<C, DOMAIN, B, A::Send, A::Session>| {

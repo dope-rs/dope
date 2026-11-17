@@ -48,7 +48,7 @@ impl<'queue, 'token, 'p, 'd, T, D: demand::Mode> Reserve<'queue, 'token, 'p, 'd,
     }
 }
 
-impl<'p, 'd, T: data::raw::Resident<'d>, D: demand::Mode> Reserve<'_, '_, 'p, 'd, T, D> {
+impl<'p, 'd, T: data::raw::Payload<'d>, D: demand::Mode> Reserve<'_, '_, 'p, 'd, T, D> {
     /// Publishes the pre-owned payload only after the state transition succeeds.
     pub fn commit<R>(
         mut self,

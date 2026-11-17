@@ -68,8 +68,6 @@ impl Codec for Decode {
 
 impl Stateful for Decode {
     type State<'d> = State;
-    type Preview<'a> = &'a Head;
-    type Outcome<'d> = Head;
 
     fn state<'d>(&self, _: resident::Budget<'d>) -> State {
         State { parses: 0 }
@@ -95,19 +93,21 @@ impl Stateful for Decode {
         storage.partials = 0;
         Self::edit(storage)
     }
+}
 
-    fn decode<'d, S, T, F>(
+impl Decode {
+    pub(super) fn decode<'d, S, T, F>(
         &self,
         storage: &mut Storage<S>,
         state: &mut State,
         budget: &resident::Budget<'d>,
         limit: Limit,
-        admit: impl FnOnce(Result<Self::Preview<'_>, &Self::Error>) -> codec::Admission<F>,
+        admit: impl FnOnce(Result<&Head, &Error>) -> codec::Admission<F>,
     ) -> codec::Step<T>
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
         T: response::Outcome,
-        F: FnOnce(Result<Self::Outcome<'d>, Self::Error>, &mut State) -> T::Accepted,
+        F: FnOnce(Result<Head, Error>, &mut State) -> T::Accepted,
     {
         let emit = |result, state| super::accepted(result, state, admit);
         codec::Input::commit(&mut storage.source, budget, limit, |input| {
@@ -178,12 +178,12 @@ impl Stateful for Decode {
         })
     }
 
-    fn finish<'slot, 'id, 'd, S, T, F>(
+    pub(super) fn finish<'slot, 'id, 'd, S, T, F>(
         &self,
         mut input: storage::Owner<'slot, 'id, Storage<S>, State>,
         _: &resident::Budget<'d>,
         _: Limit,
-        admit: impl FnOnce(Result<Self::Preview<'_>, &Self::Error>) -> codec::Admission<F>,
+        admit: impl FnOnce(Result<&Head, &Error>) -> codec::Admission<F>,
     ) -> (
         storage::Owner<'slot, 'id, Storage<S>, State>,
         Result<codec::Finish<T>, T>,
@@ -191,7 +191,7 @@ impl Stateful for Decode {
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
         T: response::Outcome,
-        F: FnOnce(Result<Self::Outcome<'d>, Self::Error>, &mut State) -> T::Accepted,
+        F: FnOnce(Result<Head, Error>, &mut State) -> T::Accepted,
     {
         let (_, state) = input.parts();
         let emit = |result, state| super::accepted(result, state, admit);

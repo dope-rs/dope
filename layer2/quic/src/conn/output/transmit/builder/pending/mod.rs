@@ -151,7 +151,7 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
 
     pub(in crate::conn::output::transmit::builder) fn try_new(
         input: journal::Ready<records::Input<'a, DOMAIN, B, D>>,
-        mut plan: Plan<numbers::Packet>,
+        plan: Plan<numbers::Packet>,
         target: transmit::Destination,
     ) -> Result<
         Self,
@@ -214,7 +214,6 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment>
         } else {
             (Records::Untracked(input.cancel()), None)
         };
-        plan.set_tracked(tracked);
         let draft = Draft {
             records,
             destination: target,

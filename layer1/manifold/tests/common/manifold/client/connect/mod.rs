@@ -3,6 +3,7 @@ use dope_manifold::client::port::error::Open;
 use dope_test::harness::observe;
 
 pub mod dial;
+pub mod batch;
 pub mod open;
 pub mod ports;
 pub mod rejected;

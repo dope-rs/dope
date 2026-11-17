@@ -1,4 +1,5 @@
 mod bounds;
+mod geometry;
 pub mod demand;
 pub mod error;
 pub mod exact;
@@ -9,7 +10,8 @@ mod vacant;
 
 pub use bounds::Bounds;
 pub(in crate::link::egress) use bounds::Entries;
-pub use plan::Plan;
+pub use geometry::{Geometry, Prefix};
+pub use plan::{Acquire, Plan};
 pub use vacant::Vacant;
 
 /// Queue visibility produced by a validated final-link reservation.

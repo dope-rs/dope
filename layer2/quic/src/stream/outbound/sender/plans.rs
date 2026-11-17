@@ -92,8 +92,8 @@ impl Prepared {
 }
 
 impl Written {
-    pub(crate) const fn len(&self) -> usize {
-        self.bytes as usize
+    pub(crate) const fn len(&self) -> u16 {
+        self.bytes
     }
 
     pub(crate) const fn wire_len(&self) -> NonZero<u16> {

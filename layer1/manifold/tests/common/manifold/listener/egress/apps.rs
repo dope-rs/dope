@@ -2,7 +2,6 @@ use std::{cell::Cell, convert, pin::Pin, rc::Rc};
 
 use conn::write;
 use dope_core::{
-    BranchError,
     driver::{self, route, schedule::clock},
     random::Seed,
 };
@@ -25,9 +24,6 @@ use write::error;
 
 use crate::common::manifold::listener::egress::{RESPONSE, Retirement};
 
-type WriteResult<'d, L, E = o3::buffer::write::consume::Error> =
-    Result<write::Outcome<()>, error::Error<data::Bound<Shared<'d>, L>, (), E>>;
-
 pub struct State<'d> {
     pub(crate) body: Option<Shared<'d>>,
 }
@@ -39,15 +35,13 @@ pub struct Direct<F> {
     pub(crate) observe: F,
 }
 
-pub struct DirectWrite<'d> {
+pub struct DirectWrite {
     pub body: Option<usize>,
     pub allocations: (usize, usize),
-    pub result: WriteResult<'d, bound::Unbounded>,
+    pub result: Result<(), error::Admission>,
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(DirectWrite<'a>)> handler::Application<'d, ID>
-    for Direct<F>
-{
+impl<'d, ID: route::Identity, F: Fn(DirectWrite)> handler::Application<'d, ID> for Direct<F> {
     type Conn = State<'d>;
     type Build = convert::Infallible;
     type Wire = Identity;
@@ -79,9 +73,7 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(DirectWrite<'a>)> handler::Applicati
     }
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(DirectWrite<'a>)> handler::Borrowed<'d, ID>
-    for Direct<F>
-{
+impl<'d, ID: route::Identity, F: Fn(DirectWrite)> handler::Borrowed<'d, ID> for Direct<F> {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, State<'d>, Self::Egress>,
@@ -90,20 +82,30 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(DirectWrite<'a>)> handler::Borrowed<
     ) -> Outcome {
         let mut consumed = None;
         let measure = Tracker::begin();
-        let result = conn.write().try_commit(driver, |state, mut prefix| {
-            {
-                let mut writer = prefix.writer();
-                let mut staged = writer.try_split(1, 2)?;
-                staged.body().write_slice(b"xx")?;
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let result = match conn.write().try_open(driver, &mut output_slot) {
+            Ok(mut output) => {
+                let (state, mut prefix) = output.get_mut().parts();
+                {
+                    let mut staged = prefix.try_split(1, 2).expect("staged capacity");
+                    staged.body().write_slice(b"xx").expect("staged body");
+                }
+                prefix.write_byte(0xa5).expect("prefix capacity");
+                let body = state.body.take();
+                consumed = body.as_ref().map(|body| body.as_ref().len());
+                let body = body.map(|body| {
+                    egress::load::Value::Unchecked(egress::Load::new(body).unbounded())
+                });
+                match body {
+                    Some(body) => write::Output::try_publish(output, body, write::End::Close),
+                    None => write::Output::finish(output, write::End::Close),
+                }
+                .map_err(error::Mismatch::into_cause)
+                .expect("publication");
+                Ok(())
             }
-            prefix.write_byte(0xa5)?;
-            let body = state.body.take();
-            consumed = body.as_ref().map(|body| body.as_ref().len());
-            let body = body.map(|body| egress::Load::new(body).unbounded());
-            Ok(prefix
-                .commit(body.map(egress::load::Value::Unchecked), ())
-                .close_after())
-        });
+            Err(cause) => Err(cause),
+        };
         let activity = measure.finish();
         let allocs = (activity.allocations, activity.allocated_bytes);
         (self.observe)(DirectWrite {
@@ -122,31 +124,25 @@ pub struct Bounded<F> {
     pub(crate) observe: F,
 }
 
-pub enum BoundedEvent<'d> {
+pub enum BoundedEvent {
     Resident(Option<egress::ResidentSize>),
     Write {
         body: Option<usize>,
         allocations: (usize, usize),
-        result: WriteResult<
-            'd,
-            bound::AtMost<0>,
-            BranchError<egress::Excess<Shared<'d>>, o3::buffer::write::consume::Error>,
-        >,
+        result: Result<(), error::Admission>,
     },
     Deferred {
         body: Option<Option<usize>>,
         called: bool,
-        result: WriteResult<'d, bound::AtMost<0>>,
+        result: Result<(), error::Admission>,
     },
     Activated {
         body: Option<Option<usize>>,
-        result: WriteResult<'d, bound::AtMost<0>>,
+        result: Result<(), error::Admission>,
     },
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Application<'d, ID>
-    for Bounded<F>
-{
+impl<'d, ID: route::Identity, F: Fn(BoundedEvent)> handler::Application<'d, ID> for Bounded<F> {
     type Conn = State<'d>;
     type Build = convert::Infallible;
     type Wire = Identity;
@@ -181,12 +177,20 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Applicat
             return;
         }
         let mut body = None;
-        let result = conn.write().try_commit(driver, |state, mut prefix| {
-            called.set(true);
-            body = Some(state.body.as_ref().map(|body| body.as_ref().len()));
-            prefix.write_byte(0xc5)?;
-            Ok(prefix.commit(None, ()).close_after())
-        });
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let result = match conn.write().try_open(driver, &mut output_slot) {
+            Ok(mut output) => {
+                let (state, mut prefix) = output.get_mut().parts();
+                called.set(true);
+                body = Some(state.body.as_ref().map(|body| body.as_ref().len()));
+                prefix.write_byte(0xc5).expect("prefix capacity");
+                write::Output::finish(output, write::End::Close)
+                    .map_err(error::Mismatch::into_cause)
+                    .expect("publication");
+                Ok(())
+            }
+            Err(cause) => Err(cause),
+        };
         (this.observe)(BoundedEvent::Activated { body, result });
     }
 
@@ -198,9 +202,7 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Applicat
     }
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Borrowed<'d, ID>
-    for Bounded<F>
-{
+impl<'d, ID: route::Identity, F: Fn(BoundedEvent)> handler::Borrowed<'d, ID> for Bounded<F> {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
         mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, State<'d>, Self::Egress>,
@@ -215,16 +217,33 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Borrowed
         ));
         let mut consumed = None;
         let measure = Tracker::begin();
-        let result = conn.write().try_commit(driver, |state, mut prefix| {
-            prefix.write_byte(0xb5).map_err(BranchError::Second)?;
-            let body = state.body.take();
-            consumed = body.as_ref().map(|body| body.as_ref().len());
-            let body = body
-                .map(|body| egress::Load::new(body).try_bound::<bound::AtMost<0>>())
-                .transpose()
-                .map_err(BranchError::First)?;
-            Ok(prefix.commit(body.map(egress::load::Value::Unchecked), ()))
-        });
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let result = match conn.write().try_open(driver, &mut output_slot) {
+            Ok(mut output) => {
+                let (state, mut prefix) = output.get_mut().parts();
+                prefix.write_byte(0xb5).expect("prefix capacity");
+                let body = state.body.take();
+                consumed = body.as_ref().map(|body| body.as_ref().len());
+                let body = body.map(|body| {
+                    egress::Load::new(body)
+                        .try_bound::<bound::AtMost<0>>()
+                        .map_err(|excess| excess.maximum)
+                        .expect("static fixture retention")
+                });
+                match body {
+                    Some(body) => write::Output::try_publish(
+                        output,
+                        egress::load::Value::Unchecked(body),
+                        write::End::Open,
+                    ),
+                    None => write::Output::finish(output, write::End::Open),
+                }
+                .map_err(error::Mismatch::into_cause)
+                .expect("publication");
+                Ok(())
+            }
+            Err(cause) => Err(cause),
+        };
         let activity = measure.finish();
         let allocs = (activity.allocations, activity.allocated_bytes);
         (self.observe)(BoundedEvent::Write {
@@ -234,11 +253,19 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Borrowed
         });
         let called = self.as_ref().get_ref().called.clone();
         let mut body = None;
-        let result = conn.write().try_commit(driver, |state, prefix| {
-            called.set(true);
-            body = Some(state.body.take().map(|body| body.as_ref().len()));
-            Ok(prefix.commit(None, ()))
-        });
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let result = match conn.write().try_open(driver, &mut output_slot) {
+            Ok(mut output) => {
+                let (state, _) = output.get_mut().parts();
+                called.set(true);
+                body = Some(state.body.take().map(|body| body.as_ref().len()));
+                write::Output::finish(output, write::End::Open)
+                    .map_err(error::Mismatch::into_cause)
+                    .expect("empty publication");
+                Ok(())
+            }
+            Err(cause) => Err(cause),
+        };
         (self.observe)(BoundedEvent::Deferred {
             body,
             called: self.as_ref().get_ref().called.get(),
@@ -248,9 +275,7 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> handler::Borrowed
     }
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(DirectWrite<'a>)> retire::Policy<'d, Direct<F>, ID>
-    for Retirement
-{
+impl<'d, ID: route::Identity, F: Fn(DirectWrite)> retire::Policy<'d, Direct<F>, ID> for Retirement {
     fn select() -> Option<Self> {
         Some(Self)
     }
@@ -272,7 +297,7 @@ impl<'d, ID: route::Identity, F: for<'a> Fn(DirectWrite<'a>)> retire::Policy<'d,
     }
 }
 
-impl<'d, ID: route::Identity, F: for<'a> Fn(BoundedEvent<'a>)> retire::Policy<'d, Bounded<F>, ID>
+impl<'d, ID: route::Identity, F: Fn(BoundedEvent)> retire::Policy<'d, Bounded<F>, ID>
     for Retirement
 {
     fn select() -> Option<Self> {

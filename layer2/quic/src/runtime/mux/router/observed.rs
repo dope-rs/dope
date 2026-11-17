@@ -15,10 +15,6 @@ use crate::{
 };
 use app::{Selected as _, Set as _};
 use conn::{id, scope};
-use control::Control as _;
-use dgram::Dgram as _;
-use dial::{direct, pooled};
-use direct::Direct as _;
 use handler::{
     hook::{
         set,
@@ -28,9 +24,6 @@ use handler::{
 };
 use life::{options, tls};
 use mux::{app, auth, handler, manage, output, protocol, router};
-use protocol::{control, dgram, dial, recv, rotation};
-use recv::Recv as _;
-use rotation::Local as _;
 use router::routing::issuer;
 use scope::path;
 use stream::retain;
@@ -420,9 +413,9 @@ where
         dcid: Vec<u8>,
     ) -> Result<id::Handle<E::Identity, DOMAIN>, errors::Connect> {
         use crate::wire::packet::cid::Id;
-        use pooled::Pooled;
 
         let dcid = Id::try_from(dcid)?;
-        Pooled::connect_in(&mut self.io, self.brand, peer, pool, opts, dcid, self.now)
+        self.io
+            .pool_connect_in(self.brand, peer, pool, opts, dcid, self.now)
     }
 }

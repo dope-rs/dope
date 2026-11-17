@@ -57,11 +57,12 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Drain {
     ) -> Outcome {
         assert!(!chunk.as_ref().is_empty());
         let payload = &self.as_ref().get_ref().payload;
-        let outcome = conn.write().try_bounded(driver, |&mut (), mut prefix| {
-            prefix.write_slice(payload).unwrap();
-            prefix.commit(None, ()).close_after()
-        });
-        assert!(matches!(outcome, Ok(write::Outcome::Committed(()))));
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+        output.get_mut().parts().1.write_slice(payload).unwrap();
+        write::Output::finish(output, write::End::Close)
+            .map_err(write::error::Mismatch::into_cause)
+            .expect("prefix publication");
         Outcome::Continue
     }
 }

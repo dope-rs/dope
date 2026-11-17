@@ -108,10 +108,6 @@ impl<'d, P: reclaim::Policy> State<'d, P> {
         }
     }
 
-    pub(in crate::link) fn finish_send(&mut self) -> sending::Done {
-        self.sending.done()
-    }
-
     pub(in crate::link) fn cancel_send(&mut self) -> Cancel<'_, 'd, kind::Send> {
         self.sending.cancel()
     }
@@ -119,7 +115,7 @@ impl<'d, P: reclaim::Policy> State<'d, P> {
     pub(in crate::link) fn queue_submit(
         &mut self,
         credit: P::Credit,
-    ) -> Result<reclaim::Submission, QueueError> {
+    ) -> Result<Option<transfer::Len>, QueueError> {
         let state = self.queue_state(Some(SendSource::Queued))?;
         let (next, action) = P::submitted(state, credit).map_err(QueueError::Overflow)?;
         *state = next;

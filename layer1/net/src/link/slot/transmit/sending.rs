@@ -3,12 +3,11 @@ use dope_core::{
         self,
         result::SubmitCause,
         retained::flight,
-        route::{self, Identity, kind},
+        route::{self, Identity},
     },
     io::transfer,
 };
 use o3::base::cell::region;
-use outcome::Terminal;
 use send::{Store as _, reclaim};
 
 use crate::{
@@ -16,7 +15,6 @@ use crate::{
         duplex::{sending, state},
         egress::{self, data, reserve::demand},
         event,
-        event::SendSource,
         pool,
         slot::{
             transmit::{Finalize, Invalid, graceful, outcome},
@@ -43,7 +41,7 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
         self.slot.engine.discard(&mut self.slot.terminal);
     }
 
-    pub(super) fn finish_end(slot: &mut types::Control<'w, 'd, ID, W>) {
+    pub(in crate::link) fn finish_end(slot: &mut types::Control<'w, 'd, ID, W>) {
         let kind = slot.terminal.kind();
         match slot.terminal.finish_send() {
             terminal::Wake::Idle => {}
@@ -122,22 +120,22 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
         D: demand::Mode,
     {
         let done = self.slot.engine.operations.queue_done()?;
-        match done {
+        let (acknowledged, bytes) = match done {
             reclaim::Completion::Submitted(bytes) => {
-                if queue.is_active() {
-                    Err(Invalid::SettleActive)
-                } else {
-                    Ok(bytes)
+                if !queue.is_active() {
+                    return Ok(bytes);
                 }
+                (bytes, None)
             }
             reclaim::Completion::Retained => {
                 let bytes = sent.into_len();
-                match queue.complete(token, bytes, |body| release(key, body)) {
-                    egress::Change::Applied => Ok(bytes),
-                    egress::Change::Stale => Err(Invalid::SettleStale),
-                    egress::Change::Invalid(error) => Err(Invalid::Egress(error)),
-                }
+                (bytes, Some(bytes))
             }
+        };
+        match queue.complete(token, bytes, |body| release(key, body)) {
+            egress::Change::Applied => Ok(acknowledged),
+            egress::Change::Stale => Err(Invalid::SettleStale),
+            egress::Change::Invalid(error) => Err(Invalid::Egress(error)),
         }
     }
 
@@ -150,13 +148,8 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
         queue: &mut egress::Output<'_, '_, 'd, IOV, B, D>,
     ) {
         let acks = &mut self.slot.engine.operations.acknowledgements;
-        let held = matches!(
-            <<<W as wire::Spec>::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::abort(acks),
-            reclaim::Abort::Retained
-        );
-        if held {
-            queue.abort();
-        }
+        <<<W as wire::Spec>::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::abort(acks);
+        queue.abort();
     }
 
     pub(in crate::link) fn has_ack(&self) -> bool {
@@ -233,129 +226,3 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
     }
 }
 
-impl<'sending, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'sending, 'w, 'd, ID, W>
-where
-    'd: 'w,
-{
-    pub(in crate::link) fn sent(
-        self,
-        slots: &flight::Slots<'d, ID>,
-        driver: &mut driver::Context<'_, 'd>,
-        bytes: transfer::Len,
-        key: pool::Key<'d, ID, kind::Send>,
-    ) -> (Terminal, send::Availability) {
-        let target = key.target();
-        let conn = &mut *self.slot;
-        let Some(fd) = conn.engine.establish.fd() else {
-            let origin = match conn.engine.operations.finish_send() {
-                sending::Done::Active(origin) => origin,
-                sending::Done::Idle => return (Terminal::Drop, send::Availability::Unchanged),
-            };
-            conn.discard();
-            return (Terminal::closed(origin), send::Availability::Unchanged);
-        };
-        let done = match conn.engine.operations.try_complete_send(bytes) {
-            Ok(done) => done,
-            Err(error) => {
-                conn.discard();
-                return (Terminal::Invalid(error), send::Availability::Unchanged);
-            }
-        };
-        let (sent, origin) = done.into_parts();
-        let source = match origin {
-            SendSource::Direct => sending::Source::Direct,
-            SendSource::Queued => sending::Source::Queued,
-            SendSource::Terminal => sending::Source::Terminal,
-            SendSource::WriteShutdown => {
-                Self::wake(conn, origin);
-                return (Terminal::sent(origin, sent), send::Availability::Unchanged);
-            }
-        };
-        let done = send::Completion::from_sent(send::Storage::new(&mut conn.send), sent);
-        let context = send::Context::new(&mut conn.wire, done);
-        let (submit, avail, captured) = match conn.engine.send(&mut conn.terminal) {
-            terminal::Admission::Open(end) => {
-                let done = <W::Send as send::Policy<W>>::after_send::<ID>(context, end);
-                let (next, captured) = done.into_parts();
-                let (ready, avail) = next.into_parts();
-                let op = conn.engine.operations.submission(source);
-                let ready = ready.resolve(captured);
-                let submit = op.submit(fd, slots, driver, target, ready);
-                (submit, avail, captured)
-            }
-            terminal::Admission::Closed => {
-                let end = conn.terminal.drain();
-                let next = <W::Send as send::Policy<W>>::settle::<ID>(context, end);
-                let (ready, avail) = next.into_parts();
-                if conn.engine.operations.lifecycle.close.is_discarded() {
-                    return (Terminal::closed(origin), avail);
-                }
-                let ready = ready.close_after();
-                let captured = terminal::Captured::None;
-                let op = conn.engine.operations.submission(source);
-                let submit = op.submit(fd, slots, driver, target, ready);
-                (submit, avail, captured)
-            }
-        };
-        let handoff = outcome::Handoff::from_attempt(submit);
-        match handoff.progress() {
-            outcome::Progress::Submitted | outcome::Progress::Idle => {}
-            outcome::Progress::Rejected(error) => {
-                conn.engine.captured(captured);
-                conn.discard();
-                return (Terminal::rejected(origin, error), avail);
-            }
-        }
-        conn.engine.captured(captured);
-        if let terminal::Admission::Open(end) = conn.engine.send(&mut conn.terminal) {
-            let Some(fd) = conn.engine.establish.fd() else {
-                conn.discard();
-                return (Terminal::closed(origin), avail);
-            };
-            let op = conn.engine.operations.submission(source);
-            let (captured, handoff) = graceful::submit_pending(
-                send::Context::new(&mut conn.wire, send::Storage::new(&mut conn.send)),
-                op,
-                fd,
-                slots,
-                driver,
-                target,
-                terminal::Admission::Open(end),
-            );
-            conn.engine.captured(captured);
-            if let outcome::Progress::Rejected(error) = handoff.progress() {
-                conn.discard();
-                return (Terminal::rejected(origin, error), avail);
-            }
-        }
-        if conn.engine.operations.sending.is_inflight()
-            || conn.engine.operations.lifecycle.is_waiting()
-        {
-            return (Terminal::Pending, avail);
-        }
-        Self::wake(conn, origin);
-        (Terminal::sent(origin, sent), avail)
-    }
-
-    fn wake(conn: &mut types::Control<'w, 'd, ID, W>, origin: SendSource) {
-        if origin == SendSource::Terminal {
-            if !conn.send.as_slice().is_empty() {
-                conn.engine.ready_handle().activate();
-            } else {
-                Self::finish_end(conn);
-            }
-        } else if conn.terminal.has_send() {
-            conn.engine.ready_handle().activate();
-        }
-    }
-
-    pub(in crate::link) fn failed(self, error: dope_core::Errno) -> Terminal {
-        let conn = &mut *self.slot;
-        let origin = match conn.engine.operations.finish_send() {
-            sending::Done::Active(origin) => origin,
-            sending::Done::Idle => return Terminal::Drop,
-        };
-        conn.discard();
-        Terminal::failed(origin, error)
-    }
-}

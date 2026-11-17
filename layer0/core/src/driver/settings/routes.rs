@@ -25,7 +25,7 @@ impl Routes {
     }
 
     #[must_use]
-    pub const fn has_route(self, route: route::Route) -> bool {
+    pub const fn has_route(&self, route: route::Route) -> bool {
         let Some(id) = route.app() else {
             return false;
         };

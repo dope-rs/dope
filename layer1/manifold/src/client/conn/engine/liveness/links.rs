@@ -4,10 +4,7 @@ use dope_core::{
         route::{Identity, table::conn::Capacity},
         schedule::{clock::timer, ready},
     },
-    io::{
-        event::net::{connect, send::Completion},
-        socket,
-    },
+    io::{event::net::connect, socket},
 };
 use dope_net::{
     link::{
@@ -93,21 +90,10 @@ where
         // SAFETY: this retained primary slot lies within the book's admitted primary extent.
         let source = unsafe { engine::raw::reunite(&mut self.liveness, view.connection, key) };
         Some(liveness::Egress {
-            flights: view.flights,
             connection: liveness::Change::new(source, target),
             pending: view.pending,
             queue: view.queue,
         })
-    }
-    pub(in crate::client::conn::engine) fn get<'a>(
-        &'a mut self,
-        key: pool::Key<'d, ID>,
-        target: ready::Target<'d>,
-    ) -> Option<Transition<'a, 'd, ID, E, X, &'a mut Slot<'w, 'd, ID, A>>> {
-        let slot = self.pool.get_mut(key)?;
-        // SAFETY: the native lookup retains this owner's primary slot and its paired book.
-        let source = unsafe { engine::raw::reunite(&mut self.liveness, slot, key) };
-        Some(liveness::Change::new(source, target))
     }
     pub(in crate::client::conn::engine) fn inspect<'a>(
         &'a mut self,
@@ -171,32 +157,5 @@ where
             let source = unsafe { engine::raw::reunite(&mut self.liveness, slot, slot.key()) };
             complete(liveness::Change::new(source, target))
         })
-    }
-    pub(in crate::client::conn::engine) fn settle(
-        &mut self,
-        done: Completion<'d>,
-        driver: &mut driver::Context<'_, 'd>,
-        app: &A,
-        complete: impl for<'a> FnOnce(
-            Transition<'a, 'd, ID, E, X, &'a mut Slot<'w, 'd, ID, A>>,
-            &event::SendOutcome<'d, ID, ()>,
-        ),
-        target: ready::Target<'d>,
-    ) -> event::SendOutcome<'d, ID, ()>
-    where
-        A: app::Lifecycle<'w, 'd, ID>,
-    {
-        self.pool.settle(done).settle_owned(
-            driver,
-            |slot| {
-                let _ = crate::client::conn::State::poll_close(slot, app);
-            },
-            |slot, outcome| {
-                let key = slot.key();
-                // SAFETY: settlement retains this owner's original native sender and paired book.
-                let source = unsafe { engine::raw::reunite(&mut self.liveness, slot, key) };
-                complete(liveness::Change::new(source, target), outcome);
-            },
-        )
     }
 }

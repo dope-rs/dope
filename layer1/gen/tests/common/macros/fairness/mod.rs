@@ -290,12 +290,13 @@ unsafe impl<'d> executor::raw::App<'d> for PlanOwner {
     }
 
     const COORDS: usize = 0;
+    const PARK: bool = true;
 
-    fn select_park() -> Option<Self::ParkPlan> {
-        Some(Plan {
+    fn select_park() -> Self::ParkPlan {
+        Plan {
             polls: 0,
             observed: None,
-        })
+        }
     }
 
     fn prepare_park(app: Pin<&Self>, _: &mut Self::ParkPlan) -> Option<executor::raw::Count> {

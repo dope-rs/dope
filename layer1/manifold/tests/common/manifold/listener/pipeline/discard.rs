@@ -38,14 +38,14 @@ pub enum Finish {
     Timeout(Gate),
 }
 
-pub enum Event<'a, 'd> {
+pub enum Event<'a> {
     Request(&'a [u8]),
     Payload(&'a [u8]),
     Length(usize),
     Discard(discard::Start),
     Discarded,
     Deadline(Result<(), conn::deadline::Error>),
-    Write(Result<write::Outcome<()>, error::Error<resident::Shared<'d>, (), convert::Infallible>>),
+    Write(Result<(), error::Admission>),
 }
 
 pub struct Discard<I, F> {
@@ -56,7 +56,7 @@ pub struct Discard<I, F> {
     pub(crate) observe: F,
 }
 
-impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a, 'b> Fn(Event<'a, 'b>)>
+impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a> Fn(Event<'a>)>
     Application<'d, ID> for Discard<I, F>
 {
     type Conn = Vec<u8>;
@@ -137,7 +137,7 @@ impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a, 'b> Fn(Even
 
 pub struct Retirement;
 
-impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a, 'b> Fn(Event<'a, 'b>)>
+impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a> Fn(Event<'a>)>
     retire::Policy<'d, Discard<I, F>, ID> for Retirement
 {
     fn select() -> Option<Self> {
@@ -153,7 +153,7 @@ impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a, 'b> Fn(Even
     }
 }
 
-impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a, 'b> Fn(Event<'a, 'b>)>
+impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a> Fn(Event<'a>)>
     handler::Borrowed<'d, ID> for Discard<I, F>
 {
     fn chunk<R: TryRetain>(
@@ -167,7 +167,7 @@ impl<'d, ID: route::Identity, I: receive::Mode<Identity>, F: for<'a, 'b> Fn(Even
     }
 }
 
-impl<'w, 'd: 'w, ID: route::Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> handler::Owned<'w, 'd, ID>
+impl<'w, 'd: 'w, ID: route::Identity, F: for<'a> Fn(Event<'a>)> handler::Owned<'w, 'd, ID>
     for Discard<receive::Owned, F>
 {
     const RETENTION: limits::Retention = limits::Retention::new(1, 0);
@@ -185,7 +185,7 @@ impl<'w, 'd: 'w, ID: route::Identity, F: for<'a, 'b> Fn(Event<'a, 'b>)> handler:
 
 fn reply<'w, 'd: 'w, ID: route::Identity>(
     finish: &Finish,
-    observe: &impl for<'a, 'b> Fn(Event<'a, 'b>),
+    observe: &impl for<'a> Fn(Event<'a>),
     mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Identity, Vec<u8>>,
     chunk: &[u8],
     driver: &mut driver::Context<'_, 'd>,
@@ -196,13 +196,18 @@ fn reply<'w, 'd: 'w, ID: route::Identity>(
         }
         observe(Event::Request(chunk));
         conn.state_mut().extend_from_slice(chunk);
-        observe(Event::Write(conn.write().try_bounded(
-            driver,
-            |_, mut prefix| {
-                prefix.write_slice(ACK).unwrap();
-                prefix.commit(None, ())
-            },
-        )));
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let result = match conn.write().try_prefix(driver, &mut output_slot) {
+            Ok(mut output) => {
+                output.get_mut().parts().1.write_slice(ACK).unwrap();
+                write::Output::finish(output, write::End::Open)
+                    .map_err(error::Mismatch::into_cause)
+                    .expect("prefix publication");
+                Ok(())
+            }
+            Err(cause) => Err(cause),
+        };
+        observe(Event::Write(result));
         if matches!(finish, Finish::Timeout(_)) {
             observe(Event::Deadline(
                 conn.deadline()
@@ -219,13 +224,19 @@ fn reply<'w, 'd: 'w, ID: route::Identity>(
     if state.len() != PAYLOAD.len() {
         return Outcome::Continue;
     }
-    observe(Event::Write(conn.write().try_bounded(
-        driver,
-        |state, mut prefix| {
+    let mut output_slot = std::mem::MaybeUninit::uninit();
+    let result = match conn.write().try_prefix(driver, &mut output_slot) {
+        Ok(mut output) => {
+            let (state, mut prefix) = output.get_mut().parts();
             observe(Event::Length(state.len()));
             prefix.write_slice(PAYLOAD).unwrap();
-            prefix.commit(None, ())
-        },
-    )));
+            write::Output::finish(output, write::End::Open)
+                .map_err(error::Mismatch::into_cause)
+                .expect("prefix publication");
+            Ok(())
+        }
+        Err(cause) => Err(cause),
+    };
+    observe(Event::Write(result));
     Outcome::CloseAfter
 }

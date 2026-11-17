@@ -1,4 +1,4 @@
-use std::{cell::Cell, convert::Infallible, pin::Pin, rc::Rc};
+use std::{cell::Cell, pin::Pin, rc::Rc};
 
 use engine::{
     core::driver::{schedule, settings},
@@ -80,7 +80,7 @@ pub struct Owned<T, G> {
 pub struct Unselected;
 
 impl<'d> executor::raw::Layout<'d> for Unselected {
-    type ParkPlan = Infallible;
+    type ParkPlan = ();
 }
 
 // SAFETY: Unselected has no installed owner, route, or driver-visible pointer.
@@ -96,22 +96,19 @@ unsafe impl<'d> executor::raw::App<'d> for Unselected {
     }
 
     const COORDS: usize = 1;
+    const PARK: bool = false;
 
-    fn select_park() -> Option<Self::ParkPlan> {
-        None
-    }
+    fn select_park() -> Self::ParkPlan {}
 
     /// # Safety
-    /// The owner and plan must be installed and admitted together. Selection
-    /// never produces this uninhabited plan, so no invocation can be admitted.
+    /// The root and driver authority belong to the same installation.
     unsafe fn park<'app, 'driver, 'turn>(
         _: Pin<&'app mut Self>,
-        plan: &mut Self::ParkPlan,
+        _: &mut Self::ParkPlan,
         _: executor::raw::Park<'driver, 'turn, 'd>,
     ) where
         'd: 'driver + 'turn,
     {
-        match *plan {}
     }
 }
 

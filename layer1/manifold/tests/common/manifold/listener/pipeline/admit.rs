@@ -20,7 +20,10 @@ use dope_test::harness::observe::VecCellExt as _;
 use dope_test::harness::signals::Gate;
 use o3::buffer::{bytes::TryRetain, resident};
 
-use crate::common::manifold::listener::pipeline::prefix::Error;
+type Payload<'d> = dope_net::link::egress::data::Bound<
+    resident::Shared<'d>,
+    o3::buffer::resident::bound::AtMost<6>,
+>;
 
 pub const FIRST_HEADER: &[u8] = b"first:";
 pub const FIRST_BODY: &[u8; 5] = b"body;";
@@ -34,7 +37,7 @@ pub const SECOND_REPLY: [u8; 9000] = [0xB2; 9000];
 
 pub enum Event {
     Chunk(usize),
-    Write(Result<write::Outcome<()>, Error>, egress::Pending),
+    Write(Result<(), write::error::Admission>, egress::Pending),
 }
 
 pub struct Admit {
@@ -48,7 +51,7 @@ impl<'d, ID: route::Identity> Application<'d, ID> for Admit {
     type Wire = Identity;
     type WireFailure = failures::Close;
     type Retirement = retire::Close;
-    type Egress = resident::Shared<'d>;
+    type Egress = Payload<'d>;
     type Input = receive::Borrowed;
     type Send = send::Silent;
 
@@ -64,7 +67,10 @@ impl<'d, ID: route::Identity> Application<'d, ID> for Admit {
         None
     }
 
-    fn close<'e>(self: Pin<&mut Self>, _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, ()>) {
+    fn close<'e>(
+        self: Pin<&mut Self>,
+        _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, (), Payload<'d>>,
+    ) {
         self.get_mut().gate.hit();
     }
 }
@@ -72,133 +78,47 @@ impl<'d, ID: route::Identity> Application<'d, ID> for Admit {
 impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Admit {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, ()>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, (), Payload<'d>>,
         chunk: R,
         driver: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
         let event = Event::Chunk(chunk.as_ref().len());
         self.events.push(event);
         for (header, body) in [
-            (
-                FIRST_HEADER,
-                Some(Value::Checked(egress::NonEmpty::from_array(FIRST_BODY))),
-            ),
+            (FIRST_HEADER, Some(egress::NonEmpty::from_array(FIRST_BODY))),
             (
                 SECOND_HEADER,
-                Some(Value::Checked(egress::NonEmpty::from_array(SECOND_BODY))),
+                Some(egress::NonEmpty::from_array(SECOND_BODY)),
             ),
-            (
-                THIRD_HEADER,
-                Some(Value::Checked(egress::NonEmpty::from_array(THIRD_BODY))),
-            ),
+            (THIRD_HEADER, Some(egress::NonEmpty::from_array(THIRD_BODY))),
             (FIRST_REPLY.as_slice(), None),
             (SECOND_REPLY.as_slice(), None),
         ] {
-            let result = conn.write().try_bounded(driver, |&mut (), mut prefix| {
-                {
-                    let mut writer = prefix.writer();
-                    let mut staged = writer.try_split(1, header.len()).unwrap();
-                    staged.body().write_slice(header).unwrap();
+            let mut output_slot = std::mem::MaybeUninit::uninit();
+            let result = match conn.write().try_open(driver, &mut output_slot) {
+                Ok(mut output) => {
+                    let (_, mut prefix) = output.get_mut().parts();
+                    prefix.write_slice(header).unwrap();
+                    let body = body.map(|body| {
+                        Value::Checked(
+                            body.try_bound::<o3::buffer::resident::bound::AtMost<6>>()
+                                .map_err(|rejected| rejected.into_parts().1)
+                                .expect("fixture body bound"),
+                        )
+                    });
+                    match body {
+                        Some(body) => write::Output::try_publish(output, body, write::End::Open),
+                        None => write::Output::finish(output, write::End::Open),
+                    }
+                    .map_err(error::Mismatch::into_cause)
+                    .expect("publication");
+                    Ok(())
                 }
-                {
-                    let (head, tail) = header.split_at(header.len() - 1);
-                    let mut writer = prefix.writer();
-                    let mut staged = writer.try_split(head.len(), tail.len()).unwrap();
-                    staged.body().write_slice(tail).unwrap();
-                    staged.head().write_slice(head).unwrap();
-                    staged.try_commit().unwrap();
-                }
-                prefix.commit(body, ())
-            });
-            let event = Event::Write(result.map_err(Error::from), conn.write().pending());
+                Err(cause) => Err(cause),
+            };
+            let event = Event::Write(result, conn.write().pending());
             self.events.push(event);
         }
-        Outcome::CloseAfter
-    }
-}
-
-pub struct Bounded {
-    pub(crate) called: Rc<Cell<bool>>,
-    pub(crate) gate: Gate,
-    pub(crate) attempts: Rc<Cell<Vec<Attempt>>>,
-}
-
-pub struct Attempt {
-    pub input: usize,
-    pub state: u8,
-    pub outcome: BoundedWrite,
-}
-
-pub enum BoundedWrite {
-    Draft {
-        cause: error::Bounded,
-        written: usize,
-        body: Option<Vec<u8>>,
-        end: write::End,
-    },
-    Other(Result<write::Outcome<()>, Error>),
-}
-
-impl<'d, ID: route::Identity> Application<'d, ID> for Bounded {
-    type Conn = u8;
-    type Build = convert::Infallible;
-    type Wire = Identity;
-    type WireFailure = failures::Close;
-    type Retirement = retire::Close;
-    type Egress = resident::Shared<'d>;
-    type Input = receive::Borrowed;
-    type Send = send::Silent;
-
-    fn build_failed(self: Pin<&mut Self>, cause: Self::Build) {
-        match cause {}
-    }
-
-    fn connection(self: Pin<&Self>, _: &Seed) -> Result<Self::Conn, Self::Build> {
-        Ok(7)
-    }
-
-    fn deadline(self: Pin<&Self>, _: clock::Clock<'_, 'd>) -> Option<clock::Deadline<'d>> {
-        None
-    }
-
-    fn close<'e>(self: Pin<&mut Self>, _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, u8>) {
-        self.get_mut().gate.hit();
-    }
-}
-
-impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Bounded {
-    fn chunk<R: TryRetain>(
-        self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, u8>,
-        chunk: R,
-        driver: &mut driver::Context<'_, 'd>,
-    ) -> Outcome {
-        let called = &self.as_ref().get_ref().called;
-        let result = conn.write().try_bounded(driver, move |state, mut prefix| {
-            called.set(true);
-            *state = 9;
-            prefix.write_byte(b'X').unwrap();
-            let body = egress::Load::new(resident::Shared::from(FIRST_BODY.as_slice()));
-            prefix.commit(Some(Value::Unchecked(body)), ())
-        });
-        let outcome = match result {
-            Err(error::Error::Mismatch(error::Mismatch::Bounded { cause, commit })) => {
-                let (written, body, (), end) = commit.into_parts();
-                BoundedWrite::Draft {
-                    cause,
-                    written,
-                    body: body.map(|body| body.as_inner().as_ref().to_vec()),
-                    end,
-                }
-            }
-            other => BoundedWrite::Other(other.map_err(Error::from)),
-        };
-        let attempt = Attempt {
-            input: chunk.as_ref().len(),
-            state: *conn.state(),
-            outcome,
-        };
-        self.attempts.push(attempt);
         Outcome::CloseAfter
     }
 }

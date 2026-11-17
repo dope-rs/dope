@@ -19,7 +19,6 @@ const EARLY_DATA: u8 = 1 << 2;
 const DATAGRAM: u8 = 1 << 3;
 const CLOSE: u8 = 1 << 4;
 const PTO_PROBE: u8 = 1 << 5;
-const TRACKED: u8 = 1 << 6;
 const QUEUED: u8 = 1 << 7;
 
 pub(in crate::conn::output::transmit) struct Plan<N = op::Protected<numbers::Sealing>> {
@@ -74,14 +73,6 @@ impl<N> Plan<N> {
                 body,
             },
         ))
-    }
-
-    pub(in crate::conn::output::transmit) fn is_tracked(&self) -> bool {
-        self.flags.is_set(TRACKED)
-    }
-
-    pub(in crate::conn::output::transmit) fn set_tracked(&mut self, enabled: bool) {
-        self.flags.set(TRACKED, enabled);
     }
 
     pub(in crate::conn::output::transmit) fn is_queued(&self) -> bool {

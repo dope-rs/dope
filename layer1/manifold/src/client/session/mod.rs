@@ -360,6 +360,16 @@ pub trait Output<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
         output::Sent::<Infallible>::None
     }
 
+    /// Returns a complete queued payload after native send completion.
+    fn settled(
+        &mut self,
+        _: Id<'d, ID>,
+        payload: Self::Send,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        drop(payload);
+    }
+
     fn cancel() -> impl for<'a, 't> Call<(
         &'a mut Self,
         Self::Send,

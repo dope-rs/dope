@@ -1,12 +1,7 @@
 use std::{convert, marker, pin};
 
+use crate::network::listener::{conn, handler, writer};
 use dope_core::driver::{self, route::Identity, schedule};
-use dope_net::link::pool;
-
-use crate::{
-    app::env,
-    network::listener::{self, conn, handler, writer::phase},
-};
 
 /// Static send callback selection for one application type.
 pub trait Policy<'d, ID: Identity, A>
@@ -75,35 +70,16 @@ pub enum Silent {}
 pub enum Ready {}
 pub enum Run {}
 
-pub(in crate::network::listener) enum Next {
-    Commit,
-    Done,
-}
-
-pub(in crate::network::listener) fn settle<'w, 'd: 'w, ID: Identity, A, E>(
-    mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
-    key: pool::Key<'d, ID>,
-    next: Next,
+pub(in crate::network::listener) fn settle<'w, 'd: 'w, ID: Identity, A>(
+    app: pin::Pin<&mut A>,
+    egress: &mut writer::Egress<'_, '_, '_, '_, 'w, 'd, ID, A>,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
 ) where
     A: handler::Runtime<'w, 'd, ID>,
-    E: env::Spec<Wire = A::Wire>,
 {
     if A::SEND {
-        let mut this = root.as_mut().project();
-        let Some(mut egress) = this.owner.egress_mut(key) else {
-            return;
-        };
-        A::send(
-            this.app.as_mut(),
-            egress.context(turn.reborrow().app()),
-            driver,
-        );
-    }
-    match next {
-        Next::Commit => phase::commit_chunk(root, key, phase::Wake::Send, turn, driver),
-        Next::Done => phase::close_ready(root, key, turn, driver),
+        A::send(app, egress.context(turn.reborrow().app()), driver);
     }
 }
 

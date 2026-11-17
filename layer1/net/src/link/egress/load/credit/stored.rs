@@ -1,7 +1,6 @@
 use std::mem::size_of;
 
 use dope_core::io::transfer;
-use o3::mem;
 
 use crate::link::egress::{
     self,
@@ -12,18 +11,25 @@ use crate::link::egress::{
 };
 
 #[must_use = "stored credit must remain attached to an entry or be released"]
-pub(in crate::link::egress) struct Stored<'p>(
-    mem::raw::Grant<mem::raw::Lane<'p, 'p, 2, credit::Tag, u32>, 2, Amount>,
-);
-
-/// One checked partition holding its source grant and immutable payload.
-pub(in crate::link::egress) struct Split<'a, 'p, T> {
-    grant: mem::raw::Bound<&'a mut credit::Grant<'p>, Parts>,
-    load: egress::NonEmpty<T>,
+pub(in crate::link::egress) struct Stored<'p, 'd> {
+    account: credit::Account<'p, 'd>,
+    bytes: transfer::NonZero,
+    resident: egress::Resident,
 }
 
-struct Parts {
+pub(in crate::link::egress) struct Split<
+    'a,
+    'queue,
+    'p,
+    'd,
+    T,
+    M: credit::Access<'p, 'd>,
+    D: demand::Mode,
+    P: position::State,
+> {
+    reserve: &'a mut credit::Reserve<'queue, 'p, 'd, T, M, D, P>,
     rest: credit::Amount,
+    load: egress::NonEmpty<T>,
 }
 
 pub(in crate::link::egress) struct Part<
@@ -37,21 +43,19 @@ pub(in crate::link::egress) struct Part<
     P: position::State = (),
 > {
     claim: credit::Claim<'queue, 'p, 'd, T, M, D, P>,
-    rest: credit::Amount,
+    rest: egress::Resident,
     load: egress::NonEmpty<V>,
 }
 
 impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
     Part<'queue, 'p, 'd, T, V, M, D, P>
 {
-    /// The claim supplies one entry; admission checks its resident charge.
     pub(in crate::link::egress) fn try_new(
         claim: credit::Claim<'queue, 'p, 'd, T, M, D, P>,
         load: egress::NonEmpty<V>,
     ) -> Result<Self, Rejected<'queue, 'p, 'd, T, V, M, D, P>> {
-        let current = claim.reserve.amount().resident();
-        let rest = match current.checked_sub(load.geometry().resident()) {
-            Ok(rest) => credit::Amount::new(egress::Entries::new(0), rest),
+        let rest = match claim.resident.checked_sub(load.geometry().resident()) {
+            Ok(rest) => rest,
             Err(cause) => return Err((claim, load, egress::Shortage::Resident(cause))),
         };
         Ok(Self { claim, rest, load })
@@ -70,24 +74,32 @@ impl<'queue, 'p, 'd, T, V, M: credit::Access<'p, 'd>, D: demand::Mode, P: positi
         self,
     ) -> (
         credit::Reserve<'queue, 'p, 'd, T, M, D, P>,
-        Stored<'p>,
+        Stored<'p, 'd>,
         egress::NonEmpty<V>,
     ) {
         let Self { claim, rest, load } = self;
-        let (queue, mut grant) = claim.into_parts();
-        let parts = Parts { rest };
-        // SAFETY: Part owns the unchanged grant and payload checked by try_new.
-        let stored = Stored(unsafe { grant.bind_mut(parts) }.split(load.geometry().wire()));
-        (credit::Reserve::new(queue, grant), stored, load)
+        let stored = Stored {
+            account: claim.account,
+            bytes: load.geometry().wire(),
+            resident: load.geometry().resident(),
+        };
+        let rest = credit::Reserve::new(
+            claim.queue,
+            claim.account,
+            credit::Amount::new(egress::Entries::new(0), rest),
+        );
+        (rest, stored, load)
     }
 }
 
-impl<'a, 'p, T> Split<'a, 'p, T> {
-    pub(in crate::link::egress::load::credit) fn try_new(
-        grant: &'a mut credit::Grant<'p>,
+impl<'a, 'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
+    Split<'a, 'queue, 'p, 'd, T, M, D, P>
+{
+    pub(super) fn try_new(
+        reserve: &'a mut credit::Reserve<'queue, 'p, 'd, T, M, D, P>,
         load: egress::NonEmpty<T>,
     ) -> Result<Self, batch::Rejected<T>> {
-        let current = grant.amount();
+        let current = reserve.amount;
         let held = credit::Amount::new(egress::Entries::new(1), load.geometry().resident());
         let rest = match current.checked_sub(held) {
             Ok(rest) => rest,
@@ -100,115 +112,44 @@ impl<'a, 'p, T> Split<'a, 'p, T> {
                 return Err(batch::Rejected { load, reason });
             }
         };
-        // SAFETY: subtraction proved this partition of the exclusively borrowed grant.
-        let grant = unsafe { grant.bind_mut(Parts { rest }) };
-        Ok(Self { grant, load })
+        Ok(Self {
+            reserve,
+            rest,
+            load,
+        })
     }
 
     pub(in crate::link::egress) fn into_load(self) -> egress::NonEmpty<T> {
         self.load
     }
 
-    pub(in crate::link::egress) fn take(self) -> (Stored<'p>, egress::NonEmpty<T>) {
-        let Self { grant, load } = self;
-        let stored = Stored(grant.split(load.geometry().wire()));
+    pub(in crate::link::egress) fn take(self) -> (Stored<'p, 'd>, egress::NonEmpty<T>) {
+        let Self { reserve, rest, load } = self;
+        reserve.amount = rest;
+        let stored = Stored {
+            account: reserve.account,
+            bytes: load.geometry().wire(),
+            resident: load.geometry().resident(),
+        };
         (stored, load)
     }
 }
-
-// SAFETY: the retained source differs from rest by one entry; bytes never changes credit.
-unsafe impl mem::raw::Exact<2, u32, credit::Amount> for Parts {
-    type Input = transfer::NonZero;
-    type Left = credit::Amount;
-    type Right = Amount;
-
-    fn parts(self, source: credit::Amount, bytes: Self::Input) -> (Self::Left, Self::Right) {
-        let held = source.sub(self.rest);
-        (
-            self.rest,
-            Amount {
-                bytes,
-                resident: held.resident(),
-            },
-        )
-    }
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[repr(C)]
-struct Amount {
-    bytes: transfer::NonZero,
-    resident: egress::Resident,
-}
-
-struct Hold {
-    bytes: transfer::NonZero,
-}
-
-struct Release;
 
 pub(in crate::link::egress) enum Prefix {
     Whole { remaining: transfer::Len },
     Partial,
 }
 
-// SAFETY: Amount statically represents one entry and its exact resident credit.
-unsafe impl mem::raw::Amount<2, u32> for Amount {
-    fn get(self) -> [u32; 2] {
-        [1, self.resident.raw()]
-    }
-}
-
-// SAFETY: Hold is applied only to a grant proved to contain exactly one entry.
-unsafe impl mem::raw::ExactRebind<2, u32, credit::Amount> for Hold {
-    type Output = Amount;
-
-    fn rebind(self, source: credit::Amount) -> Amount {
-        Amount {
-            bytes: self.bytes,
-            resident: source.resident(),
-        }
-    }
-}
-
-// SAFETY: only the byte cursor changes; both credit components remain identical.
-unsafe impl mem::raw::ExactRebind<2, u32, Amount> for Hold {
-    type Output = Amount;
-
-    fn rebind(self, source: Amount) -> Amount {
-        Amount {
-            bytes: self.bytes,
-            resident: source.resident,
-        }
-    }
-}
-
-// SAFETY: every Amount has one entry and keeps its original resident component.
-unsafe impl mem::raw::Rebind<2, u32, Amount> for Hold {}
-
-// SAFETY: Release expands Amount's exact one-entry representation without changing it.
-unsafe impl mem::raw::ExactRebind<2, u32, Amount> for Release {
-    type Output = credit::Amount;
-
-    fn rebind(self, source: Amount) -> credit::Amount {
-        credit::Amount::new(egress::Entries::new(1), source.resident)
-    }
-}
-
-// SAFETY: every Amount expands to the same one-entry resident credit vector.
-unsafe impl mem::raw::Rebind<2, u32, Amount> for Release {}
-
-impl<'p> Stored<'p> {
+impl Stored<'_, '_> {
     pub(in crate::link::egress) fn count(&self) -> transfer::NonZero {
-        self.0.amount().bytes
+        self.bytes
     }
 
     pub(in crate::link::egress) fn consume(&mut self, bytes: transfer::Len) -> Prefix {
-        let held = self.0.amount();
-        let total = transfer::Len::from_nonzero(held.bytes);
+        let total = transfer::Len::from_nonzero(self.bytes);
         match total.checked_sub(bytes) {
             Some(rest) => {
-                self.0.update(Hold { bytes: rest });
+                self.bytes = rest;
                 Prefix::Partial
             }
             None => Prefix::Whole {
@@ -217,8 +158,12 @@ impl<'p> Stored<'p> {
         }
     }
 
-    pub(in crate::link::egress) fn into_grant(self) -> credit::Grant<'p> {
-        self.0.map(Release)
+    pub(in crate::link::egress) fn release(self) {
+        // SAFETY: this entry consumes its exact one-entry acquisition.
+        unsafe {
+            self.account
+                .release(credit::Amount::new(egress::Entries::new(1), self.resident));
+        }
     }
 }
 
@@ -228,11 +173,13 @@ impl<'queue, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position:
     pub(in crate::link::egress) fn bind(
         self,
         bytes: transfer::NonZero,
-    ) -> (metadata::Queue<'queue, 'p, 'd, T, M, D, P>, Stored<'p>) {
-        let (queue, grant) = self.into_parts();
-        // SAFETY: Claim is constructed only from an exact one-entry acquisition.
-        let stored = Stored(unsafe { grant.bind(Hold { bytes }) }.map());
-        (queue, stored)
+    ) -> (metadata::Queue<'queue, 'p, 'd, T, M, D, P>, Stored<'p, 'd>) {
+        let stored = Stored {
+            account: self.account,
+            bytes,
+            resident: self.resident,
+        };
+        (self.queue, stored)
     }
 }
 
@@ -241,12 +188,13 @@ const _: () = {
         size_of::<Part<'static, 'static, 'static, (), (), metadata::Local, demand::Fallible>>()
             == 7 * size_of::<usize>()
     );
-    assert!(size_of::<Stored>() == 3 * size_of::<u64>());
+    assert!(size_of::<Stored<'static, 'static>>() == 3 * size_of::<u64>());
     assert!(
-        size_of::<Split<'static, 'static, ()>>()
-            == size_of::<&mut credit::Grant<'static>>()
-                + size_of::<credit::Amount>()
-                + size_of::<egress::NonEmpty<()>>()
+        size_of::<Split<
+            'static, 'static, 'static, 'static, (), metadata::Local, demand::Fallible, (),
+        >>() == size_of::<&mut credit::Reserve<'static, 'static, 'static, ()>>()
+            + size_of::<credit::Amount>()
+            + size_of::<egress::NonEmpty<()>>()
     );
 };
 

@@ -19,11 +19,6 @@ type Engine<'d, ID, W> = duplex::Duplex<
     <<W as wire::Spec>::Send as send::Policy<W>>::Reclaim,
 >;
 
-pub(in crate::link) enum Decision<C> {
-    Control(Control),
-    Chunk { chunk: C, needs_rearm: bool },
-}
-
 pub(in crate::link) enum Control {
     Eof,
     Cancelled,

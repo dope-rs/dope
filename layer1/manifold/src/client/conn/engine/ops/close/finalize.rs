@@ -1,5 +1,3 @@
-use std::pin;
-
 use attempt::Report as _;
 use dope_core::driver::{self, result, route::Identity, schedule};
 use dope_net::link::{event, pool::change::opening};
@@ -23,30 +21,31 @@ use crate::{
     service::{self, discover, sync},
 };
 
-fn run<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>(
-    mut machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
+fn run<'a, 'p, 'w, 'd: 'p + 'w, ID: Identity + 'd, A, S, E, X>(
+    context: &mut engine::Context<'_, 'd, ID, A, S, E, X>,
+    entry: engine::Entry<'a, 'p, 'w, 'd, ID, A, E::Transport>,
     close: drain::OwnedDrain<'d, ID>,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
     retry: impl FnOnce(&mut S, attempt::Id<'d, ID>, close::Reason) -> Result<(), S::Error>,
-) where
+) -> Option<engine::Entry<'a, 'p, 'w, 'd, ID, A, E::Transport>>
+where
     A: app::Lifecycle<'w, 'd, ID>,
     S: attempt::Control<'d, E::Transport, ID>,
     S::Error: attempt::Report<'d, ID, A>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID>,
-    engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: retire::RetirePhase<'w, 'd, ID, A, S, E>,
+    engine::Machine<'p, 'w, 'd, ID, A, S, E, X>: retire::RetirePhase<'p, 'w, 'd, ID, A, S, E, X>,
 {
     let (owner, drain) = close.into_parts();
-    let outcome = retire::RetirePhase::drain_close(
-        machine.as_mut(),
+    let (entry, outcome) = <engine::Machine<'p, 'w, 'd, ID, A, S, E, X> as retire::RetirePhase<'p, 'w, 'd, ID, A, S, E, X>>::drain_close(
+        context, entry,
         drain,
         turn,
         driver,
         std::convert::identity,
     );
-    let this = machine.project();
     let result = match outcome {
         retire::Outcome::Retired(rule) => match rule.policy() {
             close::Policy::Permanent | close::Policy::ImmediatePermanent => {
@@ -61,28 +60,29 @@ fn run<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>(
                     }
                     _ => None,
                 };
-                this.controller.kill(owner, cause)
+                context.controller.kill(owner, cause)
             }
             close::Policy::Reconnect | close::Policy::ImmediateReconnect => {
-                retry(this.controller, owner, rule.reason())
+                retry(context.controller, owner, rule.reason())
             }
         },
-        retire::Outcome::Pending => return,
+        retire::Outcome::Pending => return entry,
         retire::Outcome::Obsolete(proof) => {
             proof.resolve();
-            this.controller.kill(owner, None)
+            context.controller.kill(owner, None)
         }
     };
     if let Err(cause) = result {
         cause.retire(
-            attempt::Completion::reported(owner, this.controller),
-            this.app,
+            attempt::Completion::reported(owner, context.controller),
+            context.app,
             driver,
         );
     }
-    if this.shutdown.is_open() && this.controller.is_pending() {
-        this.drive.target().wake();
+    if context.shutdown.is_open() && context.controller.is_pending() {
+        context.target.wake();
     }
+    entry
 }
 
 pub(super) trait Finalize<'p, 'w, 'd: 'w, ID: Identity + 'd, A, S, E, X>
@@ -102,12 +102,13 @@ where
     ) {
     }
 
-    fn finish(
-        machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, X>>,
+    fn finish<'a>(
+        context: &mut engine::Context<'_, 'd, ID, A, S, E, X>,
+        entry: engine::Entry<'a, 'p, 'w, 'd, ID, A, E::Transport>,
         close: drain::OwnedDrain<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    );
+    ) -> Option<engine::Entry<'a, 'p, 'w, 'd, ID, A, E::Transport>>;
 }
 
 impl<'p, 'source, 'w, 'd: 'w, ID: Identity + 'd, A, E, X>
@@ -141,26 +142,14 @@ where
         }
     }
 
-    fn finish(
-        machine: pin::Pin<
-            &mut engine::Machine<
-                'p,
-                'w,
-                'd,
-                ID,
-                A,
-                queue::Control<'source, 'd, E::Transport, ID>,
-                E,
-                X,
-            >,
-        >,
+    fn finish<'a>(
+        context: &mut engine::Context<'_, 'd, ID, A, queue::Control<'source, 'd, E::Transport, ID>, E, X>,
+        entry: engine::Entry<'a, 'p, 'w, 'd, ID, A, E::Transport>,
         close: drain::OwnedDrain<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) {
-        run(machine, close, turn, driver, |ctrl, owner, _| {
-            ctrl.disconnect(owner)
-        });
+    ) -> Option<engine::Entry<'a, 'p, 'w, 'd, ID, A, E::Transport>> {
+        run(context, entry, close, turn, driver, |ctrl, owner, _| ctrl.disconnect(owner))
     }
 }
 
@@ -177,27 +166,17 @@ where
     F: discover::Feedback,
     A::Failure: fail::Fail<'d, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, N, F>, E::Transport>,
 {
-    fn finish(
-        machine: pin::Pin<
-            &mut engine::Machine<
-                'p,
-                'w,
-                'd,
-                ID,
-                A,
-                service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, N, F>,
-                E,
-                X,
-            >,
-        >,
+    fn finish<'a>(
+        context: &mut engine::Context<'_, 'd, ID, A, service::Pool<'q, 'h, 'd, ID, E::Transport, R, I, N, F>, E, X>,
+        entry: engine::Entry<'a, 'p, 'w, 'd, ID, A, E::Transport>,
         close: drain::OwnedDrain<'d, ID>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) {
+    ) -> Option<engine::Entry<'a, 'p, 'w, 'd, ID, A, E::Transport>> {
         let now = driver.driver_ref().clock().now();
-        run(machine, close, turn, driver, |pool, owner, reason| {
+        run(context, entry, close, turn, driver, |pool, owner, reason| {
             pool.disconnect(owner, reason, now);
             Ok(())
-        });
+        })
     }
 }

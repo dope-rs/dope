@@ -107,9 +107,7 @@ fn run_with<M: input::Mode<Eof>>(
         |scope| prepare::<M>(scope, Eof::new(Rc::clone(&input)), cap, pair, test),
         recovery::Policy::new(
             |event| reports.push(event),
-            |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                panic!("driver recovery: {:?}", failure.cause())
-            },
+            |failure: recovery::Recovery<'_, '_>| -> Infallible { failure.abort() },
         ),
         |result| {
             result
@@ -294,7 +292,7 @@ pub fn cancel<'p, 'd, M: input::Mode<Eof>>(
         recv::Kind::Control(done) => done,
         recv::Kind::Data(done) => return Err(Error::ReceiveData(done.into_parts().2.len())),
     };
-    observe(flow, done.status(), pool.recv().dispatch(done));
+    observe(flow, done.status(), pool.recv().dispatch(done).1);
     Ok(())
 }
 

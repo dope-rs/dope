@@ -46,7 +46,7 @@ where
     S: attempt::Control<'d, E::Transport, ID>,
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
-    Self: close::ClosePhase<'d, ID, A, S, E>,
+    Self: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, side::Disabled>,
 {
     fn begin(mut self: pin::Pin<&mut Self>) {
         let state::Start::Started = self.as_mut().project().shutdown.begin() else {
@@ -103,7 +103,9 @@ where
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     I: registry::Intent<'d, ID>,
-    Self: close::ClosePhase<'d, ID, A, S, E>,
+    Self: close::ClosePhase<
+        'p, 'w, 'd, ID, A, S, E, side::Enabled<&'r registry::Registry<'d, I, ID>>,
+    >,
 {
     fn begin(mut self: pin::Pin<&mut Self>) {
         let state::Start::Started = self.as_mut().project().shutdown.begin() else {

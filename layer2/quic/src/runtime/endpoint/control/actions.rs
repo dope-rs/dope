@@ -8,10 +8,7 @@ use crate::conn::{id, scope};
 use crate::runtime::endpoint::{self, owner};
 use crate::runtime::receive::Storage;
 use crate::{errors, proto::datagram, runtime::mux};
-use control::Control as _;
-use dgram::Dgram as _;
 use mux::{handler, protocol};
-use protocol::{control, dgram};
 
 /// Splits the callback owner from the native registry that resumes its input.
 pub(crate) fn split_ready<'a, 'd, const ID: u8, H, B, A, M, Q>(

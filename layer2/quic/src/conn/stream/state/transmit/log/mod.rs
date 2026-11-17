@@ -309,7 +309,7 @@ impl<'a> Selection<'a> {
                         Some(scan) => log::Cursor::At(scan.get().0),
                         None => log::Cursor::End,
                     };
-                    if record.range.len_usize() > room {
+                    if usize::from(record.wire_len.get()) > room {
                         continue;
                     }
                     match append(retry, send, record)? {

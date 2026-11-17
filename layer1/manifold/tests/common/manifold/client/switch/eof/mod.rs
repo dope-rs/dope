@@ -130,7 +130,6 @@ impl<'d> Stored<'d> for State<'d> {
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        use codec::Stateful as _;
         self.decode
             .decode(storage, state, budget, limit, |preview| self.admit(preview))
     }
@@ -148,7 +147,6 @@ impl<'d> Stored<'d> for State<'d> {
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        use codec::Stateful as _;
         self.decode
             .finish(input, budget, limit, |preview| self.admit(preview))
     }

@@ -1,13 +1,13 @@
 use crate::link::egress::{
     self, Resident,
-    load::credit,
     reserve::{demand, error, limit},
 };
 
-pub(super) enum Shape {
+#[derive(Clone, Copy)]
+pub enum Shape {
     First,
     Second,
-    Pair(credit::Pair),
+    Pair,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -72,15 +72,11 @@ impl Bounds {
         self.second
     }
 
-    pub(super) const fn has_second(self) -> bool {
-        self.second.is_active()
-    }
-
     pub(super) const fn shape(self) -> Option<Shape> {
         match (self.first.is_active(), self.second.is_active()) {
             (true, false) => Some(Shape::First),
             (false, true) => Some(Shape::Second),
-            (true, true) => Some(Shape::Pair(credit::Pair::new(self.first.resident()))),
+            (true, true) => Some(Shape::Pair),
             (false, false) => None,
         }
     }
@@ -95,10 +91,6 @@ impl Bounds {
 
     pub(in crate::link::egress) const fn resident(self) -> Resident {
         self.resident
-    }
-
-    pub(in crate::link::egress) const fn amount(self) -> credit::Amount {
-        credit::Amount::new(self.entries().into_credit(), self.resident())
     }
 }
 

@@ -148,7 +148,7 @@ fn guaranteed_queue_proof() {
                         let queue = pool.egress_mut(key).expect("queue").queue;
                         let plan = queue.prove();
                         assert_eq!(plan.is_some(), queued);
-                        if let Some(plan) = plan {
+                        if let Some(((), plan)) = plan {
                             for _ in 0..2 {
                                 plan.try_reserve(driver.region_token())
                                     .expect("admitted queue capacity")

@@ -2,7 +2,7 @@ use std::num;
 
 use dope_sys::{
     Cloexec, Errno, Nonblock,
-    io::socket::{Setup, SetupOrigin, addr},
+    io::socket::{Origin, Setup, SetupOrigin, addr},
 };
 
 use crate::{
@@ -38,6 +38,13 @@ pub enum Error {
 }
 
 impl Error {
+    pub(crate) fn create(error: Origin) -> Self {
+        match error {
+            Origin::Socket(errno) => Self::syscall(Operation::Socket, errno),
+            Origin::Setup(error) => Self::setup(error),
+        }
+    }
+
     pub(crate) const fn validate(fault: dope_sys::Errno) -> Self {
         Self::syscall(Operation::Validate, fault)
     }

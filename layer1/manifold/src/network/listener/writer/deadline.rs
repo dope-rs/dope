@@ -44,6 +44,11 @@ pub enum Kind {
     Application,
 }
 
+pub(in crate::network::listener) enum Event<'d, ID: Identity> {
+    Updated,
+    Expired(pool::Key<'d, ID>, Kind),
+}
+
 impl Kind {
     const COUNT: usize = 5;
     const ALL: [Self; Self::COUNT] = [
@@ -68,6 +73,12 @@ impl<'d> Lane<'d> {
     const EMPTY: Self = Self {
         deadlines: [None; Kind::COUNT],
     };
+
+    fn only(kind: Kind, at: clock::Deadline<'d>) -> Self {
+        let mut lane = Self::EMPTY;
+        lane.deadlines[kind.index()] = Some(at);
+        lane
+    }
 
     fn next(&self) -> Option<Deadline<'d>> {
         let mut next: Option<Deadline<'d>> = None;
@@ -136,12 +147,26 @@ impl<'d, ID: Identity> Schedule<'d, ID> {
     pub(in crate::network::listener) fn pop(
         &mut self,
         now: clock::Moment<'d>,
-    ) -> Option<(pool::Key<'d, ID>, Kind)> {
-        let mut entry = self
+    ) -> Option<Event<'d, ID>> {
+        let entry = self
             .entries
             .first_entry_if(|priority| !(priority.at > now))?;
+        Some(Self::advance(entry))
+    }
+
+    fn advance(
+        mut entry: resident::Occupied<'_, pool::Key<'d, ID>, Deadline<'d>, Lane<'d>>,
+    ) -> Event<'d, ID> {
         let key = entry.key();
         let due = *entry.priority();
+        let current = entry.resident().next();
+        if current != Some(due) {
+            match current {
+                Some(current) => entry.set(current),
+                None => entry.retire(),
+            }
+            return Event::Updated;
+        }
         let next = {
             let lane = entry.resident_mut();
             lane.deadlines[due.kind.index()] = None;
@@ -151,7 +176,7 @@ impl<'d, ID: Identity> Schedule<'d, ID> {
             Some(next) => entry.set(next),
             None => entry.retire(),
         }
-        Some((key, due.kind))
+        Event::Expired(key, due.kind)
     }
 }
 
@@ -184,19 +209,27 @@ impl<'d, ID: Identity> Entry<'_, 'd, ID> {
     }
 
     fn arm_at(self, kind: Kind, at: clock::Deadline<'d>) {
-        if let resident::Entry::Occupied(entry) = &self.entry
-            && entry.resident().deadlines[kind.index()] == Some(at)
-        {
-            return;
+        let armed = Deadline { at, kind };
+        match self.entry {
+            resident::Entry::Occupied(mut entry) => {
+                let slot = &mut entry.resident_mut().deadlines[kind.index()];
+                if *slot == Some(at) {
+                    return;
+                }
+                *slot = Some(at);
+                if armed < *entry.priority() {
+                    entry.set(armed);
+                }
+            }
+            resident::Entry::Vacant(mut entry) => {
+                *entry.resident_mut() = Lane::only(kind, at);
+                entry.insert(armed);
+            }
+            resident::Entry::Conflict(mut entry) => {
+                *entry.resident_mut() = Lane::only(kind, at);
+                entry.set(armed);
+            }
         }
-        self.entry.update(
-            || {
-                let mut lane = Lane::EMPTY;
-                let next = lane.set(kind, at);
-                (lane, next)
-            },
-            |lane| lane.set(kind, at),
-        );
     }
 
     fn cancel(self, kind: Kind) {
@@ -204,19 +237,7 @@ impl<'d, ID: Identity> Entry<'_, 'd, ID> {
             resident::Entry::Occupied(entry) => entry,
             resident::Entry::Vacant(_) | resident::Entry::Conflict(_) => return,
         };
-        let first = entry.priority().kind;
-        let next = {
-            let lane = entry.resident_mut();
-            lane.deadlines[kind.index()] = None;
-            if first != kind {
-                return;
-            }
-            lane.next()
-        };
-        match next {
-            Some(next) => entry.set(next),
-            None => entry.retire(),
-        }
+        entry.resident_mut().deadlines[kind.index()] = None;
     }
 }
 
@@ -254,6 +275,10 @@ impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::
         slot
     }
 
+    pub(super) fn is_sealed(&self) -> bool {
+        self.schedule.is_none()
+    }
+
     pub(in crate::network::listener) fn project<'view, T>(
         &'view mut self,
         select: impl FnOnce(&'view mut C) -> &'view mut T,
@@ -282,7 +307,8 @@ impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::
 
     pub(in crate::network::listener) fn is_due(&mut self, now: clock::Moment<'d>) -> bool {
         self.with(false, |entry| {
-            matches!(entry.entry, resident::Entry::Occupied(entry) if entry.priority().at <= now)
+            matches!(entry.entry, resident::Entry::Occupied(entry)
+                if entry.resident().next().is_some_and(|due| due.at <= now))
         })
     }
 
@@ -505,11 +531,12 @@ impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::
     ) -> Self {
         let ((source, book), _) = proof.into_inner();
         let (state, source) = source.split();
+        let schedule = source.has_owner().then_some(book);
         Self {
             source,
             state: &mut state.control,
             conn: &mut state.conn,
-            schedule: Some(book),
+            schedule,
         }
     }
 }

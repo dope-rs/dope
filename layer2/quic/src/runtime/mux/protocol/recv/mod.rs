@@ -29,34 +29,13 @@ use mux::{app, auth, handler, output, protocol, router};
 use router::routing;
 use routing::issuer::Source as _;
 
-pub(in crate::runtime) trait Recv<
-    A: auth::Mode<DOMAIN>,
-    H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
-    const DOMAIN: u8,
-    B: stream::Recv,
->
-{
-    fn recv_input<I, S>(
-        &mut self,
-        from: net::SocketAddr,
-        input: I,
-        keep: I::Retain,
-        now: time::Instant,
-        epoch: epoch::Sample<S>,
-    ) -> Result<(), errors::Receive>
-    where
-        I: Input<DOMAIN, B, A>,
-        S: civil::Source;
-}
-
-impl<'a, 'tls, H, const DOMAIN: u8, B, A> Recv<A, H, DOMAIN, B>
-    for protocol::Io<'a, 'tls, H, DOMAIN, B, A>
+impl<'a, 'tls, H, const DOMAIN: u8, B, A> protocol::Io<'a, 'tls, H, DOMAIN, B, A>
 where
     A: auth::Mode<DOMAIN>,
     H: handler::Handler<DOMAIN, B, A::Send, A::Identity> + cert::Sink<DOMAIN, A::Identity>,
     B: stream::Recv,
 {
-    fn recv_input<I, S>(
+    pub(in crate::runtime) fn recv_input<I, S>(
         &mut self,
         from: net::SocketAddr,
         input: I,

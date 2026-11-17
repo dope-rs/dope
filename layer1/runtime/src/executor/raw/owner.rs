@@ -28,7 +28,7 @@ pub(crate) enum Draining {}
 pub(crate) struct Stored<D, Plan> {
     #[pin]
     app: D,
-    park: Option<Plan>,
+    park: Plan,
 }
 
 pub(crate) struct Backing<'d, D: executor::raw::Layout<'d>> {
@@ -37,13 +37,13 @@ pub(crate) struct Backing<'d, D: executor::raw::Layout<'d>> {
 
 impl<'d, D: executor::raw::App<'d>> Backing<'d, D> {
     pub(crate) fn new(token: &brand::Token<brand::Identity<'d>>, value: D) -> Self {
-        Self::prepared(token, value, None)
+        Self::prepared(token, value, D::select_park())
     }
 
     fn prepared(
         token: &brand::Token<brand::Identity<'d>>,
         app: D,
-        park: Option<D::ParkPlan>,
+        park: D::ParkPlan,
     ) -> Self {
         let stored = Stored { app, park };
         Self {
@@ -94,7 +94,6 @@ where
         token: &mut brand::Token<brand::Identity<'d>>,
         driver: driver::Reference<'d>,
     ) -> Self {
-        *token.pin_mut(stored).project().park = D::select_park();
         let key: Key<'app, 'd, D> = Key {
             anchor: life::raw::Anchor::new(),
             driver: marker::PhantomData,
@@ -119,10 +118,10 @@ where
             stored.app.as_ref(),
             &mut driver::settings::claim::Needs::new(),
         )?;
-        let Some(plan) = stored.park else {
+        if !D::PARK {
             return Ok(());
-        };
-        let count = D::prepare_park(stored.app.as_ref(), plan)
+        }
+        let count = D::prepare_park(stored.app.as_ref(), stored.park)
             .ok_or(executor::InstallError::CoordinatorCountOverflow)?;
         count.admit()
     }
@@ -191,7 +190,7 @@ where
 /// Exact stopped provider and its original plan after dependent native retirement.
 pub(crate) struct Parent<'parent, 'd, H: executor::raw::Layout<'d>> {
     app: lending::raw::Borrowed<'parent, H>,
-    park: Option<H::ParkPlan>,
+    park: H::ParkPlan,
 }
 
 impl<'parent, 'd, H: lending::raw::Resume<'d>> Parent<'parent, 'd, H> {
@@ -227,9 +226,11 @@ where
         token: &mut brand::Token<brand::Identity<'d>>,
         finish: &mut finish::Finish<'_, 'd>,
     ) -> Parent<'parent, 'd, H> {
-        let mut stored = token.pin_mut(self.stored);
-        let plan = stored.as_mut().project().park.take();
-        let call = executor::raw::Finish::new(stored.as_mut().project().app, self.install, finish);
+        let stored = token.pin_mut(self.stored).project();
+        // SAFETY: consuming this stopped owner ends every future projection of
+        // its ManuallyDrop backing. The unpinned plan transfers exactly once.
+        let plan = unsafe { ptr::read(stored.park) };
+        let call = executor::raw::Finish::new(stored.app, self.install, finish);
         // SAFETY: this consumes the sole stopped owner after native quiescence.
         // The old backing is inaccessible; the child and its plan end here.
         // Only the original pinned provider and selected plan leave this frame.
@@ -280,18 +281,18 @@ where
         }
     }
 
-    pub(crate) fn dispatch<'turn>(
+    pub(crate) fn dispatch<'event, 'turn>(
         self,
         token: &mut brand::Token<brand::Identity<'d>>,
-        event: io::Event<'d>,
+        event: o3::mem::slot::Occupied<'event, io::Event<'d>>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> ops::ControlFlow<io::Event<'d>> {
+    ) -> ops::ControlFlow<o3::mem::slot::Occupied<'event, io::Event<'d>>> {
         let app = token.pin_mut(self.stored).project().app;
-        let call = executor::raw::Dispatch::new(app, event, turn, driver.reborrow());
-        match D::dispatch(call) {
+        let event = executor::raw::Dispatch::new(event);
+        match D::dispatch(app, event, turn, driver.reborrow()) {
             ops::ControlFlow::Continue(()) => ops::ControlFlow::Continue(()),
-            ops::ControlFlow::Break(event) => driver.retire(event),
+            ops::ControlFlow::Break(event) => driver.retire(event.into_event()),
         }
     }
 
@@ -306,24 +307,19 @@ where
         wake.wake::<D>(token.pin_mut(self.stored).project().app);
     }
 
-    pub(crate) fn reserve_park<'turn>(
-        self,
-        token: &brand::Token<brand::Identity<'d>>,
-        work: schedule::app::Work<'turn, 'd>,
-    ) -> Option<schedule::app::Lease<'turn, 'd>> {
-        token.borrow_pin(self.stored).project_ref().park.as_ref()?;
-        work.lease()
-    }
-
     pub(crate) fn pre_park<'turn>(
         self,
         token: &mut brand::Token<brand::Identity<'d>>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
-        let park = executor::raw::Park::new(turn, driver.reborrow());
-        let stored = token.pin_mut(self.stored).project();
-        park.run::<D>(stored.app, stored.park);
+        if D::PARK {
+            let park = executor::raw::Park::new(turn, driver.reborrow());
+            let stored = token.pin_mut(self.stored).project();
+            // SAFETY: publication prepared this plan for the same installed
+            // pinned root; failed admission finishes without entering park.
+            unsafe { D::park(stored.app, stored.park, park) }
+        }
     }
 
     pub(crate) fn progress<'turn>(

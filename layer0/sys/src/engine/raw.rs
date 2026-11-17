@@ -1,3 +1,4 @@
+use o3::mem::slot;
 use std::{ops, task, time};
 
 use crate::{
@@ -42,7 +43,10 @@ where
 
     fn dispatch(
         self,
-        emit: impl FnMut(C::Event, &mut H) -> ops::ControlFlow<C::Event>,
+        emit: impl for<'event> FnMut(
+            slot::Occupied<'event, C::Event>,
+            &mut H,
+        ) -> ops::ControlFlow<slot::Occupied<'event, C::Event>>,
     ) -> C::Dispatch;
 }
 

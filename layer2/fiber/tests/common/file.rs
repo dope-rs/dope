@@ -31,9 +31,9 @@ pub struct Coordinate<'a, 'p, 'd> {
     #[dispatcher(state)]
     pub ticket: Option<read::Ticket<'p, 'd>>,
     #[dispatcher(state)]
-    pub input: &'a Cell<Option<read::Request<read::Release<'d>>>>,
+    pub input: &'a Cell<Option<read::Request<read::Release<read::Buffer<'d>>>>>,
     #[dispatcher(state)]
-    pub output: &'a Cell<Option<read::Completion<read::Release<'d>>>>,
+    pub output: &'a Cell<Option<read::Completion<read::Release<read::Buffer<'d>>>>>,
     #[dispatcher(state)]
     pub waker: &'a Cell<Option<Waker<'d>>>,
 }
@@ -199,21 +199,14 @@ where
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ControlFlow<io::Event<'d>> {
-        let (owner, (), (event, driver)) = call.into_parts();
+    fn dispatch<'event>(
+        owner: Pin<&mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+        driver: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         let this = owner.project();
-        let event = event.into_kind();
-        let completed = match &event {
+        let kind = event.as_ref();
+        let completed = match kind {
             io::event::Kind::Read(done) => done.outcome().is_ok(),
             io::event::Kind::Open(done) => {
                 matches!(done.outcome(), io::event::file::open::Outcome::Opened(_))
@@ -222,7 +215,7 @@ where
         };
         let detached = completed && this.on_completion.is_some_and(|complete| complete());
         let retired = if detached
-            && let io::event::Kind::Open(done) = &event
+            && let io::event::Kind::Open(done) = kind
             && let io::event::file::open::Outcome::Opened(fd) = done.outcome()
         {
             let fd = fd.as_raw_fd();
@@ -231,11 +224,7 @@ where
         } else {
             None
         };
-        let result = <M as event::Drive<'d>>::dispatch(executor::raw::Call::new(
-            this.reader,
-            (),
-            (event.into(), driver),
-        ));
+        let result = <M as event::Drive<'d>>::dispatch(this.reader, event, driver);
         if let Some((fd, before)) = retired {
             assert!(
                 result.is_continue(),

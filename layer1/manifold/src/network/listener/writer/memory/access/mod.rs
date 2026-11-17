@@ -12,7 +12,7 @@ use dope_net::{
     wire::send,
 };
 use o3::{buffer::resident, depot::array};
-pub(in crate::network::listener::writer) use step::{Finish, Step};
+pub(in crate::network::listener::writer) use step::Step;
 
 use crate::network::listener::{
     self, conn,
@@ -44,6 +44,7 @@ struct Active {
 #[repr(u8)]
 pub(in crate::network::listener::writer) enum Motion {
     Empty,
+    Done,
     Ready,
     Waiting,
     Consumed,
@@ -117,7 +118,8 @@ impl Progress {
     pub(in crate::network::listener::writer) fn motion(&self) -> Motion {
         match &self.0 {
             State::Active(active) if !active.sent.is_empty() => active.motion,
-            State::Active(_) | State::Failed(_) | State::Rejected(_) => Motion::Empty,
+            State::Active(_) => Motion::Done,
+            State::Failed(_) | State::Rejected(_) => Motion::Empty,
         }
     }
 
@@ -160,6 +162,49 @@ const _: () = {
     assert!(mem::size_of::<Motion>() == mem::size_of::<u8>());
 };
 
+pub(in crate::network::listener) trait Body<B> {
+    fn wire(&self) -> Option<transfer::NonZero>;
+    fn into_value(self) -> Option<egress::load::Value<B>>;
+    fn retain<'d, ID: Identity>(self, slot: &mut memory::DirectSlot<'_, '_, 'd, ID, B>)
+    where
+        B: data::raw::Payload<'d>;
+}
+
+impl<B> Body<B> for () {
+    fn wire(&self) -> Option<transfer::NonZero> {
+        None
+    }
+
+    fn into_value(self) -> Option<egress::load::Value<B>> {
+        None
+    }
+
+    fn retain<'d, ID: Identity>(self, _: &mut memory::DirectSlot<'_, '_, 'd, ID, B>)
+    where
+        B: data::raw::Payload<'d>,
+    {
+    }
+}
+
+impl<B> Body<B> for egress::NonEmpty<B> {
+    fn wire(&self) -> Option<transfer::NonZero> {
+        Some(self.geometry().wire())
+    }
+
+    fn into_value(self) -> Option<egress::load::Value<B>> {
+        Some(egress::load::Value::Checked(self))
+    }
+
+    fn retain<'d, ID: Identity>(self, slot: &mut memory::DirectSlot<'_, '_, 'd, ID, B>)
+    where
+        B: data::raw::Payload<'d>,
+    {
+        let flight = slot.get_mut().project();
+        *flight.source = o3::mem::slot::Storage::filled(self.into_inner(), ());
+        *flight.position = B::Position::default();
+    }
+}
+
 pub(in crate::network::listener) struct Direct<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>>
 {
     lease: release::Lease<'p, 's, 'd, memory::Flight<B, B::Position>, ID>,
@@ -170,14 +215,10 @@ pub(in crate::network::listener) struct Direct<'p, 's, 'd, ID: Identity, B: data
 impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID, B> {
     /// Preserves the accepted total: header bytes plus the unchanged source length.
     pub(in crate::network::listener) fn new(
-        mut slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
         head: memory::Len,
         total: transfer::NonZero,
-        source: Option<B>,
     ) -> Self {
-        let flight = slot.get_mut().project();
-        *flight.source = source;
-        *flight.position = B::Position::default();
         Self {
             lease: slot,
             head,
@@ -186,15 +227,32 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID,
     }
 
     pub(in crate::network::listener) fn body(
-        slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        mut slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
         body: egress::NonEmpty<B>,
     ) -> Self {
         let total = body.geometry().wire();
-        Self::new(slot, memory::Len::ZERO, total, Some(body.into_inner()))
+        body.retain(&mut slot);
+        Self::new(slot, memory::Len::ZERO, total)
     }
 
     pub(in crate::network::listener::writer) fn take_source(&mut self) -> Option<B> {
-        self.lease.get_mut().project().source.take()
+        self.lease.get_mut().project().source.occupied().map(|source| source.take().0)
+    }
+
+    pub(in crate::network::listener::writer) fn retire<O>(
+        mut self,
+        publish: impl FnOnce() -> O,
+        release: impl FnOnce(&mut O, B),
+    ) -> O {
+        let Some(source) = self.lease.get_mut().project().source.occupied() else {
+            drop(self);
+            return publish();
+        };
+        let (body, _) = source.take();
+        drop(self);
+        let mut owner = publish();
+        release(&mut owner, body);
+        owner
     }
 
     pub(in crate::network::listener::writer) fn prepare(&mut self) -> Result<Prepared<'_>, Fault> {
@@ -247,7 +305,7 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID,
             step.commit();
         }
         if !sent.is_empty() {
-            let Some(source) = this.source.as_ref() else {
+            let Some(source) = this.source.get() else {
                 return Err(Fault::new(offset, transfer::Len::ZERO, sent.left()));
             };
             // SAFETY: the accepted total is header plus unchanged source length.
@@ -287,7 +345,7 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID,
 
 impl<'d, B: data::raw::Payload<'d>, ID: Identity> Drop for Direct<'_, '_, 'd, ID, B> {
     fn drop(&mut self) {
-        *self.lease.get_mut().project().source = None;
+        *self.lease.get_mut().project().source = o3::mem::slot::Storage::new(());
     }
 }
 

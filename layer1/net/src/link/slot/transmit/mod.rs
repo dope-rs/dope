@@ -4,7 +4,7 @@ use crate::{link::event, wire::send::reclaim};
 
 pub mod direct;
 mod finalize;
-mod graceful;
+pub(in crate::link) mod graceful;
 mod invalid;
 pub mod outcome;
 mod sender;

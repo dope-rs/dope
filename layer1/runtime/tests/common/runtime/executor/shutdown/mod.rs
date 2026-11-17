@@ -60,6 +60,7 @@ impl<'d> executor::raw::Layout<'d> for Storm {
 unsafe impl<'d> executor::raw::App<'d> for Storm {
     const ROUTES: settings::Routes = settings::Routes::EMPTY;
     const COORDS: usize = 1;
+    const PARK: bool = true;
 
     fn progress(
         _: pin::Pin<&Self>,
@@ -74,9 +75,7 @@ unsafe impl<'d> executor::raw::App<'d> for Storm {
     ) -> schedule::Progress<'d> {
         schedule::Progress::Quiescent
     }
-    fn select_park() -> Option<Self::ParkPlan> {
-        Some(())
-    }
+    fn select_park() -> Self::ParkPlan {}
 
     /// # Safety
     /// The pinned Storm and prepared unit plan must belong to this installed
@@ -124,6 +123,7 @@ unsafe impl<'d, F: Fn(Result<(), shutdown::FireError>)> executor::raw::App<'d>
 {
     const ROUTES: settings::Routes = settings::Routes::EMPTY;
     const COORDS: usize = 1;
+    const PARK: bool = true;
 
     fn progress(
         app: pin::Pin<&Self>,
@@ -142,9 +142,7 @@ unsafe impl<'d, F: Fn(Result<(), shutdown::FireError>)> executor::raw::App<'d>
     ) -> schedule::Progress<'d> {
         schedule::Progress::Quiescent
     }
-    fn select_park() -> Option<Self::ParkPlan> {
-        Some(())
-    }
+    fn select_park() -> Self::ParkPlan {}
 
     /// # Safety
     /// The pinned probe and prepared unit plan must belong to this installed

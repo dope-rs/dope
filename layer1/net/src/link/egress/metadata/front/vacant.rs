@@ -37,7 +37,6 @@ pub(super) struct Parts<
 > {
     pub(super) queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
     pub(super) slot: Index<'d>,
-    pub(super) stored: credit::Stored<'p>,
 }
 
 impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State>
@@ -47,17 +46,9 @@ impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: p
         queue: metadata::Queue<'queue, 'p, 'd, T, M, D, P>,
         slot: Index<'d>,
         token: &'token mut region::Token<region::Identity<'d>>,
-        stored: credit::Stored<'p>,
     ) -> Self {
         Self {
-            parts: Guard::new(
-                token,
-                Parts {
-                    queue,
-                    slot,
-                    stored,
-                },
-            ),
+            parts: Guard::new(token, Parts { queue, slot }),
         }
     }
 
@@ -68,16 +59,9 @@ impl<'queue, 'token, 'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: p
     }
 
     pub(in crate::link::egress::metadata::front) fn restore(self, value: egress::NonEmpty<T>) {
-        let (
-            token,
-            Parts {
-                queue,
-                slot,
-                stored,
-            },
-        ) = self.parts.into_parts();
-        queue.state().restore(slot, stored, |next, entry| {
-            queue.pool.store.restore(token, slot, value, next, entry);
+        let (token, Parts { queue, slot }) = self.parts.into_parts();
+        queue.state().restore(slot, |next| {
+            queue.pool.store.restore(token, slot, value, next);
         });
     }
 }
@@ -86,12 +70,8 @@ impl<'p, 'd, T, M: credit::Access<'p, 'd>, D: demand::Mode, P: position::State> 
     for Parts<'_, 'p, 'd, T, M, D, P>
 {
     fn rollback(self, token: &mut region::Token<region::Identity<'d>>) {
-        let Parts {
-            queue,
-            slot,
-            stored,
-        } = self;
-        queue.pool.store.recycle(token, slot);
-        credit::Lane::new(queue).release(token, stored.into_grant());
+        let Parts { queue, slot } = self;
+        queue.pool.store.release(token, slot);
+        credit::Lane::new(queue).released(token);
     }
 }

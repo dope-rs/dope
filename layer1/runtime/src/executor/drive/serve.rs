@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use dope_core::driver::schedule::clock::Sample;
 use drive::{clock, turn};
 use turn::scope;
@@ -16,14 +18,13 @@ where
 {
     loop {
         let tick = tick(source)?;
-        let parked = state.next_app(tick, &mut shutdown)?.park();
-        match parked.status() {
-            turn::Status::Active => {}
-            turn::Status::Shutdown => return Ok(()),
-        }
-        if let Some(idle) = parked.sync()? {
-            let progress = idle.progress();
-            idle.wait(progress, source)?;
+        match state.next_app(tick, &mut shutdown)?.park()? {
+            ControlFlow::Break(()) => return Ok(()),
+            ControlFlow::Continue(Some(idle)) => {
+                let progress = idle.progress();
+                idle.wait(progress, source)?;
+            }
+            ControlFlow::Continue(None) => {}
         }
     }
 }

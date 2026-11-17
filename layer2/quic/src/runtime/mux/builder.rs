@@ -320,7 +320,7 @@ where
             plan.bytes(),
             self.server,
         )?;
-        state.outgoing.cache.batch = plan.gso.map(crate::conn::wire::packet::Gso::new);
+        state.outgoing.cache.gso = plan.gso;
         Ok(router::Router {
             state,
             handler: self.events,

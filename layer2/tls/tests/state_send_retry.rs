@@ -21,6 +21,178 @@ use crate::common::retry::{self, Error, Mode, native};
 pub mod common;
 
 #[test]
+fn partial_owner_cancel() {
+    use std::time::{Duration, Instant};
+
+    use dope::{
+        core::driver::storage::Resident,
+        net::link::{
+            egress::data::compose::Tagged,
+            event::SendOutcome,
+            slot::transmit::outcome::Retention,
+        },
+    };
+    use o3::buffer::{Residency as _, resident, storage, write::SpareExt as _};
+
+    retry::with(
+        Mode::Partial,
+        |scope, end, pubkey| {
+            let budget = scope
+                .context()
+                .storage
+                .budget(Resident::bytes(retry::PARTIAL_BYTES))
+                .expect("body domain");
+            let charge = budget.try_charge(retry::PARTIAL_BYTES).expect("body credit");
+            let mut body = storage::Owned::try_from_charge(charge).expect("body storage");
+            let mut spare = body.spare();
+            spare.fill(b'x');
+            spare.commit();
+            let body = body.freeze();
+            let address = body.as_ptr();
+            let mut returned = 0;
+            retry::prepare(
+                scope,
+                end,
+                pubkey,
+                Mode::Partial,
+                |pool: &mut retry::Pool<'_, '_, '_, Tagged<resident::Shared<'_>, u8>>,
+                 [first, second],
+                 scope,
+                 _| {
+                    assert!(matches!(
+                        pool.egress_mut(first)
+                            .expect("sender")
+                            .queue
+                            .try_enqueue(scope.context().region_token(), Tagged::new(body, 17)),
+                        egress::Enqueue::Committed
+                    ));
+                    retry::submit(pool, first, scope)?;
+                    let started = Instant::now();
+                    let acknowledged = loop {
+                        if started.elapsed() >= Duration::from_secs(5) {
+                            return Err(Error::Timeout);
+                        }
+                        let done = native::next_send(scope)?;
+                        let mut outcome = None;
+                        pool.settle(
+                            done, &mut scope.context(), &mut returned, |_, _| {},
+                            |count, _, _, _| *count += 1,
+                            |_, completion, _| {
+                                let dope::net::link::pool::send::Completion::Ready(owner, result) = completion else {
+                                    return;
+                                };
+                                assert_eq!(owner.publish(|_| {}).into_entry().get().key(), first);
+                                outcome = Some(result);
+                            },
+                        );
+                        let outcome = outcome.ok_or(Error::Settlement)?;
+                        match outcome {
+                            SendOutcome::Queued { acknowledged, .. } => {
+                                break acknowledged.into_raw();
+                            }
+                            SendOutcome::Pending => {}
+                            SendOutcome::Rejected { failure, .. } => {
+                                return Err(Error::Rejected(failure));
+                            }
+                            SendOutcome::Failed { failure, .. } => {
+                                return Err(Error::Send(failure));
+                            }
+                            SendOutcome::Invalid { error, .. } => {
+                                return Err(Error::Invalid(error));
+                            }
+                            _ => return Err(Error::Settlement),
+                        }
+                    };
+                    // One staging owner accepts at most two 16-KiB plaintext records.
+                    assert!(acknowledged > 0 && acknowledged <= 2 * (1 << 14));
+                    assert!(retry::PARTIAL_BYTES - acknowledged > 2 * (1 << 14));
+                    retry::submit(pool, first, scope)?;
+                    let status = pool.get_mut(first).expect("same sender").send_status();
+                    assert!(status.is_inflight());
+                    assert!(matches!(status.retention(), Retention::Held));
+                    assert_eq!(returned, 0);
+                    assert_eq!(budget.resident(), retry::PARTIAL_BYTES);
+                    let probe = Tagged::new(resident::Shared::from(b"x".as_slice()), 23);
+                    let rejected = pool
+                        .egress_mut(second)
+                        .expect("credit contender")
+                        .queue
+                        .try_enqueue(scope.context().region_token(), probe);
+                    assert!(matches!(
+                        rejected,
+                        egress::Enqueue::Rejected(rejected)
+                            if matches!(rejected.error(), egress::Rejection::Capacity { .. })
+                                && *rejected.value().as_inner().tag() == 23
+                    ));
+                    scope.finish(true, |_, finish| {
+                        pool.finish(finish, |body, _| {
+                            let (body, tag) = body.into_parts();
+                            assert_eq!(body.as_ptr(), address);
+                            assert_eq!(tag, 17);
+                            assert_eq!(body.len(), retry::PARTIAL_BYTES);
+                            assert_eq!(body.resident(), retry::PARTIAL_BYTES);
+                            assert!(body.iter().all(|byte| *byte == b'x'));
+                            assert_eq!(budget.resident(), retry::PARTIAL_BYTES);
+                            returned += 1;
+                            drop(body);
+                        });
+                    });
+                    assert_eq!(returned, 1);
+                    assert_eq!(budget.resident(), 0);
+                    Ok(())
+                },
+            )
+        },
+        recovery::Policy::new(|_| {}, common::recover),
+        |result| {
+            result
+                .as_ref()
+                .map_err(|cause| cause.cause())
+                .expect("TLS fixture scope")
+                .as_ref()
+                .expect("partial owner cancellation");
+        },
+    )
+    .expect("TLS send fixture");
+}
+
+#[test]
+fn key_updates_coalesce() {
+    retry::run(
+        Mode::Updates,
+        |pool, keys, scope, held| {
+            let held = held.expect("held ciphertext");
+            assert!(held.inflight && held.retained);
+            assert_eq!(held.sent, 54, "two KeyUpdate records without later input");
+            for key in keys {
+                assert!(matches!(
+                    pool.egress_mut(key)
+                        .expect("established peer")
+                        .queue
+                        .try_enqueue(scope.context().region_token(), b"reply"),
+                    egress::Enqueue::Committed,
+                ));
+                retry::submit(pool, key, scope)?;
+                let done = native::next_send(scope)?;
+                assert_eq!(retry::settle(pool, done, scope)?, key);
+            }
+            Ok::<_, Error>(())
+        },
+        recovery::Policy::new(|_| {}, common::recover),
+        |result| {
+            let replies = result
+                .as_ref()
+                .map_err(|cause| cause.cause())
+                .expect("TLS fixture scope")
+                .as_ref()
+                .expect("KeyUpdate completion");
+            assert_eq!(replies, &[b"reply".to_vec(), b"reply".to_vec()]);
+        },
+    )
+    .expect("TLS send fixture");
+}
+
+#[test]
 fn inflight_receive() {
     retry::run(
         Mode::Held,
@@ -168,7 +340,7 @@ fn released_output() {
             retry::pending(pool, scope, |key| retried.push(key))?;
             assert_eq!(retried, [second]);
             assert!(
-                pool.egress_mut(second)
+                !pool.egress_mut(second)
                     .expect("second peer")
                     .queue
                     .is_empty()
@@ -178,6 +350,14 @@ fn released_output() {
                     .expect("second peer")
                     .send_status()
                     .is_inflight()
+            );
+            let done = native::next_send(scope)?;
+            assert_eq!(retry::settle(pool, done, scope)?, second);
+            assert!(
+                pool.egress_mut(second)
+                    .expect("second peer")
+                    .queue
+                    .is_empty()
             );
             Ok::<_, Error>(())
         },

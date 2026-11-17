@@ -225,7 +225,7 @@ pub(super) enum Policy {
 }
 
 impl Destination {
-    pub(in crate::conn) fn overhead(self) -> usize {
+    pub(crate) fn overhead(self) -> usize {
         self.network().map_or(0, Peer::overhead)
     }
 
@@ -484,15 +484,15 @@ impl<'a, const DOMAIN: u8, B: stream::Recv, D: buffer::raw::Segment, const RECON
         (slots, packet)
     }
 
-    pub(crate) fn send_one(
+    pub(crate) fn send_into(
         &mut self,
-        packet: &mut Vec<u8>,
+        sink: &mut impl Sink,
         now: time::Instant,
+        packets: usize,
         bytes: usize,
         active: Peer,
-    ) -> (Option<Destination>, Result<(), Error>) {
-        let (outcome, result) = batch::Batch::new(&mut *self.connection, Policy::Fallback(active))
-            .report::<false, _>(packet, now, 1, bytes);
-        (outcome.destination, result)
+    ) -> Result<(), Error> {
+        batch::Batch::new(&mut *self.connection, Policy::Fallback(active))
+            .fill(sink, now, packets, bytes)
     }
 }

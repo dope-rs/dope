@@ -1,7 +1,7 @@
 use std::mem;
 
 use dope_core::driver::route::{Identity, KeyTag};
-use dope_net::link::{self, egress::data};
+use dope_net::link::egress::data;
 use memory::access;
 use o3::buffer::resident;
 
@@ -27,12 +27,6 @@ enum State<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> {
 pub(in crate::network::listener::writer) enum Mode {
     Queued,
     Direct,
-}
-
-pub(in crate::network::listener) enum Settled<B> {
-    More,
-    Done(Option<B>),
-    Closed,
 }
 
 impl<'d, ID: Identity, B: data::raw::Payload<'d>> Default for Send<'_, '_, 'd, ID, B> {
@@ -70,19 +64,8 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B
 
     /// Retires direct-send ownership after the net layer has quiesced its SQE.
     pub(in crate::network::listener) fn retire(&mut self) -> (Option<B>, Option<conn::Transmit>) {
-        match mem::replace(&mut self.state, State::Queued) {
-            State::Queued => (None, None),
-            State::Direct(mut state) => (state.take_source(), state.progress.error()),
-            State::Failed(error) => (None, Some(error)),
-        }
-    }
-
-    pub(in crate::network::listener) fn release(&mut self) -> Option<B> {
-        let (source, error) = self.retire();
-        if let Some(error) = error {
-            self.state = State::Failed(error);
-        }
-        source
+        let (direct, error) = self.extract();
+        (direct.and_then(|mut state| state.take_source()), error)
     }
 
     pub(in crate::network::listener) fn fail(&mut self, failure: conn::Transmit) -> Option<B> {
@@ -97,21 +80,34 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B
         }
     }
 
-    pub(in crate::network::listener) fn settle(
+    pub(in crate::network::listener::writer) fn direct(
         &mut self,
-        done: Option<link::Consumed>,
-    ) -> Settled<B> {
-        let State::Direct(state) = &mut self.state else {
-            return Settled::Closed;
-        };
-        state.progress.settle(done);
-        if state.progress.error().is_some() {
-            return Settled::Closed;
+    ) -> Option<&mut access::Direct<'p, 's, 'd, ID, B>> {
+        match &mut self.state {
+            State::Direct(state) => Some(state),
+            State::Queued | State::Failed(_) => None,
         }
-        if state.progress.has_more() {
-            Settled::More
-        } else {
-            Settled::Done(self.retire().0)
+    }
+
+    pub(in crate::network::listener::writer) fn take(
+        &mut self,
+        failure: Option<conn::Transmit>,
+    ) -> Option<access::Direct<'p, 's, 'd, ID, B>> {
+        let (direct, error) = self.extract();
+        if let Some(error) = error.or(failure) {
+            self.state = State::Failed(error);
+        }
+        direct
+    }
+
+    fn extract(&mut self) -> (Option<access::Direct<'p, 's, 'd, ID, B>>, Option<conn::Transmit>) {
+        match mem::replace(&mut self.state, State::Queued) {
+            State::Direct(state) => {
+                let error = state.progress.error();
+                (Some(state), error)
+            }
+            State::Queued => (None, None),
+            State::Failed(error) => (None, Some(error)),
         }
     }
 

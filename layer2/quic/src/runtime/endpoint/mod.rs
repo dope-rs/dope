@@ -8,10 +8,7 @@ use dope::{
             schedule::{self, clock},
             settings::{self, claim, errors::Claim},
         },
-        io::{
-            self,
-            datagram::{Residency, payload},
-        },
+        io::datagram::{Residency, payload},
     },
     manifold::{
         app::{
@@ -376,18 +373,12 @@ where
 {
     type Access = dispatch::raw::Plain;
 
-    fn dispatch<'app, 'driver>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ops::ControlFlow<io::Event<'d>> {
-        event::Drive::dispatch(call.map_owner(|owner| owner.project().udp))
+    fn dispatch<'event>(
+        owner: pin::Pin<&mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+        driver: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
+        event::Drive::dispatch(owner.project().udp, event, driver)
     }
 }
 

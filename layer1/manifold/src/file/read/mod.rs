@@ -23,7 +23,7 @@ use o3::{
 
 use crate::app::dispatch;
 
-mod raw;
+pub mod raw;
 
 const FREE: usize = 0;
 const WORK: usize = 1;
@@ -31,11 +31,17 @@ const WORK: usize = 1;
 /// Exclusive storage carrying its original resident-byte charge.
 pub type Buffer<'d> = storage::Owned<resident::Budget<'d>>;
 
-#[derive(Debug, Default)]
-pub struct Release<'d>(marker::PhantomData<Buffer<'d>>);
+#[derive(Debug)]
+pub struct Release<T>(marker::PhantomData<T>);
 
-impl<'d> Return for Release<'d> {
-    type Item = Buffer<'d>;
+impl<T> Default for Release<T> {
+    fn default() -> Self {
+        Self(marker::PhantomData)
+    }
+}
+
+impl<T> Return for Release<T> {
+    type Item = T;
 
     #[inline]
     fn return_item(self, item: Self::Item) {
@@ -172,7 +178,7 @@ impl<ID: Identity> Layout<ID> {
         })
     }
 
-    pub fn try_port<'d, R: Return<Item = Buffer<'d>>>(&self) -> Result<Port<'d, R>, CreateError> {
+    pub fn try_port<'d, R: Return<Item: raw::Output>>(&self) -> Result<Port<'d, R>, CreateError> {
         Port::try_new(self.capacity)
     }
 }
@@ -189,7 +195,7 @@ type Slot<'a, 'd, R> = shared::Slot<'a, (), raw::Entry<'d, R>, 2>;
 ///
 /// Slots bound queued, native, and uncollected operations together. Buffer
 /// residency remains charged by each supplied owner, including after completion.
-pub struct Port<'d, R: Return = Release<'d>> {
+pub struct Port<'d, R: Return = Release<Buffer<'d>>> {
     slots: shared::Fifo<(), raw::Entry<'d, R>, 2>,
     capacity: table::Capacity,
     bound: cell::Cell<bool>,
@@ -198,7 +204,7 @@ pub struct Port<'d, R: Return = Release<'d>> {
 }
 
 /// The installed owner retains the port and native flight group until Finish.
-pub struct Reader<'p, 'd, ID: Identity, R: Return = Release<'d>> {
+pub struct Reader<'p, 'd, ID: Identity, R: Return = Release<Buffer<'d>>> {
     port: &'p Port<'d, R>,
     _route: lease::Owner<'d, ID>,
     flights: flight::Slots<'d, ID>,
@@ -212,12 +218,12 @@ impl<ID: Identity, R: Return> Unpin for Reader<'_, '_, ID, R> {}
 
 /// An affine reply registration; dropping it requests cancellation, not reclamation.
 #[must_use = "poll the operation or drop its ticket to cancel it"]
-pub struct Ticket<'p, 'd, R: Return = Release<'d>> {
+pub struct Ticket<'p, 'd, R: Return = Release<Buffer<'d>>> {
     slot: Slot<'p, 'd, R>,
 }
 
 #[must_use = "a pending operation retains its reply registration"]
-pub enum Poll<'p, 'd, R: Return = Release<'d>> {
+pub enum Poll<'p, 'd, R: Return = Release<Buffer<'d>>> {
     Pending(Ticket<'p, 'd, R>),
     Ready(Completion<R>),
 }
@@ -248,7 +254,7 @@ enum Reply {
     Detached,
 }
 
-impl<'d, R: Return<Item = Buffer<'d>>> Port<'d, R> {
+impl<'d, R: Return<Item: raw::Output>> Port<'d, R> {
     fn try_new(capacity: table::Capacity) -> Result<Self, CreateError> {
         let mut indices = capacity.into_iter();
         let slots = shared::Fifo::try_with(capacity.count().get(), || {
@@ -338,7 +344,7 @@ impl<R: Return> Drop for Ticket<'_, '_, R> {
     }
 }
 
-impl<'p, 'd, ID: Identity, R: Return<Item = Buffer<'d>>> Reader<'p, 'd, ID, R> {
+impl<'p, 'd, ID: Identity, R: Return<Item: raw::Output>> Reader<'p, 'd, ID, R> {
     pub fn try_new(
         port: &'p Port<'d, R>,
         driver: &mut driver::Context<'_, 'd>,
@@ -500,7 +506,7 @@ impl<'d, ID: Identity, R: Return> dispatch::raw::Install<'d> for Reader<'_, 'd, 
     }
 }
 
-impl<'d, ID: Identity, R: Return<Item = Buffer<'d>>> executor::raw::Finishes<'d, Self>
+impl<'d, ID: Identity, R: Return<Item: raw::Output>> executor::raw::Finishes<'d, Self>
     for Reader<'_, 'd, ID, R>
 {
     fn call<'app, 'finish, 'owner, 'epoch>(

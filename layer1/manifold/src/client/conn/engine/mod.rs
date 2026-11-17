@@ -72,17 +72,42 @@ type Slot<'w, 'd, ID, A> = conn::Slot<
     side::Primary<'d, ID>,
 >;
 
-type Sender<'a, 'p, 'w, 'd, ID, A> = dope_net::link::slot::transmit::Sender<
+type Sender<'a, 'p, 'w, 'd, ID, A, T> = dope_net::link::slot::transmit::Sender<
     'a,
     'p,
     'w,
     'd,
     ID,
+    T,
     <A as app::Application<'d, ID>>::Wire,
     Record<'d, ID, A>,
+    <A as app::Application<'d, ID>>::Input,
     <A as app::Application<'d, ID>>::Send,
     { client::IOV_CAP },
 >;
+
+type Entry<'a, 'p, 'w, 'd, ID, A, T> = pool::Entry<
+    'a, 'p, 'w, 'd, ID, T,
+    <A as app::Application<'d, ID>>::Wire,
+    Record<'d, ID, A>,
+    <A as app::Application<'d, ID>>::Input,
+    <A as app::Application<'d, ID>>::Send,
+    { client::IOV_CAP },
+    dope_net::link::egress::reserve::demand::Fallible,
+>;
+
+pub(crate) struct Context<'a, 'd, ID: Identity, A, S, E, X>
+where
+    A: app::Application<'d, ID>,
+    E: env::Spec<Wire = A::Wire>,
+    X: Mode<'d, ID>,
+{
+    app: &'a mut A,
+    controller: &'a mut S,
+    liveness: &'a mut liveness::State<'d, ID, <E::Transport as dope_net::Transport>::Prepared, X>,
+    shutdown: &'a state::State,
+    target: ready::Target<'d>,
+}
 
 /// A connection change retains the environment's exact prepared transport authority.
 type Transition<'a, 'd, ID, E, X, S> = liveness::Change<
@@ -168,6 +193,20 @@ where
     E: env::Spec<Wire = A::Wire>,
     X: Mode<'d, ID>,
 {
+    fn parts(
+        self: pin::Pin<&mut Self>,
+    ) -> (&mut Outbound<'p, 'w, 'd, ID, A, E>, Context<'_, 'd, ID, A, S, E, X>) {
+        let this = self.project();
+        let (pool, liveness) = this.links.parts();
+        (pool, Context {
+            app: this.app,
+            controller: this.controller,
+            liveness,
+            shutdown: this.shutdown,
+            target: this.drive.target(),
+        })
+    }
+
     fn flush_recv(
         self: pin::Pin<&mut Self>,
         work: maint::Work<'_, 'd>,
@@ -314,60 +353,61 @@ where
     A::Continuation: Flush<'p, 'w, 'd, ID, A, S, E, X>,
     <A::Input as input::Mode<A::Wire>>::Reserve:
         Choice<A::Wire, <A::Input as input::Mode<A::Wire>>::Ingress>,
-    Self: ClosePhase<'d, ID, A, S, E>
+    Self: ClosePhase<'p, 'w, 'd, ID, A, S, E, X>
         + ingress::Policy<'p, 'w, 'd, ID, Input = A::Input, Wire = A::Wire>
         + wakes::Completion<'d>
         + Connect<'d, ID, A, S, E>,
 {
     type Access = dispatch::raw::Retained;
 
-    fn dispatch<'app, 'driver, 'turn>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                schedule::Turn<'turn, 'd>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ControlFlow<io::Event<'d>> {
-        use io::event::Kind;
+    fn dispatch<'event>(
+        mut this: pin::Pin<&mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+        turn: schedule::Turn<'_, 'd>,
+        mut driver: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
+        use io::event::{Kind, Selected};
 
-        let (mut this, (), (event, turn, mut driver)) = call.into_parts();
-        match event.into_kind() {
-            Kind::Recv(done) => {
-                if let ControlFlow::Break(done) =
-                    ingress::Policy::dispatch(this.as_mut(), done, turn.reborrow(), &mut driver)
-                {
-                    return ControlFlow::Break(io::Event::from(done));
+        let (event, vacant) = 'rejected: {
+            match event.select() {
+                Selected::Recv(member) => {
+                    let (done, vacant) = member.take();
+                    if let ControlFlow::Break(done) =
+                        ingress::Policy::dispatch(this.as_mut(), done, turn.reborrow(), &mut driver)
+                    {
+                        break 'rejected (io::Event::from(done), vacant);
+                    }
+                    Complete::flush(this, turn, &mut driver);
+                    return ControlFlow::Continue(());
                 }
-                Complete::flush(this, turn, &mut driver);
-                return ControlFlow::Continue(());
-            }
-            Kind::Send(done) => {
-                if let Err(done) = Complete::send(this.as_mut(), done, turn.reborrow(), &mut driver)
-                {
-                    return ControlFlow::Break(Kind::Send(done).into());
+                Selected::Send(member) => {
+                    let (done, vacant) = member.take();
+                    if let Err(done) =
+                        Complete::send(this.as_mut(), done, turn.reborrow(), &mut driver)
+                    {
+                        break 'rejected (Kind::Send(done).into(), vacant);
+                    }
                 }
-            }
-            Kind::Socket(done) => {
-                Complete::socket(this.as_mut(), done, turn.reborrow(), &mut driver);
-            }
-            Kind::Connect(done) => {
-                if let Err(done) =
-                    Complete::connect(this.as_mut(), done, turn.reborrow(), &mut driver)
-                {
-                    return ControlFlow::Break(Kind::Connect(done).into());
+                Selected::Socket(member) => {
+                    let (done, _) = member.take();
+                    Complete::socket(this.as_mut(), done, turn.reborrow(), &mut driver);
                 }
+                Selected::Connect(member) => {
+                    let (done, vacant) = member.take();
+                    if let Err(done) =
+                        Complete::connect(this.as_mut(), done, turn.reborrow(), &mut driver)
+                    {
+                        break 'rejected (Kind::Connect(done).into(), vacant);
+                    }
+                }
+                other => return ControlFlow::Break(other.into_dispatch()),
             }
-            event => return ControlFlow::Break(event.into()),
-        }
-        this.as_mut()
-            .flush_recv(turn.reborrow().maint(), &mut driver);
-        Complete::flush(this, turn, &mut driver);
-        ControlFlow::Continue(())
+            this.as_mut()
+                .flush_recv(turn.reborrow().maint(), &mut driver);
+            Complete::flush(this, turn, &mut driver);
+            return ControlFlow::Continue(());
+        };
+        ControlFlow::Break(executor::raw::Dispatch::new(vacant.insert(event)))
     }
 }
 

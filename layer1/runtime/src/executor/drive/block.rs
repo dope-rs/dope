@@ -126,14 +126,12 @@ where
                     ready.skip()
                 };
                 cause = boot::Cause::Wake;
-                let parked = polled.park();
-                match parked.status() {
-                    turn::Status::Active => {}
-                    turn::Status::Shutdown => return Attempt::Cancel(root, drive::Error::Shutdown),
-                }
-                let idle = match parked.sync() {
-                    Ok(Some(idle)) => idle,
-                    Ok(None) => continue,
+                let idle = match polled.park() {
+                    Ok(ControlFlow::Continue(Some(idle))) => idle,
+                    Ok(ControlFlow::Continue(None)) => continue,
+                    Ok(ControlFlow::Break(())) => {
+                        return Attempt::Cancel(root, drive::Error::Shutdown);
+                    }
                     Err(error) => return Attempt::Cancel(root, error.into()),
                 };
                 let progress = idle.progress();
@@ -143,13 +141,9 @@ where
             }
         };
         Attempt::Complete(loop {
-            let parked = polled.park();
-            match parked.status() {
-                turn::Status::Active => {}
-                turn::Status::Shutdown => break Err(drive::Error::Shutdown),
-            }
-            let idle = match parked.sync() {
-                Ok(idle) => idle,
+            let idle = match polled.park() {
+                Ok(ControlFlow::Continue(idle)) => idle,
+                Ok(ControlFlow::Break(())) => break Err(drive::Error::Shutdown),
                 Err(error) => break Err(error.into()),
             };
             if let Some(idle) = idle {
@@ -283,30 +277,26 @@ where
                 first = false;
                 match output {
                     task::Poll::Ready(output) => break (polled, output),
-                    task::Poll::Pending => {
-                        let parked = polled.park();
-                        match parked.status() {
-                            turn::Status::Active => {}
-                            turn::Status::Shutdown => return Ok(Outcome::Shutdown(None)),
-                        }
-                        if let Some(idle) = parked.sync()? {
+                    task::Poll::Pending => match polled.park()? {
+                        ControlFlow::Break(()) => return Ok(Outcome::Shutdown(None)),
+                        ControlFlow::Continue(Some(idle)) => {
                             let progress = idle.progress();
                             idle.wait(progress, self.source)?;
                         }
-                    }
+                        ControlFlow::Continue(None) => {}
+                    },
                 }
             }
         };
         loop {
-            let parked = polled.park();
-            match parked.status() {
-                turn::Status::Active => {}
-                turn::Status::Shutdown => return Ok(Outcome::Shutdown(Some(output))),
-            }
-            if let Some(idle) = parked.sync()?
-                && let Some(proof) = complete(idle)?
-            {
-                return Ok(Outcome::Complete(output, proof));
+            match polled.park()? {
+                ControlFlow::Break(()) => return Ok(Outcome::Shutdown(Some(output))),
+                ControlFlow::Continue(Some(idle)) => {
+                    if let Some(proof) = complete(idle)? {
+                        return Ok(Outcome::Complete(output, proof));
+                    }
+                }
+                ControlFlow::Continue(None) => {}
             }
             let tick = tick(self.source)?;
             polled = self.state.next_app(tick, &mut shutdown)?;

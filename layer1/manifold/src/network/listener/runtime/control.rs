@@ -1,12 +1,15 @@
 use std::{ops::ControlFlow, pin};
 
 use dope_core::driver::{self, route, route::Identity, schedule, schedule::clock};
-use dope_net::link::pool::{self, pending, recv};
+use dope_net::link::pool::{self, recv};
 use o3::mem::quota;
 
 use crate::{
     app::env,
-    network::listener::{self, conn, handler, writer::phase},
+    network::listener::{
+        self, conn, handler,
+        writer::{self, phase},
+    },
 };
 
 /// Settles due deadlines before input delivery or application activation.
@@ -129,11 +132,20 @@ pub(in crate::network::listener) fn discard_slot<'w, 'd: 'w, ID: Identity, A, E>
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
 {
-    if let Some(slot) = root.as_mut().project().owner.pool_mut().get_mut(key) {
+    let this = root.as_mut().project();
+    let mut entry = this.owner.pool.entry(key);
+    if let Ok(entry) = &mut entry {
+        let slot = entry.get_mut();
         slot.state.fail(cause);
         slot.discard();
     }
-    close_slot(root, key, turn, driver);
+    drop(writer::close(
+        entry,
+        this.owner.writes,
+        &mut (this.app, this.accept, &mut this.owner.deadlines),
+        turn,
+        driver,
+    ));
 }
 
 pub(in crate::network::listener) fn receive_failed<'w, 'd: 'w, ID: Identity, A, E>(
@@ -145,16 +157,21 @@ pub(in crate::network::listener) fn receive_failed<'w, 'd: 'w, ID: Identity, A, 
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
 {
-    if let Some(slot) = root
-        .as_mut()
-        .project()
-        .owner
-        .pool_mut()
-        .get_mut(failure.key)
-    {
-        slot.state.fail(conn::Failure::Submit(failure.cause));
+    let this = root.as_mut().project();
+    let mut entry = this.owner.pool.entry(failure.key);
+    if let Ok(entry) = &mut entry {
+        entry
+            .get_mut()
+            .state
+            .fail(conn::Failure::Submit(failure.cause));
     }
-    close_slot(root, failure.key, turn, driver);
+    drop(writer::close(
+        entry,
+        this.owner.writes,
+        &mut (this.app, this.accept, &mut this.owner.deadlines),
+        turn,
+        driver,
+    ));
 }
 
 pub(in crate::network::listener) fn expire<'w, 'd: 'w, ID: Identity, A, E>(
@@ -171,14 +188,51 @@ pub(in crate::network::listener) fn expire<'w, 'd: 'w, ID: Identity, A, E>(
             let this = root.as_mut().project();
             this.owner.pop(now)
         });
-        let ((key, kind), permit) = match grant {
+        let (event, permit) = match grant {
             quota::Admission::Item(pair) => pair,
             quota::Admission::Empty | quota::Admission::Exhausted => break,
         };
-        use crate::network::listener::writer::deadline::Kind;
+        use crate::network::listener::writer::deadline::Event;
 
-        permit.run(|| match kind {
-            Kind::Inbound | Kind::Send | Kind::Drain => {
+        permit.run(|| {
+            let Event::Expired(key, kind) = event else {
+                return;
+            };
+            expired(root.as_mut(), key, kind, now, turn.reborrow(), driver);
+        });
+    }
+}
+
+#[inline(never)]
+fn expired<'w, 'd: 'w, ID: Identity, A, E>(
+    mut root: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
+    key: pool::Key<'d, ID>,
+    kind: listener::writer::deadline::Kind,
+    now: clock::Moment<'d>,
+    turn: schedule::Turn<'_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
+) where
+    A: handler::Application<'d, ID>,
+    E: env::Spec<Wire = A::Wire>,
+{
+    use crate::network::listener::writer::deadline::Kind;
+
+    match kind {
+        Kind::Inbound | Kind::Send | Kind::Drain => {
+            discard_slot(
+                root.as_mut(),
+                key,
+                conn::Failure::Timeout(kind),
+                turn.reborrow(),
+                driver,
+            );
+        }
+        Kind::Absolute => {
+            let drain = {
+                let this = root.as_mut().project();
+                this.owner.drain()
+            };
+            let Some(drain) = drain else {
                 discard_slot(
                     root.as_mut(),
                     key,
@@ -186,13 +240,33 @@ pub(in crate::network::listener) fn expire<'w, 'd: 'w, ID: Identity, A, E>(
                     turn.reborrow(),
                     driver,
                 );
-            }
-            Kind::Absolute => {
-                let drain = {
-                    let this = root.as_mut().project();
-                    this.owner.drain()
-                };
-                let Some(drain) = drain else {
+                return;
+            };
+            let drain = {
+                let mut this = root.as_mut().project();
+                match this.owner.egress_mut(key) {
+                    Some(mut egress) => {
+                        egress.connection.ensure_drain(now, drain);
+                        Some(A::drain(
+                            this.app.as_mut(),
+                            egress.context(turn.reborrow().app()),
+                            driver,
+                        ))
+                    }
+                    None => None,
+                }
+            };
+            match drain {
+                Some(handler::Drain::Pending) => {
+                    phase::close_ready(root.as_mut(), key, turn.reborrow(), driver);
+                }
+                Some(handler::Drain::Complete) => {
+                    if let Some(slot) = root.as_mut().project().owner.pool_mut().get_mut(key) {
+                        slot.close_after();
+                    }
+                    phase::close_ready(root.as_mut(), key, turn.reborrow(), driver);
+                }
+                Some(handler::Drain::Discard) => {
                     discard_slot(
                         root.as_mut(),
                         key,
@@ -200,85 +274,49 @@ pub(in crate::network::listener) fn expire<'w, 'd: 'w, ID: Identity, A, E>(
                         turn.reborrow(),
                         driver,
                     );
-                    return;
-                };
-                let drain = {
-                    let mut this = root.as_mut().project();
-                    match this.owner.egress_mut(key) {
-                        Some(mut egress) => {
-                            egress.connection.ensure_drain(now, drain);
-                            Some(A::drain(
-                                this.app.as_mut(),
-                                egress.context(turn.reborrow().app()),
-                                driver,
-                            ))
+                }
+                None => {}
+            }
+        }
+        Kind::Application => {
+            enum Timeout {
+                Continue,
+                CloseAfter,
+                Discard(conn::Failure),
+            }
+            let action = {
+                let mut this = root.as_mut().project();
+                match this.owner.egress_mut(key) {
+                    Some(mut egress) => match A::timeout(
+                        this.app.as_mut(),
+                        egress.context(turn.reborrow().app()),
+                        driver,
+                    ) {
+                        handler::Timeout::Discard => Timeout::Discard(conn::Failure::Timeout(kind)),
+                        handler::Timeout::CloseAfter => {
+                            egress.connection.end_discard();
+                            egress.connection.close_after();
+                            Timeout::CloseAfter
                         }
-                        None => None,
-                    }
-                };
-                match drain {
-                    Some(handler::Drain::Pending) => {}
-                    Some(handler::Drain::Complete) => {
-                        if let Some(slot) = root.as_mut().project().owner.pool_mut().get_mut(key) {
-                            slot.close_after();
+                        handler::Timeout::Continue(update) => {
+                            match egress.connection.apply(update, now) {
+                                Ok(()) => Timeout::Continue,
+                                Err(cause) => Timeout::Discard(conn::Failure::Deadline(cause)),
+                            }
                         }
-                        phase::close_ready(root.as_mut(), key, turn.reborrow(), driver);
-                    }
-                    Some(handler::Drain::Discard) => {
-                        discard_slot(
-                            root.as_mut(),
-                            key,
-                            conn::Failure::Timeout(kind),
-                            turn.reborrow(),
-                            driver,
-                        );
-                    }
-                    None => {}
+                    },
+                    None => Timeout::Continue,
+                }
+            };
+            match action {
+                Timeout::Discard(cause) => {
+                    discard_slot(root.as_mut(), key, cause, turn.reborrow(), driver)
+                }
+                Timeout::Continue | Timeout::CloseAfter => {
+                    phase::close_ready(root.as_mut(), key, turn.reborrow(), driver)
                 }
             }
-            Kind::Application => {
-                enum Timeout {
-                    Continue,
-                    CloseAfter,
-                    Discard(conn::Failure),
-                }
-                let action = {
-                    let mut this = root.as_mut().project();
-                    match this.owner.egress_mut(key) {
-                        Some(mut egress) => match A::timeout(
-                            this.app.as_mut(),
-                            egress.context(turn.reborrow().app()),
-                            driver,
-                        ) {
-                            handler::Timeout::Discard => {
-                                Timeout::Discard(conn::Failure::Timeout(kind))
-                            }
-                            handler::Timeout::CloseAfter => {
-                                egress.connection.end_discard();
-                                egress.connection.close_after();
-                                Timeout::CloseAfter
-                            }
-                            handler::Timeout::Continue(update) => {
-                                match egress.connection.apply(update, now) {
-                                    Ok(()) => Timeout::Continue,
-                                    Err(cause) => Timeout::Discard(conn::Failure::Deadline(cause)),
-                                }
-                            }
-                        },
-                        None => Timeout::Continue,
-                    }
-                };
-                match action {
-                    Timeout::Discard(cause) => {
-                        discard_slot(root.as_mut(), key, cause, turn.reborrow(), driver)
-                    }
-                    Timeout::CloseAfter => {
-                        phase::close_ready(root.as_mut(), key, turn.reborrow(), driver)
-                    }
-                    Timeout::Continue => {}
-                }
-            }
-        });
+        }
     }
 }
 
@@ -292,22 +330,12 @@ pub(in crate::network::listener) fn close_slot<'w, 'd: 'w, ID: Identity, A, E>(
     A: handler::Application<'d, ID>,
     E: env::Spec<Wire = A::Wire>,
 {
-    let term = {
-        let this = root.as_ref().project_ref();
-        this.owner.pool().inspect().get(key).map(|slot| {
-            slot.io().close();
-            (slot.terminal.is_pending(), slot.terminal.has_send())
-        })
-    };
-    if let Some((true, send)) = term {
-        if send
-            && let Some(handle) =
-                pending::Pending::of(root.as_ref().project_ref().owner.pool()).at(key)
-        {
-            handle.wake();
-        }
-        return;
-    }
     let this = root.project();
-    this.owner.close(this.app, this.accept, key, turn, driver);
+    drop(writer::close(
+        this.owner.pool.entry(key),
+        this.owner.writes,
+        &mut (this.app, this.accept, &mut this.owner.deadlines),
+        turn,
+        driver,
+    ));
 }

@@ -3,7 +3,7 @@ use std::{marker, ops::ControlFlow, task::Poll};
 use dope_core::{
     driver::{
         receive::{Absent, Registration, Stale},
-        route::{Identity, kind},
+        route::Identity,
     },
     io::event::net::recv::{ControlKind, Status},
 };
@@ -42,7 +42,7 @@ where
 {
     slot: &'a mut types::Connection<'w, 'd, ID, W, S>,
     rearm: recv::Rearm<'a, 'd, ID>,
-    key: pool::Key<'d, ID, kind::Recv>,
+    key: pool::Key<'d, ID>,
     item: event::Control<'d>,
     status: Flags,
     input: marker::PhantomData<M>,
@@ -161,7 +161,7 @@ where
         const IOV: usize,
         D,
     >(
-        pool: &'a mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
+        entry: &'a mut pool::Entry<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         item: event::Control<'d>,
         timing: arrival::Timing,
     ) -> Observation<'a, 'w, 'd, ID, W, S, M>
@@ -170,15 +170,9 @@ where
         D: demand::Mode,
         input::Receipt<W, M>: 'a,
     {
-        let key = match pool.keys.parse(item.token()) {
-            Ok(key) => key,
-            Err(_) => {
-                return Observation::Complete(event::Dispatch::Retired(item.retire()));
-            }
-        };
-        let Some((slot, recv)) = pool.prepared.slab.get_mut(key.parts()) else {
-            return Observation::Complete(event::Dispatch::Retired(item.retire()));
-        };
+        let pending = entry.pending();
+        let (_, slot, recv) = entry.receive();
+        let key = slot.key();
         let status = item.status();
         let close = slot.is_closing();
         let stop = slot.is_recv_done();
@@ -220,11 +214,8 @@ where
         } else if probe {
             arm = !stop;
         }
-        if close
-            && end
-            && let Some(handle) = pool.prepared.pending.handle(key.connection())
-        {
-            handle.wake();
+        if close && end {
+            pending.wake();
         }
         if stop && !matches!(status, Status::Failed(_)) {
             let done = item.dispatch(|kind| match kind {

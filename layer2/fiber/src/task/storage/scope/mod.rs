@@ -1,6 +1,6 @@
 use std::{marker, ops, pin};
 
-use o3::{base::cell::region, depot::arena::slab::key};
+use o3::base::cell::region;
 
 mod brand;
 mod id;
@@ -8,7 +8,6 @@ mod owned;
 
 pub use brand::Brand;
 pub use id::Id;
-pub(crate) use id::Owner;
 pub use owned::Owned;
 
 /// The invariant identity of one exclusive storage access scope.
@@ -18,7 +17,7 @@ pub struct Domain<'s, D> {
 }
 
 /// A task identity bound to one exclusive storage access scope.
-pub type Scoped<'s, 'd, D, K = key::Parts> = Id<'d, Domain<'s, D>, K>;
+pub type Scoped<'s, 'd, D, K> = Id<'d, Domain<'s, D>, K>;
 
 /// Exclusive access carrying the original storage's invariant identity proof.
 pub struct Scope<'s, S> {

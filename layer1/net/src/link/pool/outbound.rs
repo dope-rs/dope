@@ -22,7 +22,6 @@ use table::conn;
 
 use crate::{
     link::{
-        duplex,
         egress::{data, reserve::demand},
         event,
         pool::{self, change::opening, pending::Vacancy, recv::input},
@@ -108,9 +107,9 @@ where
     pub fn send_slot(
         &mut self,
         key: pool::Key<'d, ID>,
-    ) -> pool::Sending<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D> {
+    ) -> pool::Sending<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
         let (egress, queued) = self.storage.sender_with_recv(key)?;
-        if egress.connection.engine.operations.lifecycle.is_closing() {
+        if egress.entry.get().engine.operations.lifecycle.is_closing() {
             return None;
         }
         Some((egress, queued))
@@ -178,10 +177,10 @@ where
             };
             let (state, target) = make(&input);
             let stored = address.commit(target);
-            let engine = duplex::Duplex::targeted(open, stored);
-            engine.ready_handle().set_target(key.target().dispatch());
+            let setup = setup::Setup::targeted(open, stored);
+            setup.ready_handle().set_target(key.target().dispatch());
             let mut slot = lease.stage(types::Connection::<ID, W, S> {
-                control: types::Control::new(engine, wire, send, key),
+                control: types::Control::new(setup, wire, send, key),
                 state,
             });
             let output = complete(slot.get_mut());

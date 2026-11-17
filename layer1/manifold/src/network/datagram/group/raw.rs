@@ -8,7 +8,6 @@ use dope_core::{
         schedule::{self, app},
     },
     io::{
-        self,
         datagram::ReceiveError,
         event::{self, net::recv::Completion},
     },
@@ -55,50 +54,60 @@ enum Failure {
 }
 
 impl<'d, ID: Identity, H: Handler<'d, ID>> Complete<'d> for Endpoint<'d, ID, H> {
-    fn dispatch<'app>(
-        call: executor::raw::Call<'app, Self, (), io::Event<'d>>,
-    ) -> ControlFlow<io::Event<'d>> {
-        let (mut endpoint, (), event) = call.into_parts();
-        let this = endpoint.as_mut().project();
-        let done = match event.into_kind() {
-            event::Kind::Recv(done) => {
-                if route::Id::try_from(done.token().route()) != Ok(ID::ID) {
-                    return ControlFlow::Break(event::Kind::Recv(done).into());
+    fn dispatch<'event>(
+        mut endpoint: pin::Pin<&mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+    ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
+        let target = event.route();
+        let (event, vacant) = 'rejected: {
+            let this = endpoint.as_mut().project();
+            let (done, vacant) = match event.select() {
+                event::Selected::Recv(member) => {
+                    if route::Id::try_from(target) != Ok(ID::ID) {
+                        return ControlFlow::Break(member.into_dispatch());
+                    }
+                    let (done, vacant) = member.take();
+                    let source = done.token().slot();
+                    let Some(member) = this.members.get_mut(source.index().get() as usize) else {
+                        break 'rejected (event::Kind::Recv(done).into(), vacant);
+                    };
+                    let received = pin::Pin::new(&mut member.receive).complete(done);
+                    if !member.receive.is_live() {
+                        mark(this.ready, source);
+                    }
+                    let received = match received {
+                        ControlFlow::Continue(received) => received,
+                        ControlFlow::Break(done) => {
+                            break 'rejected (Completion::retire(done), vacant);
+                        }
+                    };
+                    received.dispatch(|received| {
+                        this.handler.packet(
+                            received,
+                            source,
+                            Access {
+                                sender: this.sender,
+                                ready: this.ready,
+                                members: this.members,
+                            },
+                        );
+                    });
+                    return ControlFlow::Continue(());
                 }
-                let source = done.token().slot();
-                let Some(member) = this.members.get_mut(source.index().get() as usize) else {
-                    return ControlFlow::Break(event::Kind::Recv(done).into());
-                };
-                let received = pin::Pin::new(&mut member.receive).complete(done);
-                if !member.receive.is_live() {
-                    mark(this.ready, source);
+                event::Selected::Send(member) => member.take(),
+                other => return ControlFlow::Break(other.into_dispatch()),
+            };
+            match this.sender.complete(done) {
+                Ok(outcome) => {
+                    if let Some(outcome) = outcome {
+                        this.handler.sent(outcome);
+                    }
+                    return ControlFlow::Continue(());
                 }
-                let received = received.map_break(Completion::retire)?;
-                received.dispatch(|received| {
-                    this.handler.packet(
-                        received,
-                        source,
-                        Access {
-                            sender: this.sender,
-                            ready: this.ready,
-                            members: this.members,
-                        },
-                    );
-                });
-                return ControlFlow::Continue(());
+                Err(done) => (event::Kind::Send(done).into(), vacant),
             }
-            event::Kind::Send(done) => done,
-            event => return ControlFlow::Break(event.into()),
         };
-        match this.sender.complete(done) {
-            Ok(outcome) => {
-                if let Some(outcome) = outcome {
-                    this.handler.sent(outcome);
-                }
-                ControlFlow::Continue(())
-            }
-            Err(done) => ControlFlow::Break(event::Kind::Send(done).into()),
-        }
+        ControlFlow::Break(executor::raw::Dispatch::new(vacant.insert(event)))
     }
 }
 

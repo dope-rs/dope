@@ -103,14 +103,6 @@ impl<B: Recv> Map<B> {
         }
     }
 
-    pub(in crate::conn) fn mark_data(&mut self) {
-        self.meta.mark_data();
-    }
-
-    pub(in crate::conn) fn clear_data(&mut self) {
-        self.meta.clear_data();
-    }
-
     pub(in crate::conn) fn mark_streams(&mut self, dir: stream::Direction) {
         self.meta.mark_streams(dir);
     }

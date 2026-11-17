@@ -7,7 +7,6 @@ use dope_sys::{
         socket,
     },
     kernel::Returned as _,
-    probe::Stopped,
     table::token::host::Flight as _,
 };
 
@@ -47,14 +46,26 @@ impl<'q, 'd> Binding<'q, 'd> {
         Self { packet, flight }
     }
 
-    pub(super) fn resolve(self) -> Result<Event<'d>, Rejected<'d>> {
-        match self.flight.kind().into() {
+    pub(super) fn resolve<'event>(
+        self,
+        output: o3::mem::slot::Vacant<'event, Event<'d>>,
+    ) -> Result<o3::mem::slot::Occupied<'event, Event<'d>>, Rejected<'d>> {
+        let event = match self.flight.kind().into() {
             Shape::Socket(proof) => {
-                let (this, creation) = self.plain()?.creation(proof)?;
-                let (this, outcome) = this.check(|packet| packet.0.parts().outcome.unit())?;
-                let driver = this.flight.driver();
-                let target = this.flight.complete().bind(proof);
-                Ok(match outcome {
+                if let Err(cause) = self.plain() {
+                    return Err(self.reject(cause));
+                }
+                let creation = match self.creation(proof) {
+                    Ok(creation) => creation,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
+                let outcome = match self.packet.unit() {
+                    Ok(outcome) => outcome,
+                    Err(cause) => return Err(self.invalid(cause)),
+                };
+                let driver = self.flight.driver();
+                let target = self.flight.complete().bind(proof);
+                match outcome {
                     Ok(()) => outputs::socket(target, creation, driver),
                     Err(errno) => {
                         driver.descriptors().fail_create(creation);
@@ -63,55 +74,74 @@ impl<'q, 'd> Binding<'q, 'd> {
                             Create::from_native(socket::Create::socket(errno)),
                         )
                     }
-                })
+                }
             }
             Shape::Open(proof) => {
                 let (this, opened) = self.opened()?;
                 let target = this.flight.complete().bind(proof);
-                Ok(match opened {
+                match opened {
                     Ok(fd) => outputs::opened(target, fd),
                     Err(errno) => outputs::open_failed(target, errno),
-                })
+                }
             }
             Shape::Accept(proof) => {
                 let (this, outcome) = self.accepting()?;
                 let flow = this.packet.flow();
                 let driver = this.flight.driver();
                 let target = this.flight.settle(flow).bind(proof);
-                Ok(match outcome {
+                match outcome {
                     Ok(accepted) => outputs::accepted(target, accepted, flow, driver),
                     Err(errno) => outputs::accept_error(target, errno, flow),
-                })
+                }
             }
-            Shape::Recv(proof) => self.recv(proof),
+            Shape::Recv(proof) => return self.recv(proof, output),
             Shape::Send(proof) => {
-                let (this, value) = self.plain()?.check(Envelope::bytes)?;
-                Ok(outputs::sent(this.flight.complete().bind(proof), value))
+                let value = match self.bytes() {
+                    Ok(value) => value,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
+                outputs::sent(self.flight.complete().bind(proof), value)
             }
             Shape::Write(proof) => {
-                let (this, value) = self.plain()?.check(Envelope::bytes)?;
-                Ok(outputs::written(this.flight.complete().bind(proof), value))
+                let value = match self.bytes() {
+                    Ok(value) => value,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
+                outputs::written(self.flight.complete().bind(proof), value)
             }
             Shape::Read(proof) => {
-                let (this, value) = self.plain()?.check(Envelope::bytes)?;
-                Ok(outputs::read(this.flight.complete().bind(proof), value))
+                let value = match self.bytes() {
+                    Ok(value) => value,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
+                outputs::read(self.flight.complete().bind(proof), value)
             }
             Shape::Connect(proof) => {
-                let (this, value) = self.plain()?.check(Envelope::unit)?;
-                Ok(outputs::connected(
-                    this.flight.complete().bind(proof),
+                let value = match self.unit() {
+                    Ok(value) => value,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
+                outputs::connected(
+                    self.flight.complete().bind(proof),
                     value.map_err(connect::Error::Connect),
-                ))
+                )
             }
             Shape::Sync(proof) => {
-                let (this, value) = self.plain()?.check(Envelope::unit)?;
-                Ok(outputs::synced(this.flight.complete().bind(proof), value))
+                let value = match self.unit() {
+                    Ok(value) => value,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
+                outputs::synced(self.flight.complete().bind(proof), value)
             }
             Shape::Tuning(proof) => {
-                let (this, value) = self.plain()?.check(Envelope::unit)?;
-                Ok(Kind::Tuning((this.flight.bind(proof), value).into()).into())
+                let value = match self.unit() {
+                    Ok(value) => value,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
+                Kind::Tuning((self.flight.bind(proof), value).into()).into()
             }
-        }
+        };
+        Ok(output.insert(event))
     }
 
     pub(super) fn reclaim(self) -> Result<Retired<'d>, Rejected<'d>> {
@@ -121,52 +151,70 @@ impl<'q, 'd> Binding<'q, 'd> {
             Shape::Accept(proof) => return self.drop_accept(proof),
             Shape::Recv(proof) => return self.drop_recv(proof),
             Shape::Send(proof) => {
-                let (this, result) = self.plain()?.check(Envelope::bytes)?;
+                let result = match self.bytes() {
+                    Ok(result) => result,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
                 let report = io::Reclaimed::Send {
-                    echo: fault::Echo::new(this.flight.bind(proof).end(Flow::Last)),
+                    echo: fault::Echo::new(self.flight.bind(proof).end(Flow::Last)),
                     result,
                 };
-                (this.packet, report)
+                (self.packet, report)
             }
             Shape::Write(proof) => {
-                let (this, result) = self.plain()?.check(Envelope::bytes)?;
+                let result = match self.bytes() {
+                    Ok(result) => result,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
                 let report = io::Reclaimed::Write {
-                    echo: fault::Echo::new(this.flight.bind(proof).end(Flow::Last)),
+                    echo: fault::Echo::new(self.flight.bind(proof).end(Flow::Last)),
                     result,
                 };
-                (this.packet, report)
+                (self.packet, report)
             }
             Shape::Read(proof) => {
-                let (this, result) = self.plain()?.check(Envelope::bytes)?;
+                let result = match self.bytes() {
+                    Ok(result) => result,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
                 let report = io::Reclaimed::Read {
-                    echo: fault::Echo::new(this.flight.bind(proof).end(Flow::Last)),
+                    echo: fault::Echo::new(self.flight.bind(proof).end(Flow::Last)),
                     result,
                 };
-                (this.packet, report)
+                (self.packet, report)
             }
             Shape::Connect(proof) => {
-                let (this, result) = self.plain()?.check(Envelope::unit)?;
+                let result = match self.unit() {
+                    Ok(result) => result,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
                 let report = io::Reclaimed::Connect {
-                    echo: fault::Echo::new(this.flight.bind(proof).end(Flow::Last)),
+                    echo: fault::Echo::new(self.flight.bind(proof).end(Flow::Last)),
                     result: result.map_err(connect::Error::Connect),
                 };
-                (this.packet, report)
+                (self.packet, report)
             }
             Shape::Sync(proof) => {
-                let (this, result) = self.plain()?.check(Envelope::unit)?;
+                let result = match self.unit() {
+                    Ok(result) => result,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
                 let report = io::Reclaimed::Sync {
-                    echo: fault::Echo::new(this.flight.bind(proof).end(Flow::Last)),
+                    echo: fault::Echo::new(self.flight.bind(proof).end(Flow::Last)),
                     result,
                 };
-                (this.packet, report)
+                (self.packet, report)
             }
             Shape::Tuning(proof) => {
-                let (this, result) = self.plain()?.check(Envelope::unit)?;
+                let result = match self.unit() {
+                    Ok(result) => result,
+                    Err(cause) => return Err(self.reject(cause)),
+                };
                 let report = io::Reclaimed::Tuning {
-                    echo: fault::Echo::new(this.flight.bind(proof).end(Flow::Last)),
+                    echo: fault::Echo::new(self.flight.bind(proof).end(Flow::Last)),
                     result,
                 };
-                (this.packet, report)
+                (self.packet, report)
             }
         };
         Ok(Reclaimed {
@@ -183,52 +231,44 @@ impl<'q, 'd> Binding<'q, 'd> {
     }
 
     fn invalid(self, cause: Returned) -> Rejected<'d> {
-        Stopped {
-            state: (self.packet, self.flight),
-            cause,
-        }
-        .into()
+        self.reject(Violation::Outcome(cause))
     }
 
-    fn check<R>(
-        self,
-        decode: impl FnOnce(&Envelope<'d>) -> Result<R, Returned>,
-    ) -> Result<(Self, R), Rejected<'d>> {
-        let result = decode(&self.packet);
-        let ((packet, flight), value) = Stopped::attach((self.packet, self.flight), result)?;
-        Ok((Self { packet, flight }, value))
+    fn bytes(&self) -> Result<Result<transfer::Len, Errno>, Violation> {
+        self.plain()?;
+        self.packet.bytes().map_err(Violation::Outcome)
     }
 
-    fn plain(self) -> Result<Self, Rejected<'d>> {
+    fn unit(&self) -> Result<Result<(), Errno>, Violation> {
+        self.plain()?;
+        self.packet.unit().map_err(Violation::Outcome)
+    }
+
+    fn plain(&self) -> Result<(), Violation> {
         if !self.packet.0.is_plain() {
-            return Err(self.reject(Violation::Result));
+            return Err(Violation::Result);
         }
-        Ok(self)
+        Ok(())
     }
 
-    fn creation(
-        self,
-        proof: kind::Witness<kind::Socket>,
-    ) -> Result<(Self, domain::Creation), Rejected<'d>> {
-        let creation = self
-            .flight
+    fn creation(&self, proof: kind::Witness<kind::Socket>) -> Result<domain::Creation, Violation> {
+        self.flight
             .driver()
             .descriptors()
-            .creation(route::Erased::from(&self.flight).bind(proof));
-        match creation {
-            Some(creation) => Ok((self, creation)),
-            None => Err(self.reject(Violation::Slot)),
-        }
+            .creation(route::Erased::from(&self.flight).bind(proof))
+            .ok_or(Violation::Slot)
     }
 
     fn opened(self) -> Result<(Self, file::Opened), Rejected<'d>> {
-        let this = self.plain()?;
-        this.check(|packet| {
-            // SAFETY: this original flight uniquely owns the packet's open result;
-            // consuming the binding excludes another descriptor decode.
-            unsafe { <Backend as file::raw::Completion>::open(packet.0.parts().outcome) }
-                .map_err(Returned::invalid)
-        })
+        if let Err(cause) = self.plain() {
+            return Err(self.reject(cause));
+        }
+        // SAFETY: this original flight uniquely owns the packet's open result;
+        // consuming the binding excludes another descriptor decode.
+        match unsafe { <Backend as file::raw::Completion>::open(self.packet.0.parts().outcome) } {
+            Ok(opened) => Ok((self, opened)),
+            Err(cause) => Err(self.invalid(Returned::invalid(cause))),
+        }
     }
 
     fn accepted(&self, value: Value) -> Result<handles::Accepted, Violation> {
@@ -252,7 +292,11 @@ impl<'q, 'd> Binding<'q, 'd> {
         Ok((self, outcome))
     }
 
-    fn recv(mut self, proof: kind::Witness<kind::Recv>) -> Result<Event<'d>, Rejected<'d>> {
+    fn recv<'event>(
+        mut self,
+        proof: kind::Witness<kind::Recv>,
+        output: o3::mem::slot::Vacant<'event, Event<'d>>,
+    ) -> Result<o3::mem::slot::Occupied<'event, Event<'d>>, Rejected<'d>> {
         use dope_sys::memory::buffer::raw::Pending as _;
 
         let flow = self.packet.flow();
@@ -274,11 +318,11 @@ impl<'q, 'd> Binding<'q, 'd> {
                         return Err(self.reject(Violation::BufferLength { actual, capacity }));
                     }
                 };
-                return Ok(outputs::selected(
+                return Ok(output.insert(outputs::selected(
                     self.flight.settle(flow).bind(proof),
                     flow,
                     lease,
-                ));
+                )));
             }
             Decode::Value(_) if self.packet.0.buffer().is_none() => Ok(()),
             Decode::Value(value) => return Err(self.invalid(Returned::value(value))),
@@ -291,15 +335,22 @@ impl<'q, 'd> Binding<'q, 'd> {
             Decode::Invalid(invalid) => return Err(self.invalid(Returned::invalid(invalid))),
         };
         let driver = self.flight.driver();
-        Ok(Completion::control(self.flight.settle(flow).bind(proof), outcome, flow, driver).into())
+        Ok(output.insert(
+            Completion::control(self.flight.settle(flow).bind(proof), outcome, flow, driver).into(),
+        ))
     }
 
     fn drop_socket(self, proof: kind::Witness<kind::Socket>) -> Result<Retired<'d>, Rejected<'d>> {
-        let this = self.plain()?;
-        let (this, outcome) = this.check(|packet| packet.0.parts().outcome.unit())?;
-        let (this, creation) = this.creation(proof)?;
-        let driver = this.flight.driver();
-        let echo = fault::Echo::new(this.flight.bind(proof).end(Flow::Last));
+        let outcome = match self.unit() {
+            Ok(outcome) => outcome,
+            Err(cause) => return Err(self.reject(cause)),
+        };
+        let creation = match self.creation(proof) {
+            Ok(creation) => creation,
+            Err(cause) => return Err(self.reject(cause)),
+        };
+        let driver = self.flight.driver();
+        let echo = fault::Echo::new(self.flight.bind(proof).end(Flow::Last));
         let slot = *creation.as_ref();
         let result = match outcome {
             Ok(()) => {
@@ -315,7 +366,7 @@ impl<'q, 'd> Binding<'q, 'd> {
             }
         };
         Ok(Reclaimed {
-            buffer: this.packet.0.into_parts().1,
+            buffer: self.packet.0.into_parts().1,
             report: Some(io::Reclaimed::Socket {
                 echo,
                 slot: slot.physical(),

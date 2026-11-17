@@ -10,11 +10,10 @@ impl<'a> Dispatch<'a> {
     }
 
     pub(crate) fn generate(&self, life: &syn::Lifetime) -> proc_macro2::TokenStream {
-        let [vapp, vdisp, vdriver, vevent, vturn] =
-            ["__app", "__dispatch", "__driver", "__event", "__turn"]
-                .map(|name| self.application.brand.ident(name));
+        let [vapp, vdriver, vevent] =
+            ["__app", "__driver", "__event"].map(|name| self.application.brand.ident(name));
         if self.application.owners.is_empty() {
-            return quote::quote! { ::core::ops::ControlFlow::Break(#vdisp.into_event()) };
+            return quote::quote! { ::core::ops::ControlFlow::Break(#vevent) };
         }
         let arms = self
             .application
@@ -22,7 +21,8 @@ impl<'a> Dispatch<'a> {
             .iter()
             .map(|owner| self.arm(owner, life));
         quote::quote! {
-            let (mut #vapp, #vevent, #vturn, mut #vdriver) = #vdisp.into_parts();
+            let mut #vapp = #vapp;
+            let mut #vdriver = #vdriver;
             #(#arms)*
             ::core::ops::ControlFlow::Break(#vevent)
         }
@@ -139,7 +139,7 @@ impl<'a> Dispatch<'a> {
         for owner in app.owners.iter().filter(|owner| owner.is_app()) {
             let inner = owner.inner();
             types.push(quote::quote! {
-                ::core::option::Option<<#inner as #exec::executor::raw::Layout<#life>>::ParkPlan>
+                <#inner as #exec::executor::raw::Layout<#life>>::ParkPlan
             });
             values.push(quote::quote! {
                 <#inner as #exec::executor::raw::App<#life>>::select_park()
@@ -250,8 +250,8 @@ impl<'a> Dispatch<'a> {
     }
 
     fn weights(&self) -> Vec<(proc_macro2::TokenStream, proc_macro2::TokenStream)> {
-        let [vchild, vplan, vweight] =
-            ["__child", "__plan", "__weight"].map(|name| self.application.brand.ident(name));
+        let [vplan, vweight] =
+            ["__plan", "__weight"].map(|name| self.application.brand.ident(name));
         let app = self.application;
         let exec = app.paths.runtime();
         let mf = app.paths.manifold();
@@ -271,8 +271,8 @@ impl<'a> Dispatch<'a> {
                 plan += 1;
                 let visit = Project::new(owner, self.application).shared(|recv| {
                     quote::quote! {
-                        if let ::core::option::Option::Some(#vchild) = &mut #vplan.#field {
-                            #vweight = #parks::prepare_park(#recv, #vchild)?.get();
+                        if #parks::PARK {
+                            #vweight = #parks::prepare_park(#recv, &mut #vplan.#field)?.get();
                         }
                     }
                 });
@@ -358,12 +358,10 @@ impl<'a> Dispatch<'a> {
                 |recv| {
                     quote::quote! {
                         <#inner as #exec::executor::raw::App<#life>>::dispatch(
-                            #exec::executor::raw::Dispatch::new(
-                                #recv,
-                                #vevent,
-                                #vturn.reborrow(),
-                                #vdriver.reborrow(),
-                            ),
+                            #recv,
+                            #vevent,
+                            #vturn.reborrow(),
+                            #vdriver.reborrow(),
                         )
                     }
                 },
@@ -387,15 +385,12 @@ impl<'a> Dispatch<'a> {
                 quote::quote! { ::core::ops::ControlFlow::Break(#vevent) },
                 |recv| {
                     quote::quote! {
-                        let #vevent = #mf::app::dispatch::event::Call::new(
-                            #vevent,
-                            #vturn.reborrow(),
-                            #vdriver.reborrow(),
-                        );
                         #dispatch::call(
                             #recv,
                             #vplan,
                             #vevent,
+                            #vturn.reborrow(),
+                            #vdriver.reborrow(),
                         )
                     }
                 },
@@ -443,13 +438,11 @@ impl<'a> Dispatch<'a> {
         Project::new(owner, self.application).map(quote::quote! {}, |recv| {
             if owner.is_app() {
                 quote::quote! {
-                    if let ::core::option::Option::Some(#vplan) =
-                        &mut #vplan.#plan
-                    {
+                    if <#inner as #exec::executor::raw::App<#life>>::PARK {
                         /// SAFETY: preparation retained this selected child's plan,
                         /// and the projection and authority belong to the same installed root.
                         unsafe {
-                            <#inner as #exec::executor::raw::App<#life>>::park(#recv, #vplan, #vpark)
+                            <#inner as #exec::executor::raw::App<#life>>::park(#recv, &mut #vplan.#plan, #vpark)
                         }
                     }
                 }

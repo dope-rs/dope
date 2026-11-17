@@ -54,7 +54,10 @@ unsafe impl<'d> StableOwner<'d> for storage::Shared {}
 
 // SAFETY: this cursor owns its pool allocation. Moving the handle preserves
 // that allocation; shared access fixes its initialized suffix and charge.
-unsafe impl<'d, L> StableOwner<'d> for pool::Cursor<L> {}
+unsafe impl<'d, L> StableOwner<'d> for pool::Cursor<L> where
+    pool::owners::Plain<L>: buffer::raw::Backing
+{
+}
 
 // SAFETY: the active variant retains one complete cursor unchanged. Each
 // operation forwards the same exact remaining-byte proof to that cursor.
@@ -98,7 +101,10 @@ pub unsafe trait Contiguous<'d>: AsRef<[u8]> + buffer::Residency {}
 // SAFETY: shared owners keep their bytes and exact allocation charge immutable.
 unsafe impl<'d> Contiguous<'d> for resident::Shared<'d> {}
 unsafe impl<'d> Contiguous<'d> for storage::Shared {}
-unsafe impl<'d, L> Contiguous<'d> for pool::Cursor<L> {}
+unsafe impl<'d, L> Contiguous<'d> for pool::Cursor<L> where
+    pool::owners::Plain<L>: buffer::raw::Backing
+{
+}
 // SAFETY: a shared borrow fixes the slice extent, and `Residency::resident`
 // reports zero because a borrowed slice retains no backing allocation.
 unsafe impl<'d, 'a: 'd> Contiguous<'d> for &'a [u8] {}
@@ -178,15 +184,6 @@ where
         buffer::raw::Chunks::cursor(self, offset.get())
     }
 }
-
-/// A payload whose logical length does not exceed its retained byte charge.
-/// # Safety
-/// The resident bound holds for every value and shared access.
-pub unsafe trait Resident<'d>: Payload<'d> {}
-
-// SAFETY: the initialized suffix cannot exceed its retained pool allocation;
-// the cursor reports that allocation's full capacity as its resident charge.
-unsafe impl<'d, L> Resident<'d> for pool::Cursor<L> {}
 
 // SAFETY: both slices retain exact suffixes of the validated prefix/body owner.
 unsafe impl<'a> buffer::raw::Scatter<'a> for pair::Cursor<'a> {
@@ -335,10 +332,6 @@ unsafe impl<'d, T: data::raw::Payload<'d>, K> data::raw::Payload<'d> for Tagged<
         unsafe { self.payload.resume(position, offset) }
     }
 }
-
-// SAFETY: tagging delegates length and resident charge to the unchanged owner;
-// T already proves that its logical length is bounded by that charge.
-unsafe impl<'d, T: data::raw::Resident<'d>, K> data::raw::Resident<'d> for Tagged<T, K> {}
 
 // SAFETY: the pooled prefix and sealed body fix bytes and charge; cursors
 // traverse their exact concatenation. Construction checks both byte sums,

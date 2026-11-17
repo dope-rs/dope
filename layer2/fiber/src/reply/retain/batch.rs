@@ -10,7 +10,7 @@ use crate::reply::{
 /// One linear owner for every value retained by a detached reply batch.
 pub(crate) struct Batch<'arena, 'credits, 'region> {
     pub(super) edge: pool::LeaseEdge<'arena, 'credits, 'region>,
-    pub(in crate::reply) sum: payload::raw::Sum<'credits>,
+    pub(in crate::reply) sum: payload::raw::Sum,
 }
 
 impl Batch<'_, '_, '_> {

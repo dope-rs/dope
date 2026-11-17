@@ -1,6 +1,5 @@
 use std::{marker, mem};
 
-use data::{compose, exec};
 use dope_core::{
     driver::{
         result,
@@ -29,7 +28,7 @@ use crate::{
     app::dispatch::identity,
     network::listener::{
         self,
-        writer::{deadline::Slot, flow, memory},
+        writer::{self, deadline::Slot, flow, memory},
     },
 };
 
@@ -186,7 +185,7 @@ pub struct Drained<
 > {
     control: &'a mut types::Control<'w, 'd, ID, W>,
     state: &'a mut C,
-    output: marker::PhantomData<Output<'a, 'p, 's, 'e, 'd, ID, B>>,
+    output: marker::PhantomData<&'a Open<'a, 'p, 's, 'e, 'd, ID, B>>,
 }
 
 impl<
@@ -308,62 +307,22 @@ pub struct Ctx<
     B: data::raw::Payload<'d>,
 {
     pub(super) slot: Slot<'a, 'p, 's, 'w, 'd, ID, W, C, B>,
-    pub(super) output: Output<'a, 'p, 's, 'e, 'd, ID, B>,
+    pub(super) output: Option<&'a Open<'a, 'p, 's, 'e, 'd, ID, B>>,
     pub(super) work: app::Work<'a, 'd>,
 }
 
-pub(super) enum Output<'a, 'p, 's, 'e, 'd, ID: Identity, B: data::raw::Payload<'d>> {
-    Open {
-        slots: &'a flight::Slots<'d, ID>,
-        permit: pending::Handle<'a, 'd, ID>,
-        held: memory::Retention<'p, 's, 'd, ID, B>,
-        queue: egress::Queue<
-            'a,
-            'e,
-            'd,
-            { listener::IOV_CAP },
-            compose::Either<listener::raw::Owned<'p, 's, 'd, ID>, B>,
-            <B::Mode as exec::Mode>::Reserve<{ memory::WRITE_BUF_CAP }>,
-        >,
-    },
-    Sealed,
-}
-
-impl<'p, 's, 'e, 'd, ID: Identity, B: data::raw::Payload<'d>> Output<'_, 'p, 's, 'e, 'd, ID, B> {
-    fn reborrow(&self) -> Output<'_, 'p, 's, 'e, 'd, ID, B> {
-        match self {
-            Self::Open {
-                slots,
-                permit,
-                held,
-                queue,
-            } => Output::Open {
-                slots,
-                permit: *permit,
-                held: held.reborrow(),
-                queue: queue.reborrow(),
-            },
-            Self::Sealed => Output::Sealed,
-        }
-    }
-
-    fn pending<'w, W: wire::Spec + 'w + 'd, C>(
-        &self,
-        slot: &Slot<'_, 'p, 's, 'w, 'd, ID, W, C, B>,
-    ) -> egress::Pending
-    where
-        'd: 'w,
-    {
-        let pending = match self {
-            Self::Open { queue, .. } => queue.pending(),
-            Self::Sealed => egress::Pending::Absent,
-        };
-        if matches!(slot.flow(pending), flow::Flow::Clear) {
-            egress::Pending::Absent
-        } else {
-            egress::Pending::Present
-        }
-    }
+pub(super) struct Open<'a, 'p, 's, 'e, 'd, ID: Identity, B: data::raw::Payload<'d>> {
+    pub(super) slots: &'a flight::Slots<'d, ID>,
+    pub(super) permit: pending::Handle<'a, 'd, ID>,
+    pub(super) held: memory::Retention<'p, 's, 'd, ID, B>,
+    pub(super) queue: egress::Queue<
+        'a,
+        'e,
+        'd,
+        { listener::IOV_CAP },
+        writer::Payload<'p, 's, 'd, ID, B>,
+        writer::Reserve<'d, B>,
+    >,
 }
 
 impl<
@@ -386,7 +345,7 @@ impl<
     ) -> Ctx<'e, 'view, 'p, 's, 'w, 'd, ID, W, T, B> {
         Ctx {
             slot: self.slot.project(select),
-            output: self.output.reborrow(),
+            output: self.output,
             work: self.work,
         }
     }
@@ -397,7 +356,7 @@ impl<
     ) -> Self {
         Self {
             slot,
-            output: Output::Sealed,
+            output: None,
             work,
         }
     }
@@ -412,6 +371,18 @@ impl<
 
     pub fn state_mut(&mut self) -> &mut C {
         self.slot.conn
+    }
+
+    pub(super) fn pending(&self) -> egress::Pending {
+        let pending = match self.output {
+            Some(open) => open.queue.pending(),
+            None => egress::Pending::Absent,
+        };
+        if matches!(self.slot.flow(pending), flow::Flow::Clear) {
+            egress::Pending::Absent
+        } else {
+            egress::Pending::Present
+        }
     }
 
     /// Exact listener lifecycle failure retained by this connection.
@@ -456,7 +427,7 @@ impl<
 
     /// Consumes a listener send callback at its exact egress-drain boundary.
     pub(super) fn try_drain(self) -> Result<Drained<'e, 'a, 'p, 's, 'w, 'd, ID, W, C, B>, Self> {
-        if matches!(self.output.pending(&self.slot), egress::Pending::Present) {
+        if matches!(self.pending(), egress::Pending::Present) {
             return Err(self);
         }
         Ok(Drained {

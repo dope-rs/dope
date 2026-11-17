@@ -245,7 +245,7 @@ impl<'d> Tuning<'d> {
         opts: Set,
     ) -> Result<Self, pending::Rejection<'d>> {
         use tuning::device::{Owner as _, Source};
-        let owner = Apply::new(driver.native(), slots, target, fd, opts);
+        let owner = Apply::<_, ()>::new(driver.native(), slots, target, fd, opts);
         let request = <crate::Backend as Source>::Socket::new(owner);
         // SAFETY: the native borrow and affine descriptor share this driver's
         // slot table; the owner retains every option scalar until completion.

@@ -32,6 +32,12 @@ use crate::{
 #[repr(transparent)]
 pub struct Event<'d>(event::Kind<'d>);
 
+impl<'d> AsRef<event::Kind<'d>> for Event<'d> {
+    fn as_ref(&self) -> &event::Kind<'d> {
+        &self.0
+    }
+}
+
 impl<'d> Event<'d> {
     pub fn into_kind(self) -> event::Kind<'d> {
         self.0

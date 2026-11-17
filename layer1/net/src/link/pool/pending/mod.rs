@@ -203,7 +203,11 @@ impl<'d, ID: Identity> Queue<'d, ID> {
         key: pool::Key<'d, ID>,
     ) -> Option<Handle<'_, 'd, ID>> {
         let node = self.nodes.get(key.lane().index().get() as usize)?.state();
-        (node.epoch.get() == key.epoch()).then_some(Handle { queue: self, key })
+        (node.epoch.get() == key.epoch()).then_some(self.bound(key))
+    }
+
+    pub(in crate::link::pool) fn bound(&self, key: pool::Key<'d, ID>) -> Handle<'_, 'd, ID> {
+        Handle { queue: self, key }
     }
 
     pub(in crate::link::pool) fn admit<'a, T, S, R>(

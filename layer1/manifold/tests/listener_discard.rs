@@ -37,7 +37,7 @@ use dope_test::{
     reclaim::Reports,
 };
 
-fn observe(event: Event<'_, '_>) {
+fn observe(event: Event<'_>) {
     use dope_manifold::network::listener::conn::write;
     use dope_net::wire::receive::discard;
     assert!(match event {
@@ -47,7 +47,7 @@ fn observe(event: Event<'_, '_>) {
         Event::Discard(start) => matches!(start, discard::Start::Started),
         Event::Discarded => true,
         Event::Deadline(armed) => armed.is_ok(),
-        Event::Write(result) => matches!(result, Ok(write::Outcome::Committed(()))),
+        Event::Write(result) => matches!(result, Ok(())),
     });
 }
 
@@ -61,7 +61,7 @@ fn retained_keeps_payload() {
     run::<receive::Owned, _>(observe);
 }
 
-fn run<I: receive::Mode<Identity>, F: for<'a, 'b> Fn(Event<'a, 'b>)>(observe: F)
+fn run<I: receive::Mode<Identity>, F: for<'a> Fn(Event<'a>)>(observe: F)
 where
     for<'d> Discard<I, F>: Application<'d, KeyTag<0>, Wire = Identity, Input = I>
         + handler::Runtime<'d, 'd, KeyTag<0>>,
@@ -136,7 +136,7 @@ fn partial_prefix_finishes() {
                     retired: retired.clone(),
                     finish,
                     input: marker::PhantomData,
-                    observe: |event: Event<'_, '_>| match event {
+                    observe: |event: Event<'_>| match event {
                         Event::Discarded => discarded.set(discarded.get() + 1),
                         event => observe(event),
                     },

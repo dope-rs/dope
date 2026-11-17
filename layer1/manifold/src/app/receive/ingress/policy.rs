@@ -11,8 +11,7 @@ use dope_net::{
         pool::{
             self,
             recv::{
-                arrival, input,
-                reserve::{Choice, Reservation},
+                input, reserve::Choice,
             },
         },
     },
@@ -34,22 +33,26 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
     type Reserve: demand::Mode;
     type Input: Mode<Self::Wire> + Dispatch<Self::Wire>;
 
-    fn storage<'a>(self: pin::Pin<&'a mut Self>) -> &'a mut crate::Inbound<'p, 'w, 'd, ID, Self>;
-
-    fn reserve<'a, A>(
-        self: pin::Pin<&'a mut Self>,
-        data: A,
-        token: &region::Token<region::Identity<'d, 0>>,
-    ) -> Reservation<'a, 'w, 'd, ID, Self::Wire, Self::Input>
+    type Context<'a>
     where
-        A: arrival::Arrival<
-                'd,
-                input::Receipt<Self::Wire, Self::Input>,
-                Observed = event::Data<'d>,
-            >,
-        input::Receipt<Self::Wire, Self::Input>: 'a,
-        <Self::Input as input::Mode<Self::Wire>>::Reserve:
-            Choice<Self::Wire, <Self::Input as input::Mode<Self::Wire>>::Ingress>;
+        Self: 'a;
+
+    fn parts<'a>(
+        self: pin::Pin<&'a mut Self>,
+    ) -> (&'a mut crate::Inbound<'p, 'w, 'd, ID, Self>, Self::Context<'a>);
+
+    fn storage<'a>(self: pin::Pin<&'a mut Self>) -> &'a mut crate::Inbound<'p, 'w, 'd, ID, Self> {
+        Self::parts(self).0
+    }
+
+    fn receipt<'ctx>(
+        context: &mut Self::Context<'ctx>,
+        key: pool::Key<'d, ID>,
+        state: &Self::State,
+        token: &region::Token<region::Identity<'d>>,
+    ) -> <Self::Input as input::Mode<Self::Wire>>::Receipt
+    where
+        Self: 'ctx;
 
     /// Admits input before its native completion or held tail is consumed.
     fn admit(
@@ -61,44 +64,57 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
         ops::ControlFlow::Continue(())
     }
 
-    fn receive<'input>(
-        self: pin::Pin<&mut Self>,
-        key: pool::Key<'d, ID>,
+    fn receive<'ctx, 'a, 'input>(
+        context: &mut Self::Context<'ctx>,
+        entry: ingress::Entry<'a, 'p, 'w, 'd, ID, Self>,
         input: crate::Incoming<'input, 'w, 'd, Self::Wire, Self::Input>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> crate::Receiving<'w, 'd, Self::Wire, Self::Input>;
+    ) -> (
+        Option<ingress::Entry<'a, 'p, 'w, 'd, ID, Self>>,
+        crate::Receiving<'w, 'd, Self::Wire, Self::Input>,
+    )
+    where
+        Self: 'ctx;
 
-    fn finish(
-        self: pin::Pin<&mut Self>,
-        key: pool::Key<'d, ID>,
+    fn finish<'ctx, 'a>(
+        context: &mut Self::Context<'ctx>,
+        entry: ingress::Entry<'a, 'p, 'w, 'd, ID, Self>,
         finish: ingress::Finish,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    );
+    ) -> Option<ingress::Entry<'a, 'p, 'w, 'd, ID, Self>>
+    where
+        Self: 'ctx;
 
-    fn terminal(
-        self: pin::Pin<&mut Self>,
-        key: pool::Key<'d, ID>,
+    fn terminal<'ctx, 'a>(
+        context: &mut Self::Context<'ctx>,
+        entry: ingress::Entry<'a, 'p, 'w, 'd, ID, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> ingress::Terminal;
+    ) -> (Option<ingress::Entry<'a, 'p, 'w, 'd, ID, Self>>, ingress::Terminal)
+    where
+        Self: 'ctx;
 
-    fn eof(
-        self: pin::Pin<&mut Self>,
-        key: pool::Key<'d, ID>,
+    fn eof<'ctx, 'a>(
+        context: &mut Self::Context<'ctx>,
+        entry: ingress::Entry<'a, 'p, 'w, 'd, ID, Self>,
         end: End,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    );
+    ) -> Option<ingress::Entry<'a, 'p, 'w, 'd, ID, Self>>
+    where
+        Self: 'ctx;
 
-    fn close(
-        self: pin::Pin<&mut Self>,
-        key: pool::Key<'d, ID>,
+    fn close<'ctx, 'a>(
+        context: &mut Self::Context<'ctx>,
+        entry: ingress::Entry<'a, 'p, 'w, 'd, ID, Self>,
         cause: ingress::CloseCause,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    );
+    ) -> Option<ingress::Entry<'a, 'p, 'w, 'd, ID, Self>>
+    where
+        Self: 'ctx;
 
     fn flush(
         mut self: pin::Pin<&mut Self>,
@@ -109,13 +125,16 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
             .recv()
             .flush(turn.reborrow().maint(), driver);
         if let Err(failure) = received {
-            Self::close(
-                self,
-                failure.key,
-                ingress::CloseCause::Receive(event::ParkError::Submit(failure.cause)),
-                turn,
-                driver,
-            );
+            let (pool, mut context) = Self::parts(self);
+            if let Ok(entry) = pool.entry(failure.key) {
+                drop(Self::close(
+                    &mut context,
+                    entry,
+                    ingress::CloseCause::Receive(event::ParkError::Submit(failure.cause)),
+                    turn,
+                    driver,
+                ));
+            }
         }
     }
 

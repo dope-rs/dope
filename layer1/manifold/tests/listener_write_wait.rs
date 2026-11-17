@@ -55,26 +55,27 @@ use dope_test::{
     reclaim::Reports,
 };
 
-fn predecessor(event: app::Event<'_, '_>) {
+fn predecessor(event: app::Event<'_>) {
     match event {
         app::Event::Chunk(len) => assert_ne!(len, 0),
         app::Event::Write(result) => assert!(matches!(
             result,
-            Ok(write::Outcome::Committed(())
-                | write::Outcome::Deferred(write::Deferred::OrderedDrain | write::Deferred::Turn))
+            Ok(())
+                | Err(write::error::Admission::Deferred(
+                    write::Deferred::OrderedDrain | write::Deferred::Turn
+                ))
         )),
     }
 }
 
-fn direct(event: script::Event<'_, '_>) {
+fn direct(event: script::Event<'_>) {
     match event {
         script::Event::Chunk(len) => assert_ne!(len, 0),
         script::Event::Write(result, ops) => {
             assert_eq!(ops, (0, 0));
             assert!(matches!(
                 result,
-                Ok(write::Outcome::Committed(())
-                    | write::Outcome::Deferred(write::Deferred::Capacity))
+                Ok(()) | Err(write::error::Admission::Deferred(write::Deferred::Capacity))
             ));
         }
         script::Event::Close {
@@ -90,13 +91,13 @@ fn direct(event: script::Event<'_, '_>) {
     }
 }
 
-fn preamble(event: preamble::Event<'_, '_>) {
+fn preamble(event: preamble::Event<'_>) {
     match event {
         preamble::Event::Write(result) => result.expect("preamble wire write"),
         preamble::Event::Input { expected, actual } => assert_eq!(actual, expected),
         preamble::Event::Consumed { expected, actual } => assert_eq!(actual, expected),
         preamble::Event::Enqueued(result) => {
-            assert!(matches!(result, Ok(write::Outcome::Committed(()))))
+            assert!(matches!(result, Ok(())))
         }
         preamble::Event::Chunk(bytes) => assert!(!bytes.is_empty()),
         preamble::Event::Eof(_) => {}

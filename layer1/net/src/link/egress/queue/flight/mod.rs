@@ -67,6 +67,25 @@ impl<'flight, 'queue, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: de
         *self.lease = Some(self.reservation);
     }
 
+    pub(in crate::link) fn try_retain(
+        mut self,
+        bytes: Option<transfer::Len>,
+    ) -> Result<(), egress::Invalid> {
+        let result = match bytes {
+            Some(actual) if actual > self.reservation.get().len() => Err(egress::Invalid::Excess {
+                actual,
+                maximum: self.reservation.get().len(),
+            }),
+            Some(bytes) => {
+                self.reservation.get_mut().retain(bytes);
+                Ok(())
+            }
+            None => Ok(()),
+        };
+        self.retain();
+        result
+    }
+
     pub(in crate::link) fn vectored(&mut self) -> send::Vectored<'_, IOV> {
         self.reservation.get_mut().vectored()
     }
@@ -75,9 +94,10 @@ impl<'flight, 'queue, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: de
         self,
         bytes: transfer::Len,
         token: &mut region::Token<region::Identity<'d>>,
+        mut release: impl FnMut(B),
     ) -> Result<(), egress::Invalid> {
         let released = Released::try_new(self.lease, self.reservation, bytes)?;
-        released.consume(self.entries, token, &mut drop);
+        released.consume(self.entries, token, &mut release);
         Ok(())
     }
 }
@@ -179,12 +199,13 @@ impl<'a, 'p, 'd, const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>
     pub(in crate::link) fn complete(
         &mut self,
         token: &mut region::Token<region::Identity<'d>>,
-        bytes: transfer::Len,
+        bytes: Option<transfer::Len>,
         mut release: impl FnMut(B),
     ) -> queue::Change {
         let Some(lease) = self.lease.take() else {
             return queue::Change::Stale;
         };
+        let bytes = bytes.unwrap_or(lease.get().len());
         let released = match Released::try_new(self.lease, lease, bytes) {
             Ok(released) => released,
             Err(error) => return queue::Change::Invalid(error),

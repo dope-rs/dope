@@ -64,9 +64,11 @@ impl<'d, ID: Identity, C, B: data::raw::Payload<'d>> ops::DerefMut for State<'_,
 
 const _: () = {
     assert!(mem::size_of::<crate::app::receive::Failure>() == 6 * mem::size_of::<usize>());
-    assert!(mem::size_of::<Option<conn::Failure>>() == 7 * mem::size_of::<usize>());
+    assert!(
+        mem::size_of::<Option<conn::Failure>>() == mem::size_of::<crate::app::receive::Failure>()
+    );
     assert!(
         mem::size_of::<State<'static, 'static, 'static, KeyTag<0>, ()>>()
-            == 13 * mem::size_of::<usize>()
+            == 12 * mem::size_of::<usize>()
     );
 };

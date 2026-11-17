@@ -58,7 +58,14 @@ impl send::Policy<Wire> for Send {
         Wire: 'd,
         'd: 'a,
     {
-        end.output(buffer::vectored(context.into_state(), plain))
+        let (wire, send) = context.into_parts();
+        if let Some((entered, release)) = &wire.waiting
+            && release.hits() == 0
+        {
+            entered.hit();
+            return end.output(send.buffer_wait());
+        }
+        end.output(buffer::vectored(send, plain))
     }
 
     fn after_send<'a, 'd, ID: Identity + 'd>(

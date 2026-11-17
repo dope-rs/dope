@@ -90,13 +90,13 @@ where
     'd: 'w,
 {
     pub(in crate::link) fn new(
-        engine: slot::Engine<'d, ID, W>,
+        setup: crate::link::Setup<'d, ID>,
         wire: W::Connection<'w, ID>,
         send: W::SendStorage<'w>,
         key: pool::Key<'d, ID>,
     ) -> Self {
         Self {
-            engine,
+            engine: duplex::Duplex::new(setup),
             terminal: terminal::State::open(),
             wire,
             send,
@@ -106,6 +106,14 @@ where
 
     pub fn is_closing(&self) -> bool {
         self.engine.operations.lifecycle.is_closing()
+    }
+
+    /// Retains application ownership until the native close owner releases it.
+    pub fn has_owner(&self) -> bool {
+        matches!(
+            self.engine.operations.lifecycle.close.owner,
+            duplex::state::Ownership::Held
+        )
     }
 
     pub(in crate::link) fn is_recv_done(&self) -> bool {

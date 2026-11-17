@@ -35,6 +35,21 @@ pub(in crate::client::conn::engine) fn run<'p, 'w, 'd: 'w, ID: Identity + 'd, A,
     let Some(slot) = this.links.inspect(key, target) else {
         return;
     };
+    inspect::<ID, A, E, X>(this.app, slot, now, driver);
+}
+
+pub(in crate::client::conn::engine) fn inspect<'w, 'd: 'w, ID: Identity + 'd, A, E, X>(
+    app: &A,
+    slot: engine::Transition<'_, 'd, ID, E, X, &engine::Slot<'w, 'd, ID, A>>,
+    now: clock::Moment<'d>,
+    driver: &mut driver::Context<'_, 'd>,
+) where
+    A: app::Lifecycle<'w, 'd, ID>,
+    A::Continuation: liveness::Inspection<'d, ID, A>,
+    E: env::Spec<Wire = A::Wire>,
+    E::Transport: dope_net::Transport,
+    X: liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
+{
     if matches!(
         closing::Callback::new(&slot.state.closing),
         closing::Callback::Sealed
@@ -46,7 +61,7 @@ pub(in crate::client::conn::engine) fn run<'p, 'w, 'd: 'w, ID: Identity + 'd, A,
         return;
     };
     let watch = <A::Continuation as liveness::Inspection<'d, ID, A>>::inspect(
-        this.app,
+        app,
         conn::Ref::new(active),
         <E::Timing as timing::Policy>::IDLE_WINDOW,
         driver,

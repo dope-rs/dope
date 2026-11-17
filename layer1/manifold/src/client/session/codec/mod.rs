@@ -8,8 +8,6 @@ use o3::{
     buffer::{hold, resident, write::consume::scope},
 };
 
-use crate::client::session::response;
-
 mod bytes;
 pub mod eof;
 mod input;
@@ -141,13 +139,6 @@ pub trait Stateful: Codec {
     type State<'d>;
     type Storage<S>;
 
-    /// A loan into the current decode plan, valid only during admission.
-    type Preview<'a>;
-
-    /// An owned value or index retained into `d` beyond its decode input.
-    /// Omitting the input lifetime avoids higher-ranked or `'static` output bounds.
-    type Outcome<'d>;
-
     fn state<'d>(&self, budget: resident::Budget<'d>) -> Self::State<'d>;
 
     fn storage<'d, S>(&self, source: S, state: &Self::State<'d>) -> Self::Storage<S>;
@@ -165,31 +156,6 @@ pub trait Stateful: Codec {
         storage: &'a mut Self::Storage<S>,
         state: &Self::State<'d>,
     ) -> storage::Edit<'a, S>;
-
-    fn decode<'d, S, T, F>(
-        &self,
-        storage: &mut Self::Storage<S>,
-        state: &mut Self::State<'d>,
-        budget: &resident::Budget<'d>,
-        limit: staging::Limit,
-        admit: impl FnOnce(Result<Self::Preview<'_>, &Self::Error>) -> Admission<F>,
-    ) -> Step<T>
-    where
-        S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
-        T: response::Outcome,
-        F: FnOnce(Result<Self::Outcome<'d>, Self::Error>, &mut Self::State<'d>) -> T::Accepted;
-
-    fn finish<'slot, 'id, 'd, S, T, F>(
-        &self,
-        input: storage::Owner<'slot, 'id, Self::Storage<S>, Self::State<'d>>,
-        budget: &resident::Budget<'d>,
-        limit: staging::Limit,
-        admit: impl FnOnce(Result<Self::Preview<'_>, &Self::Error>) -> Admission<F>,
-    ) -> Finished<storage::Owner<'slot, 'id, Self::Storage<S>, Self::State<'d>>, T>
-    where
-        S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
-        T: response::Outcome,
-        F: FnOnce(Result<Self::Outcome<'d>, Self::Error>, &mut Self::State<'d>) -> T::Accepted;
 }
 
 #[derive(Clone, Copy)]

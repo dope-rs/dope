@@ -80,7 +80,7 @@ impl<'conn, const DOMAIN: u8, B: Recv, D: buffer::raw::Segment> Receive<'conn, D
         let ctrl = &mut self.connection.control;
         let state = &mut self.connection.streams.state;
         if CONNECTION && free != 0 {
-            Update::new(state).release_conn(free, ctrl);
+            state.receive.connection_window.release(free);
         }
         if retire {
             Update::new(state).close_recv(id, ctrl);

@@ -24,10 +24,7 @@ fn full_returns_exhausted() {
                 _ => None,
             }
             .expect("native data owner");
-            assert!(matches!(
-                pool.recv().data(done, |_, _| ()),
-                Reservation::Parked(ParkRecv::Deferred)
-            ));
+            assert!(pool.recv().data(done, |_, _| (), |plan| matches!(plan, Reservation::Parked(ParkRecv::Deferred))).1);
         }
         peer.write_all(b"F").expect("exhaust receive buffers");
         let (flow, item) = eof::receive(scope).expect("first exhaustion");
@@ -39,7 +36,7 @@ fn full_returns_exhausted() {
         .expect("exhaustion control");
         assert!(matches!(done.status(), Status::Exhausted));
         assert!(matches!(
-            pool.recv().dispatch(done),
+            pool.recv().dispatch(done).1,
             Dispatch::Parked(ParkRecv::Deferred)
         ));
         pool.resume(key);
@@ -52,7 +49,7 @@ fn full_returns_exhausted() {
         .expect("second control owner");
         assert!(matches!(done.status(), Status::Exhausted));
         let token = done.token();
-        let (done, seen, error) = match pool.recv().dispatch(done) {
+        let (done, seen, error) = match pool.recv().dispatch(done).1 {
             Dispatch::Rejected {
                 completion: done,
                 key: seen,

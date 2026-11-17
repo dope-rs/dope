@@ -8,7 +8,6 @@ use std::time;
 use o3::buffer::resident;
 
 use dope::core::driver::{route, schedule::clock};
-use dope::core::io;
 use dope::manifold::app::dispatch::{self, event};
 use dope::runtime::executor;
 
@@ -104,18 +103,12 @@ where
 {
     type Access = dispatch::raw::Plain;
 
-    fn dispatch<'app, 'driver>(
-        call: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ops::ControlFlow<io::Event<'d>> {
-        event::Drive::dispatch(call.map_owner(|owner| owner.project().endpoint))
+    fn dispatch<'event>(
+        owner: pin::Pin<&mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+        driver: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
+        event::Drive::dispatch(owner.project().endpoint, event, driver)
     }
 }
 

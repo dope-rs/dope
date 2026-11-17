@@ -7,10 +7,7 @@ use std::{
 };
 
 use engine::{
-    core::{
-        driver::{route::Identity, schedule, schedule::Progress, settings},
-        io,
-    },
+    core::driver::{route::Identity, schedule, schedule::Progress, settings},
     manifold::app::dispatch::{self, event},
     runtime::executor,
 };
@@ -61,17 +58,11 @@ impl<'d, ID: Identity, M> executor::raw::Finishes<'d, Self> for Counter<ID, M> {
 impl<'d, ID: Identity, M> event::Drive<'d> for Counter<ID, M> {
     type Access = dispatch::raw::Plain;
 
-    fn dispatch<'app, 'driver>(
-        _: executor::raw::Call<
-            'app,
-            Self,
-            (),
-            (
-                io::Event<'d>,
-                dispatch::raw::Context<'driver, 'd, Self::Access>,
-            ),
-        >,
-    ) -> ops::ControlFlow<io::Event<'d>> {
+    fn dispatch<'event>(
+        _: Pin<&mut Self>,
+        _: executor::raw::Dispatch<'event, 'd>,
+        _: dispatch::raw::Context<'_, 'd, Self::Access>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         ops::ControlFlow::Continue(())
     }
 }

@@ -68,6 +68,34 @@ fn owns_cloexec_directory() {
 }
 
 #[test]
+fn concat_admission() {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt as _};
+
+    use fs::path::{Component, ConcatError};
+
+    let bytes = [b'x'; 253];
+    let suffix = Component::parse_os(".gz".as_ref()).expect("suffix");
+    let base = Component::parse_os(OsStr::from_bytes(&bytes)).expect("component");
+    assert!(matches!(
+        Tracker::fail_after(0, || base.try_concat(suffix)),
+        Err(ConcatError::Length {
+            length: 256,
+            limit: 255
+        })
+    ));
+
+    let base = Component::parse_os(OsStr::from_bytes(&bytes[..252])).expect("component");
+    assert!(matches!(
+        Tracker::fail_after(0, || base.try_concat(suffix)),
+        Err(ConcatError::Allocation(o3::alloc::Error::Exhausted))
+    ));
+    let (_, activity) = Tracker::measure(|| {
+        drop(base.try_concat(suffix).expect("component allocation"));
+    });
+    assert_eq!(activity, [1, 256, 1, 256]);
+}
+
+#[test]
 fn paths_retain_dir() {
     use fs::path;
 
@@ -75,10 +103,14 @@ fn paths_retain_dir() {
         let opened = fs::Dir::open(env!("CARGO_MANIFEST_DIR"));
         let dir = (opened).expect("required fixture outcome");
         let fd = dir.as_fd().as_raw_fd();
-        let name = path::Component::parse_os("Cargo.toml".as_ref());
+        let name = path::Component::parse_os("Cargo".as_ref());
         let name = (name).expect("required fixture outcome");
+        let suffix = path::Component::parse_os(".toml".as_ref()).expect("suffix");
 
-        let (name, usage) = Tracker::usage(|| dir.confine_name(name));
+        let (name, usage) = Tracker::usage(|| {
+            let name = name.try_concat(suffix).expect("component allocation");
+            dir.confine(name)
+        });
         assert_eq!(usage, (1, 11));
         (fd, name.expect("required fixture outcome"))
     };

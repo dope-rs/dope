@@ -13,7 +13,7 @@ use dope_sys::{
     },
     memory::{self, buffer},
 };
-use o3::mem::quota;
+use o3::mem::{quota, slot};
 
 use crate::common::{
     Budget, Failure, Files, Poll,
@@ -142,8 +142,11 @@ impl delivery::Context<Engine> for Host {
         host
     }
 
-    fn resolve(host: &mut Engine) -> Option<Result<Option<Packet>, Infallible>> {
-        engine::Complete::next(host).map(Ok)
+    fn resolve<'event>(
+        host: &mut Engine,
+        output: slot::Vacant<'event, Packet>,
+    ) -> Option<Result<Option<slot::Occupied<'event, Packet>>, Infallible>> {
+        engine::Complete::next(host).map(|packet| Ok(packet.map(|packet| output.insert(packet))))
     }
 }
 

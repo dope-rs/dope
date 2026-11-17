@@ -18,11 +18,11 @@ pub trait Policy: Proof {
     /// Constructs the credit for an output which consumes no plaintext.
     fn empty() -> Self::Credit;
 
-    /// Selects how a successfully submitted queue flight retains its input.
+    /// Returns the transformed plaintext prefix, or the exact native input.
     fn submitted(
         state: &Self::AckState,
         credit: Self::Credit,
-    ) -> Result<(Self::AckState, Submission), Overflow>;
+    ) -> Result<(Self::AckState, Option<transfer::Len>), Overflow>;
 
     /// Selects the acknowledged queue prefix when no kernel flight was armed.
     fn unsubmitted(
@@ -37,11 +37,8 @@ pub trait Policy: Proof {
     fn complete(state: &mut Self::AckState) -> Completion;
 
     /// Resolves cancellation of the current kernel send.
-    fn abort(state: &mut Self::AckState) -> Abort {
-        match Self::complete(state) {
-            Completion::Submitted(_) => Abort::Submitted,
-            Completion::Retained => Abort::Retained,
-        }
+    fn abort(state: &mut Self::AckState) {
+        let _ = Self::complete(state);
     }
 
     /// Reports whether a queue acknowledgement still belongs to a terminal
@@ -64,8 +61,8 @@ pub trait Policy: Proof {
     fn direct() -> Direct;
 }
 
-/// Prepared output is independent of caller input, which may be reclaimed as
-/// soon as the wire accepts it for submission.
+/// Prepared output is independent of caller input; queued owners still await
+/// terminal completion before their consumed prefix is released.
 pub enum OnSubmit {}
 
 /// Prepared output is the exact caller input retained until its terminal
@@ -85,27 +82,11 @@ pub struct Overflow {
 /// Accumulated plaintext awaiting an `OnSubmit` acknowledgement.
 pub struct Pending(transfer::Len);
 
-/// Ownership action for one successfully armed queue send.
-pub enum Submission {
-    /// Reclaim the submitted plaintext immediately.
-    Reclaim(transfer::Len),
-    /// Retain the exact plaintext until terminal completion.
-    Retain,
-}
-
 /// Plaintext source selected by a terminal send completion.
 pub enum Completion {
     /// Complete the accumulated submission-owned plaintext.
     Submitted(transfer::Len),
     /// Complete the exact retained plaintext.
-    Retained,
-}
-
-/// Queue ownership selected when an armed send is aborted.
-pub enum Abort {
-    /// The plaintext was already transferred to submission ownership.
-    Submitted,
-    /// The queue still owns the retained plaintext.
     Retained,
 }
 
@@ -160,8 +141,8 @@ impl Policy for OnSubmit {
     fn submitted(
         state: &Self::AckState,
         consumed: transfer::Len,
-    ) -> Result<(Self::AckState, Submission), Overflow> {
-        Ok((state.add(consumed)?, Submission::Reclaim(consumed)))
+    ) -> Result<(Self::AckState, Option<transfer::Len>), Overflow> {
+        Ok((state.add(consumed)?, Some(consumed)))
     }
 
     fn complete(state: &mut Self::AckState) -> Completion {
@@ -192,8 +173,8 @@ impl Policy for OnComplete {
     fn submitted(
         Exact: &Self::AckState,
         Exact: Self::Credit,
-    ) -> Result<(Self::AckState, Submission), Overflow> {
-        Ok((Exact, Submission::Retain))
+    ) -> Result<(Self::AckState, Option<transfer::Len>), Overflow> {
+        Ok((Exact, None))
     }
 
     fn complete(Exact: &mut Self::AckState) -> Completion {

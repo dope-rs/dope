@@ -18,7 +18,10 @@ use dope_fiber::{
 use dope_test::alloc::Tracker;
 use o3::{
     alloc::Error,
-    depot::{arena::slab::storage, capacity::Count},
+    depot::{
+        arena::slab::{entries, storage},
+        capacity::Count,
+    },
 };
 
 #[global_allocator]
@@ -26,9 +29,25 @@ static ALLOCATOR: Tracker = Tracker::new();
 
 #[test]
 fn direct_capacity() {
-    type Slots = Slab<'static, u8, { u32::MAX as usize }, (), storage::Heap>;
+    capacity::<storage::Heap>();
+}
+
+#[test]
+fn lazy_direct_capacity() {
+    capacity::<storage::Lazy>();
+}
+
+fn capacity<S: storage::Storage>()
+where
+    S::Plane<u8, { u32::MAX }, entries::Exclusive>:
+        storage::HeapPlane<u8, { u32::MAX }, entries::Exclusive>,
+{
     for count in [0, 1, 16385] {
-        let (slots, allocated) = Tracker::usage(|| Slots::try_new_with_capacity(Count::new(count)));
+        let (slots, allocated) = Tracker::usage(|| {
+            Slab::<'static, u8, { u32::MAX as usize }, (), S>::try_new_with_capacity(Count::new(
+                count,
+            ))
+        });
         assert_eq!(allocated.0, usize::from(count != 0));
         let mut slots = pin::pin!(slots.expect("direct slots"));
         Scope::with(slots.as_mut(), |mut slots| {

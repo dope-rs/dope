@@ -13,7 +13,7 @@ use dope_core::{
 use dope_manifold::{
     app::receive::{self, Outcome, limits::Budget},
     network::listener::{
-        conn,
+        conn::{self, write},
         handler::{self, Application, failures, retire, send},
     },
 };
@@ -123,13 +123,18 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
         this.eof.hit();
         *conn.state_mut() = State::Eof;
         if !CONTROL {
-            (this.observe)(Observation::Write(conn.write().try_bounded(
-                driver,
-                |_, mut prefix| {
-                    prefix.write_slice(b"after").unwrap();
-                    prefix.commit(None, ())
-                },
-            )));
+            let mut output_slot = std::mem::MaybeUninit::uninit();
+            let result = match conn.write().try_prefix(driver, &mut output_slot) {
+                Ok(mut output) => {
+                    output.get_mut().parts().1.write_slice(b"after").unwrap();
+                    write::Output::finish(output, write::End::Open)
+                        .map_err(write::error::Mismatch::into_cause)
+                        .expect("prefix publication");
+                    Ok(())
+                }
+                Err(cause) => Err(cause),
+            };
+            (this.observe)(Observation::Write(result));
         }
     }
 
@@ -237,13 +242,18 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CON
             this.events.push(Event::Generation(lane, epoch));
             if !CONTROL {
                 this.events.push(Event::Deferred(chunk.as_ref().to_vec()));
-                (this.observe)(Observation::Write(conn.write().try_bounded(
-                    driver,
-                    |_, mut prefix| {
-                        prefix.write_slice(b"before").unwrap();
-                        prefix.commit(None, ())
-                    },
-                )));
+                let mut output_slot = std::mem::MaybeUninit::uninit();
+                let result = match conn.write().try_prefix(driver, &mut output_slot) {
+                    Ok(mut output) => {
+                        output.get_mut().parts().1.write_slice(b"before").unwrap();
+                        write::Output::finish(output, write::End::Open)
+                            .map_err(write::error::Mismatch::into_cause)
+                            .expect("prefix publication");
+                        Ok(())
+                    }
+                    Err(cause) => Err(cause),
+                };
+                (this.observe)(Observation::Write(result));
                 return Outcome::Continue;
             }
         }

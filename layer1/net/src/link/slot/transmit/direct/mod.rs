@@ -38,6 +38,6 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Status<'a, 'w, 'd, ID, W
     }
 
     pub fn is_closed(&self) -> bool {
-        self.slot.engine.operations.lifecycle.close.has_shutdown()
+        self.slot.is_closing() || self.slot.engine.operations.lifecycle.close.has_shutdown()
     }
 }

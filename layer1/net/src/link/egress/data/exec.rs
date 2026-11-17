@@ -26,7 +26,7 @@ pub struct Guaranteed<G>(marker::PhantomData<fn() -> G>);
 impl<G: bound::Bound> Mode for Guaranteed<G> {
     const DIRECT_MINIMUM: Option<num::NonZero<u32>> = Some(num::NonZero::<u32>::MIN);
     const EXECUTION: data::Execution = match G::LIMIT {
-        bound::Limit::AtMost(body) => data::Execution::Bounded(ResidentSize::new(body)),
+        bound::Limit::AtMost(body, _) => data::Execution::Bounded(ResidentSize::new(body)),
         bound::Limit::Unbounded => data::Execution::Unbounded,
     };
     type Reserve<const PREFIX: usize> = demand::Guaranteed<G, PREFIX>;

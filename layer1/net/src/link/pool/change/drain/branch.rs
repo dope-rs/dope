@@ -9,5 +9,4 @@ pub(in crate::link::pool::change) enum Branch<'d, ID: Identity, P, B> {
     Resume(Resume<'d>),
     Released { payload: B, resume: Resume<'d> },
     Stale,
-    Missing,
 }

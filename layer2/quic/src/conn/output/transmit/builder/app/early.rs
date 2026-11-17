@@ -96,12 +96,8 @@ pub(in crate::conn::output::transmit) fn build<
                     let Some(prepared) = selected.prepare(take) else {
                         return Ok(ControlFlow::Continue(()));
                     };
-                    let range = prepared.range();
-                    let Some(next) = fresh.checked_add(range.len()) else {
-                        return Ok(ControlFlow::Break(()));
-                    };
                     let room = limit.saturating_sub(frames.len());
-                    if !prepared
+                    let Some(bytes) = prepared
                         .write(&mut write::Append::new(&mut frames), room)
                         .map_err(|error| {
                             context.scratch.frames = mem::take(&mut frames);
@@ -110,10 +106,10 @@ pub(in crate::conn::output::transmit) fn build<
                                 requested: limit,
                             }
                         })?
-                    {
+                    else {
                         return Ok(ControlFlow::Break(()));
-                    }
-                    fresh = next;
+                    };
+                    fresh += u64::from(bytes);
                     commit.flags.set_elicit(true);
                     Ok(
                         if limit.saturating_sub(frames.len()) <= conn::STREAM_FRAME_OVERHEAD {

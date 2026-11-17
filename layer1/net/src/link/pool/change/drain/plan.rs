@@ -344,7 +344,12 @@ where
         }
     }
 
-    pub(super) fn retire(self) -> Branch<'d, ID, R, B> {
+    pub(super) fn done(&self, branch: Branch<'d, ID, R, B>) -> (Branch<'d, ID, R, B>, bool) {
+        let waiting = self.storage.entry.get().send_status().is_waiting();
+        (branch, waiting)
+    }
+
+    pub(super) fn retire(self) -> (Branch<'d, ID, R, B>, bool) {
         let Self {
             storage,
             turn,
@@ -413,9 +418,9 @@ where
         match result {
             Ok((proof, send)) => {
                 <M::Ingress as input::Dispatch<W>>::release::<ID>(send, storage.runtime);
-                Branch::Retired(proof)
+                (Branch::Retired(proof), false)
             }
-            Err((_, branch)) => branch,
+            Err((entry, branch)) => (branch, entry.get().send_status().is_waiting()),
         }
     }
 }

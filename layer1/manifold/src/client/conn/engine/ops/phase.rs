@@ -128,7 +128,7 @@ where
     E: env::Spec<Wire = A::Wire>,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    Self: close::ClosePhase<'d, ID, A, S, E>,
+    Self: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>,
 {
     type Addr = socket::Addr;
 
@@ -264,7 +264,7 @@ where
     E: env::Spec,
     E::Transport: dope_net::Transport,
     X: Mode<'d, ID> + liveness::Schedule<'d, ID, <E::Transport as dope_net::Transport>::Prepared>,
-    Self: close::ClosePhase<'d, ID, A, S, E>,
+    Self: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>,
 {
     type Addr = ();
 

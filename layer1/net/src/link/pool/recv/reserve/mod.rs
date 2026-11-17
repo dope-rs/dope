@@ -2,6 +2,7 @@ mod choice;
 mod plan;
 
 pub use choice::Choice;
+pub use plan::Plan;
 
 use crate::link::{
     event,

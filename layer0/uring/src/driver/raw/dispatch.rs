@@ -1,4 +1,4 @@
-use std::{ops, task};
+use std::{mem::MaybeUninit, ops, task};
 
 use dope_sys::{
     Budget,
@@ -6,7 +6,7 @@ use dope_sys::{
     io::reactor::ready::delivery,
     ring::ready::Complete as _,
 };
-use o3::mem::quota::Admission;
+use o3::mem::{quota::Admission, slot};
 
 use crate::driver::{Engine, Turn, tuning::Progress};
 
@@ -23,7 +23,10 @@ where
 
     fn dispatch(
         self,
-        mut emit: impl FnMut(C::Event, &mut H) -> ops::ControlFlow<C::Event>,
+        mut emit: impl for<'event> FnMut(
+            slot::Occupied<'event, C::Event>,
+            &mut H,
+        ) -> ops::ControlFlow<slot::Occupied<'event, C::Event>>,
     ) -> C::Dispatch {
         let Self { host, quota } = self;
         quota.reclaim(host);
@@ -32,7 +35,9 @@ where
             let limit = quota.remaining();
             let mut budget = quota.budget::<Completion>(limit);
             loop {
-                let item = match budget.admit(|| C::resolve(host)) {
+                let mut output = MaybeUninit::uninit();
+                let output = slot::Vacant::new(&mut output);
+                let item = match budget.admit(|| C::resolve(host, output)) {
                     Admission::Item(item) => item,
                     Admission::Empty | Admission::Exhausted => break Ok(None),
                 };
@@ -42,7 +47,7 @@ where
                     Err(error) => break Err(error),
                 };
                 if let ops::ControlFlow::Break(event) = emit(event, host) {
-                    break Ok(Some(event));
+                    break Ok(Some(event.into_inner()));
                 }
             }
         };

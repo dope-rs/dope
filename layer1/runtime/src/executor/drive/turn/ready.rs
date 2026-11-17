@@ -1,4 +1,5 @@
-use std::{ops::ControlFlow, pin, task};
+use o3::mem::slot;
+use std::{mem::MaybeUninit, ops::ControlFlow, pin, task};
 
 use dope_core::{
     driver,
@@ -50,14 +51,21 @@ where
             let (lane, work) = core.turn.split();
             let held = match core.pending.take() {
                 None => ControlFlow::Continue(()),
-                Some(event) => Self::dispatch(
-                    event,
-                    &mut core.mode,
-                    &mut core.driver,
-                    work.reborrow(),
-                    &mut status,
-                    &mut shutdown,
-                ),
+                Some(event) => {
+                    let mut output = MaybeUninit::uninit();
+                    let event = slot::Vacant::new(&mut output).insert(event);
+                    match Self::dispatch(
+                        event,
+                        &mut core.mode,
+                        &mut core.driver,
+                        work.reborrow(),
+                        &mut status,
+                        &mut shutdown,
+                    ) {
+                        ControlFlow::Continue(()) => ControlFlow::Continue(()),
+                        ControlFlow::Break(event) => ControlFlow::Break(event.into_inner()),
+                    }
+                }
             };
             match held {
                 ControlFlow::Break(event) => {
@@ -94,20 +102,21 @@ where
         })
     }
 
-    fn dispatch(
-        event: Event<'d>,
+    fn dispatch<'event>(
+        event: slot::Occupied<'event, Event<'d>>,
         mode: &mut modes::App<'turn, 'app, 'd, D, S>,
         driver: &mut driver::Context<'_, 'd>,
         work: schedule::Turn<'_, 'd>,
         status: &mut turn::Status,
         shutdown: &mut impl FnMut() -> turn::Status,
-    ) -> ControlFlow<Event<'d>> {
-        match event.into_kind() {
+    ) -> ControlFlow<slot::Occupied<'event, Event<'d>>> {
+        match event.as_ref() {
             Kind::Shutdown => {
+                drop(event);
                 *status = shutdown();
                 ControlFlow::Continue(())
             }
-            event => mode.view.dispatch(mode.token, event.into(), work, driver),
+            _ => mode.view.dispatch(mode.token, event, work, driver),
         }
     }
 
@@ -147,9 +156,30 @@ impl<'turn, 'd, M> Ready<'turn, 'd, M>
 where
     M: modes::Mode<'d>,
 {
-    pub(crate) fn park(mut self) -> turn::Parked<'turn, 'd, M> {
+    pub(crate) fn park(
+        mut self,
+    ) -> Result<ControlFlow<(), Option<turn::Idle<'turn, 'd, M>>>, poll::Error> {
         M::park(&mut self.core);
-        turn::Parked::new(self.core, self.events, self.status)
+        if matches!(self.status, turn::Status::Shutdown) {
+            return Ok(ControlFlow::Break(()));
+        }
+        Ok(ControlFlow::Continue(self.into_idle()?))
+    }
+
+    pub(crate) fn quiesce(mut self) -> Result<Option<turn::Idle<'turn, 'd, M>>, poll::Error> {
+        M::park(&mut self.core);
+        self.into_idle()
+    }
+
+    fn into_idle(self) -> Result<Option<turn::Idle<'turn, 'd, M>>, poll::Error> {
+        if self.core.pending.is_some() {
+            return Ok(None);
+        }
+        if matches!(self.events, poll::Drain::Pending) {
+            let _ = self.sync()?;
+            return Ok(None);
+        }
+        Ok(Some(turn::Idle::new(self.core)))
     }
 
     pub(crate) fn sync(mut self) -> Result<poll::Commit, poll::Error> {
@@ -226,12 +256,13 @@ impl<'turn, 'd> RootReady<'turn, 'd, modes::Boot> {
         let events = {
             let lane = core.turn.reactor();
             let batch = driver::Context::dispatch(&mut core.driver, lane, |event, _source| {
-                match event.into_kind() {
+                match event.as_ref() {
                     Kind::Shutdown => {
+                        drop(event);
                         status = shutdown();
                         ControlFlow::Continue(())
                     }
-                    event => ControlFlow::Break(event.into()),
+                    _ => ControlFlow::Break(event),
                 }
             });
             match batch {

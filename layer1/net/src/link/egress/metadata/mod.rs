@@ -130,27 +130,6 @@ pub enum Admission<T> {
 
 pub struct Local;
 
-impl<'p, 'd> credit::Access<'p, 'd> for Local {
-    fn try_acquire(
-        &self,
-        _: &mut region::Token<region::Identity<'d>>,
-        lane: credit::Lane<'_, 'p, 'd, Self>,
-        amount: credit::Amount,
-    ) -> Result<credit::Grant<'p>, egress::Admission> {
-        let Local = *self;
-        lane.try_charge(amount)
-    }
-
-    fn release(
-        &self,
-        _: &mut region::Token<region::Identity<'d>>,
-        _: credit::Lane<'_, 'p, 'd, Self>,
-        grant: credit::Grant<'p>,
-    ) {
-        let Local = *self;
-        grant.release();
-    }
-}
 
 pub struct Queue<
     'a,
@@ -202,8 +181,8 @@ impl<'queue, 'p, 'd, T> Queue<'queue, 'p, 'd, T> {
         self,
         token: &'token mut region::Token<region::Identity<'d>>,
     ) -> Option<front::Front<'queue, 'token, 'p, 'd, T>> {
-        let (value, slot, stored) = head::detach(self, token)?;
-        Some(front::Front::new(self, value, slot, stored, token))
+        let (value, slot) = head::detach(self, token)?;
+        Some(front::Front::new(self, value, slot, token))
     }
 
     /// Owns one exact non-empty payload before invoking protocol state.
@@ -213,7 +192,7 @@ impl<'queue, 'p, 'd, T> Queue<'queue, 'p, 'd, T> {
         load: egress::NonEmpty<T>,
     ) -> Reservation<'queue, 'token, 'p, 'd, T>
     where
-        T: data::raw::Resident<'d>,
+        T: data::raw::Payload<'d>,
     {
         match Prepared::prepare(self, token, load) {
             Ok(ready) => Reservation::Ready(ready.reserve()),
@@ -251,9 +230,7 @@ impl<'queue, 'p, 'd, T, M, D: demand::Mode, P: position::State> Queue<'queue, 'p
     where
         M: credit::Access<'p, 'd>,
     {
-        credit::Lane::new(*self)
-            .try_acquire(token, amount)
-            .map(|grant| credit::Reserve::new(*self, grant))
+        self.pool.credit.mode.try_acquire(token, *self, amount)
     }
 
     pub(in crate::link::egress) fn fits(&self, amount: credit::Amount) -> bool
@@ -313,9 +290,7 @@ impl<'queue, 'p, 'd, T, D: demand::Mode, P: position::State>
     ) -> task::Poll<
         Result<credit::Reserve<'queue, 'p, 'd, T, credit::Ready<'p, 'd>, D, P>, egress::Tickets>,
     > {
-        credit::Lane::new(*self)
-            .poll(token, amount, target)
-            .map(|grant| grant.map(|grant| credit::Reserve::new(*self, grant)))
+        self.pool.credit.mode.poll(token, *self, amount, target)
     }
 }
 

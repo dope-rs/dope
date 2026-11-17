@@ -68,7 +68,7 @@ fn idle_peer_progress() {
                     for (key, done) in [(a, done), (b, waiting)] {
                         assert!(key.target().operation::<kind::Recv>().matches(done.token()));
                         assert!(matches!(done.status(), Status::Exhausted));
-                        assert!(matches!(pool.recv().dispatch(done), Dispatch::Ready(_)));
+                        assert!(matches!(pool.recv().dispatch(done).1, Dispatch::Ready(_)));
                     }
                     pool.get_mut(a)
                         .expect("idle owner")
@@ -107,7 +107,7 @@ fn idle_peer_progress() {
                         .expect("probe exhaustion control");
                         assert!(key.target().operation::<kind::Recv>().matches(done.token()));
                         assert!(matches!(done.status(), Status::Exhausted));
-                        assert!(matches!(pool.recv().dispatch(done), Dispatch::Settled));
+                        assert!(matches!(pool.recv().dispatch(done).1, Dispatch::Settled));
                     }
 
                     drop(first);
@@ -208,9 +208,9 @@ fn idle_peer_progress() {
                         let status = done.status();
                         assert!(matches!(status, Status::Eof | Status::Exhausted));
                         if matches!(status, Status::Eof) {
-                            assert!(matches!(pool.recv().dispatch(done), Dispatch::Settled));
+                            assert!(matches!(pool.recv().dispatch(done).1, Dispatch::Settled));
                         } else {
-                            let done = match pool.recv().dispatch(done) {
+                            let done = match pool.recv().dispatch(done).1 {
                                 Dispatch::Retired(done) => Some(done),
                                 _ => None,
                             }

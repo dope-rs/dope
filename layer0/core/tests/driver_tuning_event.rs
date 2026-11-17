@@ -78,7 +78,7 @@ fn keeps_unrelated_event() {
                                 &mut driver,
                                 turn.reactor(),
                                 |event, _source| {
-                                    assert!(done.replace(event).is_none());
+                                    assert!(done.replace(event.into_inner()).is_none());
                                     std::ops::ControlFlow::Continue(())
                                 }
                             ),
@@ -175,7 +175,7 @@ fn dropped_tuning_reuses() {
                             .expect("dropped tuning retirement deadline");
                         assert!(driver.wait(turn.reactor(), Some(left)).is_ok());
                         let done = driver.dispatch(turn.reactor(), |event, _| {
-                            let done = match event.into_kind() {
+                            let done = match event.into_inner().into_kind() {
                                 event::Kind::Tuning(done) => Some(done),
                                 _ => None,
                             }

@@ -14,10 +14,13 @@ use crate::link::egress::{
     metadata,
 };
 
-pub(in crate::link::egress::load::credit) enum Resume<'p> {
+pub(in crate::link::egress::load::credit) enum Resume<'p, 'd> {
     Waiting,
     Queued,
-    Granted(credit::Grant<'p>),
+    Granted {
+        account: credit::Account<'p, 'd>,
+        amount: credit::Amount,
+    },
 }
 
 pub(in crate::link::egress::load::credit) enum Cancelled {
@@ -39,13 +42,18 @@ impl<'p, 'd> Vacant<'_, '_, 'p, 'd> {
         lane: credit::Lane<'_, 'p, 'd, credit::Ready<'p, 'd>>,
         key: ready::Retained<'d>,
         amount: credit::Queued,
-    ) -> Result<Resume<'p>, egress::Tickets> {
+    ) -> Result<Resume<'p, 'd>, egress::Tickets> {
         let charge = amount.amount();
         let account = lane.account();
         let demand = credit::Demand::queued(account, amount);
         if demand == credit::Demand::<2>::ZERO || (self.tree.is_empty() && lane.is_covered(demand))
         {
-            return Ok(Resume::Granted(account.acquire(charge)));
+            // SAFETY: zero demand or the empty wait tree's current coverage admits this amount.
+            unsafe { account.acquire(charge) };
+            return Ok(Resume::Granted {
+                account,
+                amount: charge,
+            });
         }
         if self.tree.is_empty() {
             *self.ticket = tree::Ticket::FIRST;
@@ -144,7 +152,7 @@ impl<'p, 'd> Queue<'p, 'd> {
         lane: credit::Lane<'_, 'p, 'd, credit::Ready<'p, 'd>>,
         key: ready::Retained<'d>,
         amount: credit::Queued,
-    ) -> Result<Resume<'p>, egress::Tickets> {
+    ) -> Result<Resume<'p, 'd>, egress::Tickets> {
         let index = tree::Index::from(lane);
         let (mut records, mut nodes) = self.store.parts();
         let record = match Records::state(&mut records, index) {
@@ -164,13 +172,9 @@ impl<'p, 'd> Queue<'p, 'd> {
                 return Ok(Resume::Queued);
             }
             State::Granted(record) if Ready::matches(&record, key, amount) => {
-                return Ok(Resume::Granted(Ready::take(record)));
+                return Ok(Ready::take(record));
             }
-            State::Granted(record) => {
-                let (idle, grant) = Ready::vacate(record);
-                grant.release();
-                idle
-            }
+            State::Granted(record) => Ready::cancel(record),
         };
         Vacant {
             record,
@@ -196,7 +200,7 @@ impl<'p, 'd> Queue<'p, 'd> {
                 Cancelled::Busy
             }
             State::Granted(record) => {
-                Ready::take(record).release();
+                Ready::cancel(record);
                 Cancelled::Busy
             }
         }

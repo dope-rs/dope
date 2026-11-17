@@ -9,10 +9,7 @@ use dope_core::{
     io::transfer::Length as _,
 };
 use dope_net::{
-    link::pool::{
-        self,
-        recv::{delivery, input},
-    },
+    link::pool::recv::{delivery, input},
     wire::{
         self, domain,
         receive::{self, Chunk, batch::Items, mode::Disabled, scoped},
@@ -22,14 +19,11 @@ use handler::send;
 use o3::buffer::resident;
 
 use crate::{
-    app::{
-        env,
-        receive::{
-            Borrowed, Coupled, Gated, GatedScoped, Mode, Outcome, Owned, Resources, Scoped,
-            ingress::{self, Dispatch, batch},
-        },
+    app::receive::{
+        Borrowed, Coupled, Gated, GatedScoped, Mode, Outcome, Owned, Resources, Scoped,
+        ingress::{self, Dispatch, batch},
     },
-    network::listener::{self, conn, handler},
+    network::listener::{conn, handler, writer},
 };
 
 pub(in crate::network::listener) trait Policy<'w, 'd: 'w, ID: Identity, A>:
@@ -57,21 +51,21 @@ where
         Ok(domain::Resident::ZERO)
     }
 
-    fn receive<'input, E>(
-        port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
-        key: pool::Key<'d, ID>,
+    fn receive<'input>(
+        app: pin::Pin<&mut A>,
+        egress: &mut writer::Egress<'_, '_, '_, '_, 'w, 'd, ID, A>,
+        authority: &mut <Self as Resources>::Authority<'d>,
         input: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> crate::Receiving<'w, 'd, A::Wire, Self>
     where
-        E: env::Spec<Wire = A::Wire>,
         'w: 'input;
 }
 
-fn receive_borrowed<'input, 'w, 'd, ID: Identity, A, E>(
-    mut port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
-    key: pool::Key<'d, ID>,
+fn receive_borrowed<'input, 'w, 'd, ID: Identity, A>(
+    mut app: pin::Pin<&mut A>,
+    egress: &mut writer::Egress<'_, '_, '_, '_, 'w, 'd, ID, A>,
     items: Items<'input, A::Wire>,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
@@ -80,24 +74,19 @@ where
     'd: 'w,
     'w: 'input,
     A: handler::Borrowed<'d, ID>,
-    E: env::Spec<Wire = A::Wire>,
 {
-    let mut this = port.as_mut().project();
-    let mut egress = match this.owner.egress_mut(key) {
-        Some(egress) => egress,
-        None => return ingress::Progress::Done(Outcome::Continue),
-    };
     egress
         .connection
         .progress(driver.driver_ref().clock().now());
-    batch::drive::<A::Wire, _>(items, |chunk| {
-        A::chunk(
-            this.app.as_mut(),
+    batch::drive::<A::Wire, _, _>(items, egress, |egress, chunk| {
+        let outcome = A::chunk(
+            app.as_mut(),
             egress.context(turn.reborrow().app()),
             chunk,
             driver,
-        )
-    })
+        );
+        (Some(egress), outcome)
+    }).1
 }
 
 impl<'w, 'd: 'w, ID: Identity, A> Policy<'w, 'd, ID, A> for Borrowed
@@ -107,18 +96,18 @@ where
         + input::Mode<A::Wire, Kind = input::Borrowed>
         + Dispatch<A::Wire, Strategy = ingress::Batched>,
 {
-    fn receive<'input, E>(
-        port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
-        key: pool::Key<'d, ID>,
+    fn receive<'input>(
+        app: pin::Pin<&mut A>,
+        egress: &mut writer::Egress<'_, '_, '_, '_, 'w, 'd, ID, A>,
+        _: &mut <Self as Resources>::Authority<'d>,
         batch: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Progress<convert::Infallible>
     where
-        E: env::Spec<Wire = A::Wire>,
         'w: 'input,
     {
-        receive_borrowed(port, key, batch, turn, driver)
+        receive_borrowed(app, egress, batch, turn, driver)
     }
 }
 
@@ -129,18 +118,18 @@ where
         + input::Mode<A::Wire, Kind = input::Coupled>
         + Dispatch<A::Wire, Strategy = ingress::Batched>,
 {
-    fn receive<'input, E>(
-        port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
-        key: pool::Key<'d, ID>,
+    fn receive<'input>(
+        app: pin::Pin<&mut A>,
+        egress: &mut writer::Egress<'_, '_, '_, '_, 'w, 'd, ID, A>,
+        _: &mut <Self as Resources>::Authority<'d>,
         batch: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Progress<convert::Infallible>
     where
-        E: env::Spec<Wire = A::Wire>,
         'w: 'input,
     {
-        receive_borrowed(port, key, batch, turn, driver)
+        receive_borrowed(app, egress, batch, turn, driver)
     }
 }
 
@@ -163,24 +152,25 @@ where
         send::gated(app, scope, driver);
     }
 
-    fn receive<'input, E>(
-        port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
-        key: pool::Key<'d, ID>,
+    fn receive<'input>(
+        app: pin::Pin<&mut A>,
+        egress: &mut writer::Egress<'_, '_, '_, '_, 'w, 'd, ID, A>,
+        _: &mut <Self as Resources>::Authority<'d>,
         batch: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Progress<convert::Infallible>
     where
-        E: env::Spec<Wire = A::Wire>,
         'w: 'input,
     {
-        receive_borrowed(port, key, batch, turn, driver)
+        receive_borrowed(app, egress, batch, turn, driver)
     }
 }
 
-fn receive_scoped<'e, 'w, 'd: 'w, ID: Identity, A, E>(
-    mut port: pin::Pin<&mut listener::Listener<'e, '_, '_, 'w, 'd, ID, A, E>>,
-    key: pool::Key<'d, ID>,
+fn receive_scoped<'w, 'd: 'w, ID: Identity, A>(
+    mut app: pin::Pin<&mut A>,
+    egress: &mut writer::Egress<'_, '_, '_, '_, 'w, 'd, ID, A>,
+    authority: &mut resident::Budget<'d>,
     mut chunk: Chunk<'w, 'd, A::Wire, Disabled>,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
@@ -188,23 +178,14 @@ fn receive_scoped<'e, 'w, 'd: 'w, ID: Identity, A, E>(
 where
     A: handler::Scoped<'w, 'd, ID>,
     A::Input: Resources<Authority<'d> = resident::Budget<'d>>,
-    E: env::Spec<Wire = A::Wire>,
 {
-    let mut this = port.as_mut().project();
-    let done = match this.owner.egress_mut(key) {
-        Some(mut egress) => {
-            egress
-                .connection
-                .progress(driver.driver_ref().clock().now());
-            A::scoped_chunk(
-                this.app.as_mut(),
-                egress.context(turn.app()),
-                scoped::Input::new(&mut chunk, this.receive_authority),
-                driver,
-            )
-        }
-        None => Outcome::Continue,
-    };
+    egress.connection.progress(driver.driver_ref().clock().now());
+    let done = A::scoped_chunk(
+        app.as_mut(),
+        egress.context(turn.app()),
+        scoped::Input::new(&mut chunk, authority),
+        driver,
+    );
     match done {
         Outcome::Continue if chunk.is_empty() => ingress::Progress::Done(Outcome::Continue),
         Outcome::Continue => ingress::Progress::Pending(chunk),
@@ -224,18 +205,18 @@ where
         app.retention().capacity(count)
     }
 
-    fn receive<'input, E>(
-        port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
-        key: pool::Key<'d, ID>,
+    fn receive<'input>(
+        app: pin::Pin<&mut A>,
+        egress: &mut writer::Egress<'_, '_, '_, '_, 'w, 'd, ID, A>,
+        authority: &mut <Self as Resources>::Authority<'d>,
         chunk: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Progress<Chunk<'w, 'd, A::Wire, Disabled>>
     where
-        E: env::Spec<Wire = A::Wire>,
         'w: 'input,
     {
-        receive_scoped(port, key, chunk, turn, driver)
+        receive_scoped(app, egress, authority, chunk, turn, driver)
     }
 }
 
@@ -262,18 +243,18 @@ where
         app.retention().capacity(count)
     }
 
-    fn receive<'input, E>(
-        port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
-        key: pool::Key<'d, ID>,
+    fn receive<'input>(
+        app: pin::Pin<&mut A>,
+        egress: &mut writer::Egress<'_, '_, '_, '_, 'w, 'd, ID, A>,
+        authority: &mut <Self as Resources>::Authority<'d>,
         chunk: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Progress<Chunk<'w, 'd, A::Wire, Disabled>>
     where
-        E: env::Spec<Wire = A::Wire>,
         'w: 'input,
     {
-        receive_scoped(port, key, chunk, turn, driver)
+        receive_scoped(app, egress, authority, chunk, turn, driver)
     }
 }
 
@@ -290,32 +271,19 @@ where
         app.retention().capacity(count)
     }
 
-    fn receive<'input, E>(
-        mut port: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
-        key: pool::Key<'d, ID>,
+    fn receive<'input>(
+        mut app: pin::Pin<&mut A>,
+        egress: &mut writer::Egress<'_, '_, '_, '_, 'w, 'd, ID, A>,
+        _: &mut <Self as Resources>::Authority<'d>,
         chunk: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> ingress::Progress<convert::Infallible>
     where
-        E: env::Spec<Wire = A::Wire>,
         'w: 'input,
     {
-        let mut this = port.as_mut().project();
-        let done = match this.owner.egress_mut(key) {
-            Some(mut egress) => {
-                egress
-                    .connection
-                    .progress(driver.driver_ref().clock().now());
-                A::chunk(
-                    this.app.as_mut(),
-                    egress.context(turn.app()),
-                    chunk.0,
-                    driver,
-                )
-            }
-            None => Outcome::Continue,
-        };
+        egress.connection.progress(driver.driver_ref().clock().now());
+        let done = A::chunk(app.as_mut(), egress.context(turn.app()), chunk.0, driver);
         ingress::Progress::Done(done)
     }
 }

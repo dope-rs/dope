@@ -8,7 +8,7 @@ use dope_core::driver::{
 use dope_net::{
     link::{
         event,
-        pool::recv::{self, Readiness, Ready, arrival, delivery, input, reserve::Choice},
+        pool::recv::{self, Ready, arrival, delivery, input, reserve::Choice},
     },
     wire,
 };
@@ -116,26 +116,32 @@ pub(crate) trait Strategy<W: wire::Spec, M: Mode<W>> {
                 ControlFlow::Continue(false) => {}
             }
             let key = item.key();
-            let (end, done) = {
-                let inspect = P::storage(policy.as_mut()).inspect();
-                let done = matches!(inspect.recv(key), Readiness::Ready);
-                let end = inspect.get(key).is_some_and(|slot| {
-                    slot.terminal.has_eof() || (!done && slot.terminal.kind().is_some())
-                });
-                (end, done)
-            };
-            if end {
-                ingress::prepare_terminal(policy.as_mut(), key);
-                match P::terminal(policy.as_mut(), key, turn.reborrow(), driver) {
-                    ingress::Terminal::Ended(end) => {
-                        ingress::finish_eof(policy.as_mut(), key, end, turn.reborrow(), driver);
-                        first = false;
-                        continue;
+            let done = {
+                let (pool, mut context) = P::parts(policy.as_mut());
+                let Ok(mut entry) = pool.entry(key) else { break };
+                let done = matches!(entry.readiness(), recv::Readiness::Ready);
+                let slot = entry.get();
+                let end = slot.terminal.has_eof() || (!done && slot.terminal.kind().is_some());
+                if end {
+                    ingress::prepare_terminal::<ID, P>(&entry);
+                    let (entry, terminal) = P::terminal(&mut context, entry, turn.reborrow(), driver);
+                    let Some(entry) = entry else { break };
+                    match terminal {
+                        ingress::Terminal::Ended(end) => {
+                            if ingress::finish_eof::<ID, P>(
+                                &mut context, entry, end, turn.reborrow(), driver,
+                            ).is_none() {
+                                break;
+                            }
+                            first = false;
+                            continue;
+                        }
+                        ingress::Terminal::Pending | ingress::Terminal::Closed => break,
+                        ingress::Terminal::Idle => {}
                     }
-                    ingress::Terminal::Pending | ingress::Terminal::Closed => break,
-                    ingress::Terminal::Idle => {}
                 }
-            }
+                done
+            };
             if !done {
                 break;
             }

@@ -86,7 +86,7 @@ pub struct Connection<
     R: roles::Protocol + 'd = roles::Server,
     ID: route::Identity + 'd = route::KeyTag<0>,
 > {
-    pub(crate) native: rustls::Connection,
+    pub(crate) native: R::Native,
     buffers: &'d endpoint::Pools,
     pub(crate) peer_closed: bool,
     pub(crate) local_closed: bool,
@@ -98,7 +98,7 @@ pub struct Connection<
 
 impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> Connection<'d, R, ID> {
     fn new(
-        native: rustls::Connection,
+        native: R::Native,
         buffers: &'d endpoint::Pools,
         lease: Unique<'d, ()>,
         mut send: SendState<'d>,
@@ -114,7 +114,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> Connection<'d, R, ID
             role: marker::PhantomData,
         };
         if let Some(out) = send.buffer.as_mut() {
-            conn.emit_into(out)?;
+            state::drain(&mut conn.native, out)?;
         } else if conn.native.wants_write() {
             return Err(error::Error::BufferUnavailable);
         }
@@ -145,7 +145,7 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> Connection<'d, R, ID
             self.local_closed = true;
             self.native.send_close_notify();
         }
-        self.emit_into(out)
+        state::drain(&mut self.native, out)
     }
 
     pub(crate) fn try_buffer<'a>(
@@ -154,17 +154,11 @@ impl<'d, R: roles::Protocol + 'd, ID: route::Identity + 'd> Connection<'d, R, ID
     ) -> Option<&'a mut pool::Cursor<pool::Layout, pool::Borrowed<'d>>> {
         store.try_buffer(&self.buffers.send)
     }
-    pub(crate) fn emit_into(
-        &mut self,
-        out: &mut pool::Cursor<pool::Layout, pool::Borrowed<'d>>,
-    ) -> Result<(), error::Error> {
-        state::drain(&mut self.native, out)
-    }
     pub(crate) fn drain(
         &mut self,
         out: &mut pool::Cursor<pool::Layout, pool::Borrowed<'d>>,
     ) -> Option<error::Error> {
-        match self.emit_into(out) {
+        match state::drain(&mut self.native, out) {
             Ok(()) => None,
             Err(cause) => {
                 self.failed = true;

@@ -17,7 +17,7 @@ enum Stage<'p, 'd, R: Return> {
 
 /// Cancellation drops only the reply ticket. The Reader keeps native inputs.
 #[must_use = "a fiber does nothing unless it is driven"]
-pub struct Operation<'p, 'd, R: Return = read::Release<'d>> {
+pub struct Operation<'p, 'd, R: Return = read::Release<read::Buffer<'d>>> {
     port: &'p read::Port<'d, R>,
     stage: machine::Machine<Stage<'p, 'd, R>>,
 }
@@ -34,7 +34,7 @@ impl<'p, 'd, R: Return> Operation<'p, 'd, R> {
 // No field has a pinned projection; the request moves into the Reader's stable slot.
 impl<R: Return> Unpin for Operation<'_, '_, R> {}
 
-impl<'d, R: Return<Item = read::Buffer<'d>>> abi::Fiber<'d> for Operation<'_, 'd, R> {
+impl<'d, R: Return<Item: read::raw::Output>> abi::Fiber<'d> for Operation<'_, 'd, R> {
     type Output = Result<read::Completion<R>, Rejected<read::Request<R>, read::Admission>>;
 
     fn poll(call: context::PollCall<'_, '_, 'd, Self>) -> task::Poll<Self::Output> {

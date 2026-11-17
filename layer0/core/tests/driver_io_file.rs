@@ -241,7 +241,7 @@ fn close_before_fd_reuse() {
                 assert!(!left.is_zero(), "receive deadline");
                 assert!(matches!(
                     driver::Context::dispatch(&mut driver, turn.reactor(), |event, _source| {
-                        assert!(done.replace(event).is_none());
+                        assert!(done.replace(event.into_inner()).is_none());
                         ControlFlow::Continue(())
                     }),
                     Dispatch::Ready { retained: None, .. }
@@ -321,7 +321,7 @@ fn close_retires_generation() {
             let mut done = None;
             assert!(matches!(
                 driver::Context::dispatch(&mut driver, turn.reactor(), |event, _source| {
-                    assert!(done.replace(event).is_none());
+                    assert!(done.replace(event.into_inner()).is_none());
                     ControlFlow::Continue(())
                 }),
                 Dispatch::Ready { retained: None, .. }

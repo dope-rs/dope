@@ -60,7 +60,7 @@ where
     A::Failure: fail::Fail<'d, ID, A, S, E::Transport>,
     A::Continuation: liveness::Inspection<'d, ID, A>,
     Self: phase::Phase<'d, ID, A, S, E, A::Connect>
-        + close::ClosePhase<'d, ID, A, S, E>
+        + close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>
         + opens::Phase<'d, ID, A, S, E>,
 {
     fn socket(

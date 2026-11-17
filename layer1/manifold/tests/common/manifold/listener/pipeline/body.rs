@@ -20,8 +20,6 @@ use dope_test::harness::observe::VecCellExt as _;
 use dope_test::harness::signals::Gate;
 use o3::buffer::{bytes::TryRetain, resident, resident::bound::Unbounded};
 
-use crate::common::manifold::listener::pipeline::prefix::Error;
-
 pub const FIRST: &[u8; 13] = b"first-direct;";
 pub const SECOND: &[u8; 14] = b"second-direct;";
 pub const THIRD: &[u8; 13] = b"third-direct;";
@@ -41,7 +39,7 @@ pub enum Event {
     Chunk(usize),
     Submit(State),
     Failed(Option<u8>, State, usize, usize),
-    Write(Option<usize>, Result<write::Outcome<()>, Error>),
+    Write(Option<usize>, Result<(), write::error::Admission>),
     Close(State),
 }
 
@@ -69,15 +67,14 @@ impl Body {
         };
         if *conn.state() == State::First {
             let before = conn.work().remaining();
-            let result = conn
-                .write()
-                .try_commit::<(), _, _>(driver, |_, mut prefix| {
-                    prefix.write_byte(b'X').unwrap();
-                    Err(7_u8)
-                });
-            let cause = match result {
-                Err(write::error::Error::Build(cause)) => Some(cause),
-                _ => None,
+            let mut output_slot = std::mem::MaybeUninit::uninit();
+            let cause = match conn.write().try_open(driver, &mut output_slot) {
+                Ok(mut output) => {
+                    output.get_mut().parts().1.write_byte(b'X').unwrap();
+                    drop(output);
+                    Some(7_u8)
+                }
+                Err(_) => None,
             };
             self.events.push(Event::Failed(
                 cause,
@@ -91,12 +88,20 @@ impl Body {
             Err(_) => unreachable!("unbounded"),
         };
         let mut capacity = None;
-        let result = conn.write().try_commit(driver, |state, mut prefix| {
-            capacity = Some(prefix.writer().remaining());
-            *state = next;
-            Ok::<_, convert::Infallible>(prefix.commit(Some(body), ()))
-        });
-        let event = Event::Write(capacity, result.map_err(Error::from));
+        let mut output_slot = std::mem::MaybeUninit::uninit();
+        let result = match conn.write().try_open(driver, &mut output_slot) {
+            Ok(mut output) => {
+                let (state, prefix) = output.get_mut().parts();
+                capacity = Some(prefix.remaining());
+                *state = next;
+                write::Output::try_publish(output, body, write::End::Open)
+                    .map_err(write::error::Mismatch::into_cause)
+                    .expect("body publication");
+                Ok(())
+            }
+            Err(cause) => Err(cause),
+        };
+        let event = Event::Write(capacity, result);
         self.events.push(event);
     }
 }

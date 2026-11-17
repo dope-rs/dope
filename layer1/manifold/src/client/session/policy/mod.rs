@@ -66,6 +66,15 @@ pub trait Output<'life, 'd: 'life, P: ?Sized + 'life, ID: Identity, const MAX: u
         output::Sent::<Infallible>::None
     }
 
+    fn settled(
+        _: &mut State<'life, 'd, P, Self, ID, MAX>,
+        _: conn::Id<'d, ID>,
+        payload: Self::Send,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        drop(payload);
+    }
+
     fn cancel() -> impl for<'a, 't> Call<(
         &'a State<'life, 'd, P, Self, ID, MAX>,
         Self::Send,

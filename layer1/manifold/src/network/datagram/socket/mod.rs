@@ -10,9 +10,9 @@ use dope_core::{
         schedule,
         schedule::{clock, maint, ready},
     },
-    io,
     io::{datagram, datagram::source, event},
 };
+use dope_runtime::executor;
 use o3::{
     base::cell::region,
     buffer::{self, pool},
@@ -150,44 +150,50 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         self.get_ref().receive.wake_target()
     }
 
-    pub(in crate::network::datagram) fn release(
+    pub(in crate::network::datagram) fn release<'event>(
         mut self: pin::Pin<&mut Self>,
-        event: io::Event<'d>,
-    ) -> ops::ControlFlow<io::Event<'d>> {
-        let done = match event.into_kind() {
-            event::Kind::Send(done) => done,
-            event => return ops::ControlFlow::Break(event.into()),
+        event: executor::raw::Dispatch<'event, 'd>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
+        let (event, vacant) = match event.select() {
+            event::Selected::Send(member) => {
+                let (done, vacant) = member.take();
+                match self.as_mut().project().sender.complete(done) {
+                    Ok(_) => return ops::ControlFlow::Continue(()),
+                    Err(done) => (event::Kind::Send(done).into(), vacant),
+                }
+            }
+            other => return ops::ControlFlow::Break(other.into_dispatch()),
         };
-        match self.as_mut().project().sender.complete(done) {
-            Ok(_) => ops::ControlFlow::Continue(()),
-            Err(done) => ops::ControlFlow::Break(event::Kind::Send(done).into()),
-        }
+        ops::ControlFlow::Break(executor::raw::Dispatch::new(vacant.insert(event)))
     }
 
-    pub(in crate::network::datagram) fn settle<H>(
+    pub(in crate::network::datagram) fn settle<'event, H>(
         mut self: pin::Pin<&mut Self>,
         token: &mut region::Token<region::Identity<'d, 1>>,
-        event: io::Event<'d>,
+        event: executor::raw::Dispatch<'event, 'd>,
         mut sink: pin::Pin<&mut H>,
         now: clock::Moment<'d>,
-    ) -> ops::ControlFlow<io::Event<'d>>
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>>
     where
         H: super::Settlement<'d, ID>,
         H::Hooks: hook::Bundle<Buffer = B>,
     {
-        let done = match event.into_kind() {
-            event::Kind::Send(done) => done,
-            event => return ops::ControlFlow::Break(event.into()),
+        let (event, vacant) = match event.select() {
+            event::Selected::Send(member) => {
+                let (done, vacant) = member.take();
+                match self
+                    .as_mut()
+                    .project()
+                    .sender
+                    .settle(token, done, now, sink.as_mut())
+                {
+                    Ok(()) => return ops::ControlFlow::Continue(()),
+                    Err(done) => (event::Kind::Send(done).into(), vacant),
+                }
+            }
+            other => return ops::ControlFlow::Break(other.into_dispatch()),
         };
-        match self
-            .as_mut()
-            .project()
-            .sender
-            .settle(token, done, now, sink.as_mut())
-        {
-            Ok(()) => ops::ControlFlow::Continue(()),
-            Err(done) => ops::ControlFlow::Break(event::Kind::Send(done).into()),
-        }
+        ops::ControlFlow::Break(executor::raw::Dispatch::new(vacant.insert(event)))
     }
 
     pub(in crate::network::datagram) fn progress(

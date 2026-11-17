@@ -373,6 +373,10 @@ where
         }
     }
 
+    fn settled(&mut self, conn: conn::Id<'d, ID>, payload: Self::Send, token: &mut Token<'d, 1>) {
+        L::settled(&mut self.endpoint, conn, payload, token);
+    }
+
     fn cancel() -> impl for<'a, 't> Call<(&'a mut Self, Self::Send, &'t mut Token<'d, 1>)> {
         |(owner, payload, token): (&mut Self, Self::Send, &mut Token<'d, 1>)| {
             L::cancel().call((&owner.endpoint, payload, token));

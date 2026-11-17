@@ -1,265 +1,266 @@
-use core::{mem, pin};
+use std::{num::NonZero, pin, task::Poll};
 
-use o3::{alloc, alloc::tail, depot::capacity};
-use slot::state::State;
+use o3::{
+    alloc,
+    depot::{arena::slab, capacity},
+    mem::quota,
+};
 
 use crate::{
-    abi,
+    abi, context,
     context::wake,
-    core::driver::{self, schedule::app},
+    core::driver::{
+        self,
+        schedule::{app, ready::task, ready::task::owner},
+    },
     task::storage::{
-        self, Id, phase,
-        scope::{Domain, Scope, Scoped},
-        set,
+        fixed::schedule::{
+            queue,
+            ready::{Global, owned},
+        },
+        scope::{self, Scope},
+        slots::{self, Action, Phase},
     },
 };
 
-mod entries;
-pub mod group;
 pub mod insert;
-pub(in crate::task::storage) mod pools;
-mod ready;
-mod reserves;
-pub(in crate::task::storage) mod slot;
-pub(in crate::task::storage) mod views;
+mod raw;
 
-type Allocation<'d, F, M, D, G> =
-    tail::Block<pools::Header<'d, F, M, D, G>, slot::Slot<'d, F, M, D, G>, capacity::Count>;
+pub type Id<'s, 'd, D> = scope::Scoped<'s, 'd, D, Global>;
 
-type Borrowed<'a, 'd, F, M, D, G> =
-    tail::View<'a, pools::Header<'d, F, M, D, G>, slot::Slot<'d, F, M, D, G>, capacity::Count>;
+type Value<'d, F, T> = slots::Task<Live<'d, F, T>, <F as abi::Fiber<'d>>::Output>;
+type Pool<'d, F, T, D> = slab::Pinned<Value<'d, F, T>, D, 1, true, 1, slab::storage::Lazy>;
 
-/// A bounded count of fibers in one task-set operation.
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[repr(transparent)]
-pub struct Length(u32);
-
-impl Length {
-    pub const ZERO: Self = Self(0);
-
-    pub(in crate::task::storage::set) const fn new(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    #[must_use]
-    pub const fn get(self) -> usize {
-        self.0 as usize
-    }
-
-    pub(in crate::task::storage::set) const fn raw(self) -> u32 {
-        self.0
-    }
+#[derive(Debug)]
+pub enum Error {
+    Ready(alloc::Error),
+    Tasks(alloc::Error),
 }
 
-const _: () = assert!(mem::size_of::<Length>() == mem::size_of::<u32>());
-
-/// Whether a task set has a completion ready to poll.
-#[must_use = "task-set work must be consumed"]
-#[derive(Clone, Copy, Eq, PartialEq)]
-#[repr(u8)]
-pub enum Work {
-    Idle,
-    Pending,
-}
-
-const _: () = assert!(mem::size_of::<Work>() == mem::size_of::<u8>());
-
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WakeError {
-    Missing,
     Inactive,
 }
 
-/// A fixed-capacity set of pinned fibers and their retained completion state.
-pub struct Set<'d, F, M, D, G = ()>
-where
-    F: abi::Fiber<'d>,
-{
-    pool: pools::State<'d, F, M, D, G>,
+#[pin_project::pin_project]
+struct Live<'d, F, T> {
+    root: task::raw::Root<'d>,
+    #[pin]
+    fiber: F,
+    target: T,
 }
 
-impl<'d, F, M, D, G> Set<'d, F, M, D, G>
-where
-    F: abi::Fiber<'d>,
-{
-    pub fn try_new(capacity: capacity::Count) -> Result<Self, alloc::Error> {
-        Ok(Self {
-            pool: pools::State::try_new(capacity)?,
-        })
-    }
+/// Pinned fibers whose sole identities retain their completed outputs.
+#[pin_project::pin_project(!Unpin)]
+pub struct Tasks<'d, F: abi::Fiber<'d>, T, D> {
+    #[pin]
+    slots: Pool<'d, F, T, D>,
+    #[pin]
+    ready: owned::Queue<'d, Source>,
+}
 
-    pub(crate) fn try_insert(
+impl<'d, F: abi::Fiber<'d>, T, D> Tasks<'d, F, T, D> {
+    pub fn with<R>(
+        capacity: NonZero<u32>,
+        owners: owner::Capacity,
+        run: impl for<'s> FnOnce(Scope<'s, pin::Pin<&'s mut Self>>) -> R,
+    ) -> Result<R, Error> {
+        let count = capacity::Count::new(capacity.get());
+        let ready = owned::Queue::try_new(count, owners).map_err(Error::Ready)?;
+        let slots = Pool::try_new(count).map_err(Error::Tasks)?;
+        let mut tasks = pin::pin!(Self { slots, ready });
+        Ok(Scope::with(tasks.as_mut(), run))
+    }
+}
+
+impl<'s, 'a, 'd, F: abi::Fiber<'d>, T, D> Scope<'s, pin::Pin<&'a mut Tasks<'d, F, T, D>>>
+{
+    pub fn try_insert(
         &mut self,
         fiber: F,
-        data: M,
+        target: T,
         parent: wake::RootWaker<'d>,
-    ) -> Result<Id<'d, D>, insert::Error> {
-        let mut entries = self.pool.entries();
-        let entry = entries.vacant().ok_or(insert::Error::Full)?;
-        entry.try_insert(fiber, data, parent)
+        owner: impl owner::Identity,
+    ) -> Result<Id<'s, 'd, D>, insert::Error> {
+        let this = self.source.as_mut().project();
+        let vacant = this.slots.vacant().ok_or(insert::Error::Full)?;
+        let index = Global::from_slot(vacant.index());
+        let prepared = this
+            .ready
+            .into_ref()
+            .rebind(identify(owner))
+            .map_err(owner_error)
+            .map_err(insert::Error::Owner)?;
+        let wake: wake::Waker<'d> = parent.into();
+        let admit = wake.0.try_admit().map_err(insert::Error::Admission)?;
+        let (edge, prepared) = prepared
+            .try_prepare(index, wake.0)
+            .map_err(insert::Error::Topology)?;
+        // SAFETY: admission and edge retain the same original parent.
+        let root = unsafe { task::raw::Root::bind(admit, edge) };
+        let _ = vacant.occupy(slots::Task::new(Live { root, fiber, target }));
+        prepared.attach().enqueue();
+        parent.wake();
+        Ok(scope::Id::new(index).bind(self.proof))
     }
 
-    pub fn poll_ready(
+    pub fn access<R>(
         &mut self,
+        id: &Id<'s, 'd, D>,
+        access: impl FnOnce(pin::Pin<&mut F>) -> R,
+    ) -> Option<R> {
+        // SAFETY: this scoped non-Copy identity retains its occupied slot.
+        let mut entry = unsafe { raw::entry(self.source.as_mut().project().slots, *id.key()) };
+        match entry
+            .value()
+            .visit((), |live, ()| Action::Keep(access(live.project().fiber)))
+        {
+            Phase::Live(result) => Some(result),
+            Phase::Done(()) => None,
+            Phase::Vacant(()) => unreachable!("vacant"),
+        }
+    }
+
+    pub fn try_wake(&mut self, id: &Id<'s, 'd, D>) -> Result<(), WakeError> {
+        // SAFETY: this scoped non-Copy identity retains its occupied slot.
+        let mut entry = unsafe { raw::entry(self.source.as_mut().project().slots, *id.key()) };
+        match entry.value().visit((), |live, ()| {
+            wake::Waker::from_parent(live.root.poll().1).wake();
+            Action::Keep(())
+        }) {
+            Phase::Live(()) => Ok(()),
+            Phase::Done(()) => Err(WakeError::Inactive),
+            Phase::Vacant(()) => unreachable!("vacant"),
+        }
+    }
+
+    pub fn poll_with(
+        &mut self,
+        owner: impl owner::Identity,
         work: app::Work<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Length {
-        if ready::Queue::is_empty(&self.pool.view()) {
-            return Length::ZERO;
+        mut observe: impl FnMut(&T, pin::Pin<&mut F>, Poll<()>),
+    ) {
+        let mut this = self.source.as_mut().project();
+        let ready = this.ready.into_ref();
+        for _ in (0..work.remaining().saturating_add(1)).map_while(|_| ready.sync()) {}
+        let scope = owner::Scope::Exact(identify(owner));
+        while let quota::Admission::Item((dequeued, permit)) = work.claim(|| ready.dequeue(scope))
+        {
+            // SAFETY: this paired queue's selected node retains its live occupied slot.
+            let mut entry = unsafe { raw::entry(this.slots.as_mut(), dequeued.index()) };
+            // SAFETY: only live tasks remain attached; completion detaches below.
+            let complete = unsafe {
+                entry.value().visit_live((), |live, ()| {
+                    let fields = live.project();
+                    let (parent, waker) = fields.root.poll();
+                    let result = context::Context::with_waker(
+                        wake::Waker::from_parent(waker),
+                        wake::RootWaker::from(parent),
+                        work,
+                        driver.reborrow(),
+                        |mut context| {
+                            let mut fiber = fields.fiber;
+                            let result = context::raw::Live::new(fiber.as_mut())
+                                .with(context.as_mut(), permit);
+                            observe(fields.target, fiber, result.as_ref().map(|_| ()));
+                            result
+                        },
+                    );
+                    match result {
+                        Poll::Pending => Action::Keep(false),
+                        Poll::Ready(output) => Action::Complete(output, true),
+                    }
+                })
+            };
+            if complete {
+                dequeued.detach();
+            } else {
+                dequeued.idle();
+            }
         }
-        ready::Queue::drain(self.pool.entries(), work.remaining().saturating_add(1))
-            .drive(work, driver)
+        // The mutable slot projection ends before selecting the next parent.
+        self.wake_next();
     }
 
-    pub fn take_done(&mut self) -> Option<(M, F::Output)> {
-        let entries = self.pool.entries();
-        let (view, mut token) = entries.into_parts();
-        let done = ready::Queue::pop(view.reborrow(), &mut token)?;
-        Some(done.take())
+    pub fn has_work_for(&self, owner: impl owner::Identity) -> bool {
+        !matches!(
+            self.source
+                .as_ref()
+                .project_ref()
+                .ready
+                .readiness(owner::Scope::Exact(identify(owner))),
+            queue::Wake::Idle
+        )
     }
 
     pub fn wake_next(&mut self) {
-        let mut ready = ready::Queue::drain(self.pool.entries(), 1);
-        let Some(queued) = ready.peek() else {
-            return;
-        };
-        queued.wake();
-    }
-
-    pub fn work(&self) -> Work {
-        if ready::Queue::is_empty(&self.pool.view()) {
-            Work::Idle
-        } else {
-            Work::Pending
+        let this = self.source.as_mut().project();
+        if let Some((index, _)) = this.ready.into_ref().front(owner::Scope::Any) {
+            // SAFETY: queue membership or ingress retains this same live slot.
+            let mut entry = unsafe { raw::entry(this.slots, index) };
+            // SAFETY: completed tasks have already detached their queue membership.
+            unsafe {
+                entry.value().visit_live((), |live, ()| {
+                    live.root.parent().wake();
+                    Action::Keep(())
+                })
+            };
         }
     }
 
-    pub fn len(&self) -> Length {
-        self.pool.len()
-    }
-
-    pub(crate) fn remove(&mut self, id: Id<'d, D>) -> Result<(), Id<'d, D>> {
-        let state = {
-            let mut entries = self.pool.entries();
-            let owner = storage::Owner::of(entries.view().header());
-            let Some(key) = id.key_for(owner) else {
-                return Err(id);
-            };
-            let Some(state) = entries.remove(key) else {
-                return Err(id);
-            };
-            state
+    pub fn take(&mut self, id: Id<'s, 'd, D>) -> Result<F::Output, Id<'s, 'd, D>> {
+        // SAFETY: consuming this scoped identity retains the sole physical release authority.
+        let mut entry = unsafe { raw::entry(self.source.as_mut().project().slots, *id.key()) };
+        let Some(output) = entry.value().take() else {
+            return Err(id);
         };
-        if state == State::Queued {
-            self.wake_next();
-        }
-        Ok(())
+        entry.discard();
+        Ok(output)
+    }
+
+    pub fn discard(&mut self, id: Id<'s, 'd, D>) {
+        let this = self.source.as_mut().project();
+        let index = *id.key();
+        // SAFETY: consuming this scoped identity retains the sole physical release authority.
+        let mut entry = unsafe { raw::entry(this.slots, index) };
+        entry.value().cancel(|| this.ready.into_ref().detach(index));
+        entry.discard();
+        self.wake_next();
     }
 }
 
-/// Operations on dynamic task storage retained by an identity scope.
-pub trait Access<'d, F: abi::Fiber<'d>, M, D> {
-    fn try_insert(
-        &mut self,
-        fiber: F,
-        data: M,
-        parent: wake::RootWaker<'d>,
-    ) -> Result<Id<'d, D>, insert::Error>;
-    fn access<R>(
-        &mut self,
-        id: &Id<'d, D>,
-        access: impl FnOnce(pin::Pin<&mut F>) -> R,
-    ) -> Option<R>;
-    fn read<R>(&self, id: &Id<'d, D>, read: impl for<'m> FnOnce(&'m M) -> R) -> Option<R>;
-    fn inspect<R>(
-        &self,
-        id: &Id<'d, D>,
-        inspect: impl for<'m> FnOnce(&'m M, phase::State) -> R,
-    ) -> Option<R>;
-    fn try_wake(&self, id: &Id<'d, D>) -> Result<(), set::WakeError>;
-    fn poll_ready(
-        &mut self,
-        work: app::Work<'_, 'd>,
-        driver: &mut driver::Context<'_, 'd>,
-    ) -> set::Length;
-    fn take_done(&mut self) -> Option<(M, F::Output)>;
-    fn wake_next(&mut self);
-    fn remove(&mut self, id: Id<'d, D>) -> Result<(), Id<'d, D>>;
+#[derive(Clone, Copy)]
+struct Source;
+
+#[derive(Clone, Copy)]
+struct Identity(owner::Lane, owner::Generation);
+
+impl owner::Identity for Identity {
+    fn parts(self) -> (owner::Lane, owner::Generation) {
+        (self.0, self.1)
+    }
 }
 
-impl<'s, 'd, F: abi::Fiber<'d>, M, D, G> Access<'d, F, M, Domain<'s, D>>
-    for Scope<'s, pin::Pin<&mut set::Set<'d, F, M, D, G>>>
-{
-    fn try_insert(
-        &mut self,
-        fiber: F,
-        data: M,
-        parent: wake::RootWaker<'d>,
-    ) -> Result<Scoped<'s, 'd, D>, insert::Error> {
-        self.source
-            .as_mut()
-            .get_mut()
-            .try_insert(fiber, data, parent)
-            .map(|id| id.bind(self.proof))
-    }
+impl owner::Source for Source {
+    type Identity = Identity;
+}
 
-    fn access<R>(
-        &mut self,
-        id: &Scoped<'s, 'd, D>,
-        access: impl FnOnce(pin::Pin<&mut F>) -> R,
-    ) -> Option<R> {
-        let mut entries = self.source.as_mut().get_mut().pool.entries();
-        let owner = storage::Owner::of(entries.view().header());
-        let key = id.original().key_for(owner)?;
-        entries.resident(key, access)
-    }
+fn identify(key: impl owner::Identity) -> owner::Owner<Source> {
+    let (lane, generation) = key.parts();
+    owner::Owner::from(Identity(lane, generation))
+}
 
-    fn read<R>(&self, id: &Scoped<'s, 'd, D>, read: impl for<'m> FnOnce(&'m M) -> R) -> Option<R> {
-        let view = self.source.pool.view();
-        let owner = storage::Owner::of(view.header());
-        let key = id.original().key_for(owner)?;
-        view.read(key, read)
-    }
-
-    fn inspect<R>(
-        &self,
-        id: &Scoped<'s, 'd, D>,
-        inspect: impl for<'m> FnOnce(&'m M, phase::State) -> R,
-    ) -> Option<R> {
-        let view = self.source.pool.view();
-        let owner = storage::Owner::of(view.header());
-        let key = id.original().key_for(owner)?;
-        view.inspect(key, inspect)
-    }
-
-    fn try_wake(&self, id: &Scoped<'s, 'd, D>) -> Result<(), set::WakeError> {
-        let view = self.source.pool.view();
-        let owner = storage::Owner::of(view.header());
-        let key = id.original().key_for(owner).ok_or(WakeError::Missing)?;
-        view.try_wake(key)
-    }
-
-    fn poll_ready(
-        &mut self,
-        work: app::Work<'_, 'd>,
-        driver: &mut driver::Context<'_, 'd>,
-    ) -> set::Length {
-        self.source.as_mut().get_mut().poll_ready(work, driver)
-    }
-
-    fn take_done(&mut self) -> Option<(M, F::Output)> {
-        self.source.as_mut().get_mut().take_done()
-    }
-
-    fn wake_next(&mut self) {
-        self.source.as_mut().get_mut().wake_next();
-    }
-
-    fn remove(&mut self, id: Scoped<'s, 'd, D>) -> Result<(), Scoped<'s, 'd, D>> {
-        self.source
-            .as_mut()
-            .get_mut()
-            .remove(id.original())
-            .map_err(|id| id.bind(self.proof))
+fn owner_error(error: queue::OwnerError<Source>) -> owner::Error {
+    match error {
+        queue::OwnerError::Foreign { owner } => owner::Error::Foreign {
+            lane: owner.lane(),
+            generation: owner.generation(),
+        },
+        queue::OwnerError::Stale { owner, current } => owner::Error::Stale {
+            lane: owner.lane(),
+            generation: owner.generation(),
+            current,
+        },
     }
 }

@@ -2,14 +2,10 @@ use dope_core::driver::route::Identity;
 
 use crate::{
     link::{
-        egress::{data, reserve::demand},
         event,
-        pool::{
-            self,
-            recv::{
-                arrival, input,
-                reserve::plan::{Plan, Queued},
-            },
+        pool::recv::{
+            input,
+            reserve::plan::{Plan, Queued},
         },
     },
     wire::{
@@ -24,20 +20,14 @@ use crate::{
 
 /// Static leaf for each realizable reservation and ingress pair.
 pub trait Choice<W: wire::Spec, P: Flag> {
-    fn reserve<'a, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, A>(
-        pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-        done: A,
-        capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
+    fn reserve<'a, 'w, 'd, ID: Identity + 'w, S, M>(
+        plan: Plan<'a, 'w, 'd, ID, W, S, M>,
     ) -> super::Reservation<'a, 'w, 'd, ID, W, M>
     where
         'd: 'w,
-        T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = P>,
-        input::Receipt<W, M>: 'a,
-        B: data::raw::Payload<'d>,
-        D: demand::Mode,
-        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>;
+        input::Receipt<W, M>: 'a;
 }
 
 impl<W, R> Choice<W, mode::Disabled> for R
@@ -46,25 +36,15 @@ where
     R: Immediate<W>,
     W::Receive: receive::Policy<W, Reserve = R>,
 {
-    fn reserve<'a, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, A>(
-        pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-        done: A,
-        capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
+    fn reserve<'a, 'w, 'd, ID: Identity + 'w, S, M>(
+        plan: Plan<'a, 'w, 'd, ID, W, S, M>,
     ) -> super::Reservation<'a, 'w, 'd, ID, W, M>
     where
         'd: 'w,
-        T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = mode::Disabled>,
         input::Receipt<W, M>: 'a,
-        B: data::raw::Payload<'d>,
-        D: demand::Mode,
-        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        let plan = match Plan::observe(pool, done, capture) {
-            Ok(plan) => plan,
-            Err(err) => return err,
-        };
         plan.immediate(mode::Direct::NEW)
     }
 }
@@ -75,25 +55,15 @@ where
     R: Immediate<W>,
     W::Receive: receive::Policy<W, Reserve = R>,
 {
-    fn reserve<'a, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, A>(
-        pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-        done: A,
-        capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
+    fn reserve<'a, 'w, 'd, ID: Identity + 'w, S, M>(
+        plan: Plan<'a, 'w, 'd, ID, W, S, M>,
     ) -> super::Reservation<'a, 'w, 'd, ID, W, M>
     where
         'd: 'w,
-        T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = mode::Parking>,
         input::Receipt<W, M>: 'a,
-        B: data::raw::Payload<'d>,
-        D: demand::Mode,
-        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        let plan = match Plan::observe(pool, done, capture) {
-            Ok(plan) => plan,
-            Err(err) => return err,
-        };
         match plan.queue() {
             Queued::Parked(parked) => event::Reservation::Parked(parked),
             Queued::Ready(plan) => plan.immediate(mode::Direct::NEW),
@@ -107,25 +77,15 @@ where
     R: Immediate<W>,
     W::Receive: receive::Policy<W, Reserve = R>,
 {
-    fn reserve<'a, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, A>(
-        pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-        done: A,
-        capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
+    fn reserve<'a, 'w, 'd, ID: Identity + 'w, S, M>(
+        plan: Plan<'a, 'w, 'd, ID, W, S, M>,
     ) -> super::Reservation<'a, 'w, 'd, ID, W, M>
     where
         'd: 'w,
-        T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = mode::Enabled>,
         input::Receipt<W, M>: 'a,
-        B: data::raw::Payload<'d>,
-        D: demand::Mode,
-        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        let plan = match Plan::observe(pool, done, capture) {
-            Ok(plan) => plan,
-            Err(err) => return err,
-        };
         match plan.queue() {
             Queued::Parked(parked) => event::Reservation::Parked(parked),
             Queued::Ready(plan) => {
@@ -142,25 +102,15 @@ where
     R: Try<W>,
     W::Receive: receive::Policy<W, Reserve = Waiting<R>>,
 {
-    fn reserve<'a, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, A>(
-        pool: &'a mut pool::Connections<'_, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-        done: A,
-        capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
+    fn reserve<'a, 'w, 'd, ID: Identity + 'w, S, M>(
+        plan: Plan<'a, 'w, 'd, ID, W, S, M>,
     ) -> super::Reservation<'a, 'w, 'd, ID, W, M>
     where
         'd: 'w,
-        T: crate::Transport,
         W: 'w + 'd,
         M: input::Mode<W, Ingress = mode::Waiting<R>>,
         input::Receipt<W, M>: 'a,
-        B: data::raw::Payload<'d>,
-        D: demand::Mode,
-        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
     {
-        let plan = match Plan::observe(pool, done, capture) {
-            Ok(plan) => plan,
-            Err(err) => return err,
-        };
         match plan.queue() {
             Queued::Parked(parked) => event::Reservation::Parked(parked),
             Queued::Ready(plan) => plan.try_reserve(),
