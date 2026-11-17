@@ -163,7 +163,11 @@ impl<'s, 'a, 'd, F: abi::Fiber<'d>, T, D> Scope<'s, pin::Pin<&'a mut Tasks<'d, F
                             let mut fiber = fields.fiber;
                             let result = context::raw::Live::new(fiber.as_mut())
                                 .with(context.as_mut(), permit);
-                            observe(fields.target, fiber, result.as_ref().map(|_| ()));
+                            let status = match &result {
+                                Poll::Pending => Poll::Pending,
+                                Poll::Ready(_) => Poll::Ready(()),
+                            };
+                            observe(fields.target, fiber, status);
                             result
                         },
                     );

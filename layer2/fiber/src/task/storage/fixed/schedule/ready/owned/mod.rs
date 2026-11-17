@@ -145,10 +145,6 @@ impl<Source> Dequeued<'_, '_, Source> {
 }
 
 impl<'a, 'd, Source> Entry<'a, 'd, Source> {
-    pub(in crate::task::storage) fn index(&self) -> Global {
-        self.index
-    }
-
     fn dequeue(self) -> Dequeued<'a, 'd, Source> {
         let store = &self.queue.store;
         let state = store.owner(self.lane);
