@@ -1,10 +1,10 @@
-use dope_fiber::reply::{Arena, LaneIndex, layout, recv, recv::attach::Attach as _, usage};
+use dope_fiber::reply::{Arena, LaneIndex, Work, layout, recv, recv::attach::Attach as _, usage};
 use dope_test::alloc::Tracker;
 use o3::base::cell::region;
 
 pub mod common;
 use common::storage::replies::{
-    TakeBatch,
+    builds::{SCALAR, ScalarBuild},
     support::{Counted, Drops, capacity},
 };
 
@@ -12,28 +12,44 @@ use common::storage::replies::{
 static ALLOCATOR: Tracker = Tracker::new();
 
 #[test]
-fn allocate_batch_storage() {
-    let layout = layout::Layout::single(
-        layout::Entries::new(4),
-        layout::Limit::new(
-            layout::Data::new(4),
-            usage::Bytes::new(4),
-            usage::Values::new(4),
-        ),
-    )
-    .expect("reply layout");
-    region::Token::scope(|token| {
-        let proof = token.proof();
-        let (plain, plainmem) = Tracker::activity(|| Arena::<()>::try_with(layout, proof, |_| ()));
-        plain.expect("plain arena");
-        let (batch, batchmem) =
-            Tracker::activity(|| Arena::<()>::try_batches(layout, proof, |_, _| ()));
-        batch.expect("batch arena");
-        assert_eq!(batchmem.allocations - plainmem.allocations, 1);
-        assert_eq!(
-            batchmem.allocated_bytes - plainmem.allocated_bytes,
-            4 * 7 * size_of::<usize>()
-        );
+fn first_transfers_root_and_retained_credit() {
+    let drops = Drops::new();
+    let layout = layout::Layout::bounded(capacity(1, 1, 1, SCALAR.len(), 1)).expect("reply layout");
+    region::Token::scope(|mut token| {
+        Arena::<_, Counted<'_>>::try_with(layout, token.proof(), |arena| {
+            let lane = arena.try_lane(LaneIndex::ZERO).expect("reply lane");
+            let mut response = recv::Response::<_, recv::First, Counted<'_>>::new();
+            response
+                .try_attach(&mut token, lane)
+                .expect("reply attachment");
+            assert!(
+                lane.select(&mut token)
+                    .try_build(ScalarBuild {
+                        bytes: &SCALAR,
+                        drops: &drops,
+                    })
+                    .is_ok()
+            );
+            lane.complete(&mut token);
+            let (row, activity) = Tracker::activity(|| response.try_first(&mut token));
+            let row = row
+                .expect("terminal reply")
+                .map_err(|error| error.failure)
+                .expect("successful reply")
+                .expect("first row");
+            drop(response);
+            assert_eq!(activity.allocations, 0);
+            assert_eq!(row.get().bytes, SCALAR);
+            assert!(matches!(arena.work(), Work::Idle));
+            assert_eq!(arena.inflight().get(), 1);
+            let amount = usage::Usage::new(usage::Bytes::new(SCALAR.len()), usage::Values::new(1));
+            assert!(lane.try_reserve(amount).is_err());
+            drop(row);
+            assert_eq!(drops.count(), 1);
+            assert!(matches!(arena.work(), Work::Pending));
+            drop(lane.try_reserve(amount).expect("returned retained credit"));
+        })
+        .expect("reply arena");
     });
 }
 
@@ -44,9 +60,9 @@ fn map_retires_consumed_rows() {
         let output = Drops::new();
         region::Token::scope(|mut token| {
             let layout = layout::Layout::bounded(capacity(1, 1, 4, 4, 4)).expect("reply layout");
-            Arena::try_batches(layout, token.proof(), |arena, batches| {
+            Arena::try_with(layout, token.proof(), |arena| {
                 let lane = arena.try_lane(LaneIndex::ZERO).expect("reply lane");
-                let mut reply = recv::Response::<_, TakeBatch>::with(batches);
+                let mut reply = recv::Response::<_, recv::Collected>::new();
                 reply
                     .try_attach(&mut token, lane)
                     .expect("reply attachment");
@@ -59,8 +75,9 @@ fn map_retires_consumed_rows() {
                 }
                 lane.complete(&mut token);
                 let batch = reply
-                    .try_take(&mut token)
+                    .try_all(&mut token)
                     .expect("completed batch")
+                    .map_err(|error| error.failure)
                     .expect("batch");
                 let mut visited = 0;
                 let result = Tracker::fail_after(usize::from(stop != 0), || {

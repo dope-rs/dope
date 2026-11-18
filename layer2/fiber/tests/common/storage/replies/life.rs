@@ -12,12 +12,17 @@ use crate::common::storage::replies::support::{Counted, Drops};
 
 pub struct Deferred;
 
+impl<'s, 'arena, 'credits, 'region, 'a> recv::Spec<'s, 'arena, 'credits, 'region, Counted<'a>>
+    for Deferred
+{
+    type Context = &'a Cell<(bool, usize)>;
+    type Mode = ();
+}
+
 impl<'s, 'arena, 'credits, 'region, 'a> recv::Extract<'s, 'arena, 'credits, 'region, Counted<'a>>
     for Deferred
 {
     type Output = Counted<'a>;
-
-    type Context = &'a Cell<(bool, usize)>;
 
     fn extract(
         state: &Self::Context,

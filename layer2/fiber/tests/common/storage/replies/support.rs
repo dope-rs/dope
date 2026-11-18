@@ -63,11 +63,17 @@ pub struct OwnerTag<'a, T>(pub &'a T);
 pub struct Finish;
 
 impl<'s, 'arena, 'credits, 'region, D: usage::Footprint, E>
+    recv::Spec<'s, 'arena, 'credits, 'region, D, E> for Finish
+{
+    type Context = ();
+    type Mode = ();
+    const ACCEPTANCE: recv::Acceptance = recv::Acceptance::Collected;
+}
+
+impl<'s, 'arena, 'credits, 'region, D: usage::Footprint, E>
     recv::Extract<'s, 'arena, 'credits, 'region, D, E> for Finish
 {
     type Output = Result<(), E>;
-    type Context = ();
-    const ACCEPTANCE: recv::Acceptance = recv::Acceptance::Collected;
 
     fn extract(
         _: &Self::Context,
@@ -80,13 +86,18 @@ impl<'s, 'arena, 'credits, 'region, D: usage::Footprint, E>
     }
 }
 
+impl<'s, 'arena, 'credits, 'region, T: Unpin> recv::Spec<'s, 'arena, 'credits, 'region, ()>
+    for Pending<T>
+{
+    type Context = T;
+    type Mode = ();
+    const ACCEPTANCE: recv::Acceptance = recv::Acceptance::Unit;
+}
+
 impl<'s, 'arena, 'credits, 'region, T: Unpin> recv::Extract<'s, 'arena, 'credits, 'region, ()>
     for Pending<T>
 {
     type Output = convert::Infallible;
-    const ACCEPTANCE: recv::Acceptance = recv::Acceptance::Unit;
-
-    type Context = T;
 
     fn extract(
         _: &Self::Context,
@@ -271,11 +282,16 @@ pub enum Error {
 }
 
 impl<'s, 'arena, 'credits, 'region, D: usage::Footprint>
+    recv::Spec<'s, 'arena, 'credits, 'region, D> for Never
+{
+    type Context = ();
+    type Mode = ();
+}
+
+impl<'s, 'arena, 'credits, 'region, D: usage::Footprint>
     recv::Extract<'s, 'arena, 'credits, 'region, D> for Never
 {
     type Output = ();
-
-    type Context = ();
 
     fn extract(
         _: &Self::Context,
@@ -285,12 +301,18 @@ impl<'s, 'arena, 'credits, 'region, D: usage::Footprint>
     }
 }
 
+impl<'s, 'arena, 'credits, 'region, 'a> recv::Spec<'s, 'arena, 'credits, 'region, Counted<'a>>
+    for Collected
+{
+    type Context = ();
+    type Mode = ();
+    const ACCEPTANCE: recv::Acceptance = recv::Acceptance::Collected;
+}
+
 impl<'s, 'arena, 'credits, 'region, 'a> recv::Extract<'s, 'arena, 'credits, 'region, Counted<'a>>
     for Collected
 {
     type Output = ();
-    type Context = ();
-    const ACCEPTANCE: recv::Acceptance = recv::Acceptance::Collected;
 
     fn extract(
         _: &Self::Context,
@@ -301,15 +323,21 @@ impl<'s, 'arena, 'credits, 'region, 'a> recv::Extract<'s, 'arena, 'credits, 'reg
 }
 
 impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a, const FIRST: bool>
-    recv::Extract<'s, 'arena, 'credits, 'region, Counted<'a>> for RetainOne<FIRST>
+    recv::Spec<'s, 'arena, 'credits, 'region, Counted<'a>> for RetainOne<FIRST>
 {
-    type Output = Result<retain::Retained<'arena, 'credits, 'region, Counted<'a>>, Error>;
     type Context = ();
+    type Mode = ();
     const ACCEPTANCE: recv::Acceptance = if FIRST {
         recv::Acceptance::First
     } else {
         recv::Acceptance::Payload
     };
+}
+
+impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a, const FIRST: bool>
+    recv::Extract<'s, 'arena, 'credits, 'region, Counted<'a>> for RetainOne<FIRST>
+{
+    type Output = Result<retain::Retained<'arena, 'credits, 'region, Counted<'a>>, Error>;
 
     fn extract(
         _: &Self::Context,
@@ -323,11 +351,16 @@ impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a, const FIRST: bool>
 }
 
 impl<'s, 'arena, 'credits, 'region, 'a>
+    recv::Spec<'s, 'arena, 'credits, 'region, Counted<'a>, Counted<'a>> for DrainFailure
+{
+    type Context = ();
+    type Mode = ();
+}
+
+impl<'s, 'arena, 'credits, 'region, 'a>
     recv::Extract<'s, 'arena, 'credits, 'region, Counted<'a>, Counted<'a>> for DrainFailure
 {
     type Output = Result<(usize, u8), Error>;
-
-    type Context = ();
 
     fn extract(
         _: &Self::Context,

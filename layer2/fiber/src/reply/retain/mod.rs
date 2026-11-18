@@ -1,8 +1,11 @@
 //! Retained reply accounting and ownership.
 
-use crate::reply::{retain::grant::payload, usage};
+use std::mem::ManuallyDrop;
 
-mod batch;
+use o3::depot::arena::linked::slots;
+
+use crate::reply::{Item, retain::grant::payload, usage};
+
 mod bytes;
 pub(in crate::reply) mod grant;
 mod lease;
@@ -11,11 +14,21 @@ pub(in crate::reply) mod raw;
 mod retained;
 mod values;
 
-pub(crate) use batch::Batch;
 pub use bytes::Bytes;
 pub use lease::{Lease, Node};
 pub use retained::Retained;
 pub use values::Values;
+
+pub struct First<'s, 'arena, 'credits, 'region, D: usage::Footprint<Amount = usage::Bytes>> {
+    pub(in crate::reply) value: ManuallyDrop<slots::Live<Item<D>, slots::Borrow<'arena, Item<D>, false>>>,
+    pub(in crate::reply) root: crate::reply::raw::Root<'s, 'arena, 'credits, 'region>,
+}
+
+impl<D: usage::Footprint<Amount = usage::Bytes>> First<'_, '_, '_, '_, D> {
+    pub fn get(&self) -> &D {
+        &self.value.get().value
+    }
+}
 
 /// Payload credits held separately from arriving rows until the owner is dropped.
 /// The caller owns the matching byte storage and protocol-value records.

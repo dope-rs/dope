@@ -18,10 +18,6 @@ impl Sum {
         self.0 = array::from_fn(|axis| self.0[axis].wrapping_add(part[axis]));
     }
 
-    pub(in crate::reply) fn drain(&mut self) -> Self {
-        Self(mem::take(&mut self.0))
-    }
-
     pub(in crate::reply) fn len(&self) -> usize {
         self.0[0]
     }

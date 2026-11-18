@@ -366,10 +366,10 @@ fn batch_drops_before_pool() {
         region::Token::scope(|mut token| {
             let layout = Layout::new(support::capacity(1, 4, 4, 1, 4), support::limit(4, 1, 4))
                 .expect("reply layout");
-            Arena::try_batches(layout, token.proof(), |arena, batches| {
+            Arena::try_with(layout, token.proof(), |arena| {
                 let lane = arena.try_lane(LaneIndex::ZERO);
                 let lane = (lane).expect("lane exists");
-                let mut response = recv::Response::<_, TakeBatch>::with(batches);
+                let mut response = recv::Response::<_, recv::Collected>::new();
                 assert!((response.try_attach(&mut token, lane)) == (Ok(())));
                 for _ in 0..4 {
                     assert!(
@@ -380,8 +380,9 @@ fn batch_drops_before_pool() {
                 }
                 lane.complete(&mut token);
                 let batch = response
-                    .try_take(&mut token)
+                    .try_all(&mut token)
                     .expect("receive completed batch")
+                    .map_err(|error| error.failure)
                     .expect("reply retention");
                 assert_eq!(batch.len().get(), 4);
                 measure = Some(Tracker::begin());

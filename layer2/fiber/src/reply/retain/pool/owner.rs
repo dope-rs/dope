@@ -5,8 +5,8 @@ use std::mem::size_of;
 use o3::mem::{self, rc};
 
 use crate::reply::{
-    LaneIndex,
-    arena::state::Index,
+    LaneIndex, Length,
+    arena::{retire, state::Index},
     order, recv,
     retain::{
         self,
@@ -94,6 +94,19 @@ impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
 }
 
 impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
+    pub(in crate::reply) fn len(&self) -> Length {
+        Length::new(self.sum.len())
+    }
+
+    pub(in crate::reply) fn usage(&self) -> usage::Usage {
+        self.sum.usage()
+    }
+
+    pub(in crate::reply) fn defer_retire(&self, retired: &retire::State) {
+        retired.push(retire::Retired::new(self.key.state().index()));
+        self.key.parts().core.lanes.wake(self.lane);
+    }
+
     fn release_slot(self) -> Release {
         let parts = self.key.parts();
         let release = if self.source.is_reserved() {
@@ -206,6 +219,20 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
         };
     }
 
+    /// # Safety
+    /// The original first node is detached, and its sole root owns this member.
+    pub(in crate::reply) unsafe fn take_first(&mut self, amount: payload::Value<usage::Bytes>) {
+        // SAFETY: the caller retains this exact member until its root takes custody.
+        unsafe { self.sum.take(amount) };
+        self.return_data(payload::Data);
+    }
+
+    /// # Safety
+    /// The original first node has been freed; its retained amount returns once.
+    pub(in crate::reply) unsafe fn release_first(&self, amount: payload::Failure<usage::Bytes>) {
+        self.return_data(amount);
+    }
+
     fn try_lease<A: mem::raw::Amount<3, usize>>(
         &self,
         amount: A,
@@ -256,15 +283,6 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
         })
     }
 
-    pub(in crate::reply) fn try_batch(
-        &mut self,
-    ) -> Result<retain::Batch<'arena, 'credits, 'region>, rc::Error> {
-        Ok(retain::Batch {
-            edge: LeaseEdge::try_new(self.activate(), self.source)?,
-            sum: self.sum.drain(),
-        })
-    }
-
     /// # Safety
     /// The caller owns this original member's still-accounted amount.
     /// That amount must not have been removed from this sum before.
@@ -275,7 +293,10 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
     where
         A: mem::raw::Amount<3, usize>,
     {
-        Removal { owner: self, amount }
+        Removal {
+            owner: self,
+            amount,
+        }
     }
 }
 

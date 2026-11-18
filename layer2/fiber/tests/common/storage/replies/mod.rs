@@ -1,5 +1,3 @@
-use dope_fiber::reply::Batch;
-
 pub mod builds;
 pub mod life;
 pub mod position;
@@ -13,14 +11,19 @@ use dope_fiber::{
 use support::{Counted, Error};
 
 pub struct RetainMany;
-pub struct TakeBatch;
 pub struct TakeOne;
+
+impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a>
+    recv::Spec<'s, 'arena, 'credits, 'region, Counted<'a>> for TakeOne
+{
+    type Context = ();
+    type Mode = ();
+}
 
 impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a>
     recv::Extract<'s, 'arena, 'credits, 'region, Counted<'a>> for TakeOne
 {
     type Output = Result<retain::Lease<'arena, 'credits, 'region, Counted<'a>>, Error>;
-    type Context = ();
 
     fn extract(
         _: &Self::Context,
@@ -28,6 +31,13 @@ impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a>
     ) -> Option<Self::Output> {
         slot.try_lease().map_err(Error::Retain).transpose()
     }
+}
+
+impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a>
+    recv::Spec<'s, 'arena, 'credits, 'region, Counted<'a>> for RetainMany
+{
+    type Context = ();
+    type Mode = ();
 }
 
 impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a>
@@ -41,7 +51,6 @@ impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a>
         ),
         Error,
     >;
-    type Context = ();
 
     fn extract(
         _: &Self::Context,
@@ -75,22 +84,5 @@ impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a>
             Err(error) => return Some(Err(Error::Retain(error))),
         };
         Some(Ok((first, leased, second)))
-    }
-}
-
-impl<'s, 'arena: 's, 'credits: 'arena, 'region: 'credits, 'a: 'arena>
-    recv::Extract<'s, 'arena, 'credits, 'region, Counted<'a>> for TakeBatch
-{
-    type Output = Result<reply::Batch<'s, 'arena, 'credits, 'region, Counted<'a>>, Error>;
-    type Context = &'s reply::Batches<'arena, 'credits, 'region, Counted<'a>>;
-
-    fn extract(
-        batches: &Self::Context,
-        slot: &mut reply::Slot<'_, 's, 'arena, 'credits, 'region, Counted<'a>>,
-    ) -> Option<Self::Output> {
-        Some(match slot.terminal()? {
-            Terminal::Complete(done) => Batch::try_new(done, batches).map_err(Error::Retain),
-            Terminal::Failed(fault) => Err(Error::Failed(fault.into_error().failure)),
-        })
     }
 }

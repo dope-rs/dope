@@ -264,10 +264,6 @@ impl<'arena, 'credits, 'region> Active<'arena, 'credits, 'region> {
         parts.finish();
     }
 
-    fn lane(self) -> LaneIndex {
-        self.state().life.lane()
-    }
-
     fn retire(self) {
         let state = self.state();
         let retained = state.is_active();
@@ -280,10 +276,6 @@ impl<'arena, 'credits, 'region> Active<'arena, 'credits, 'region> {
         }
     }
 
-    pub(in crate::reply::retain) fn wake(self) {
-        let parts = self.key.parts();
-        parts.core.lanes.wake(parts.active.lane());
-    }
 }
 
 impl<'arena, 'credits, 'region, A> LeaseEdge<'arena, 'credits, 'region, A> {
@@ -299,9 +291,6 @@ impl<'arena, 'credits, 'region, A> LeaseEdge<'arena, 'credits, 'region, A> {
         })
     }
 
-    pub(in crate::reply::retain) fn wake(&self) {
-        self.active.wake();
-    }
 }
 
 impl Released<'_, '_> {

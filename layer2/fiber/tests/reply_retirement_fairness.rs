@@ -9,7 +9,7 @@ use common::{
     runtime::{self, Setup, profile},
     schedule::tasks::fixtures::Rounds as _,
     storage::replies::{
-        TakeBatch, TakeOne,
+        TakeOne,
         support::{Cause, Counted, Drops, Never, capacity, limit},
     },
 };
@@ -22,10 +22,10 @@ fn retire_lanes_fairly() {
             let (_, mut driver, mut control) = scope.split();
             let layout = layout::Layout::new(capacity(2, 2, 10, 10, 10), limit(8, 8, 8))
                 .expect("reply layout");
-            Arena::try_batches(layout, driver.region_token().proof(), |arena, batches| {
+            Arena::try_with(layout, driver.region_token().proof(), |arena| {
                 let lane = arena.try_lane(LaneIndex::ZERO).expect("batch lane");
                 let other = arena.try_lane(LaneIndex::new::<1>()).expect("other lane");
-                let mut source = recv::Response::<_, TakeBatch>::with(batches);
+                let mut source = recv::Response::<_, recv::Collected>::new();
                 source
                     .try_attach(driver.region_token(), lane)
                     .expect("batch attachment");
@@ -38,16 +38,17 @@ fn retire_lanes_fairly() {
                 }
                 lane.complete(driver.region_token());
                 let batch = source
-                    .try_take(driver.region_token())
+                    .try_all(driver.region_token())
                     .expect("completed batch must be ready")
+                    .map_err(|error| error.failure)
                     .expect("batch retention");
                 let mut pending = recv::Response::<_, Never>::new();
                 pending
                     .try_attach(driver.region_token(), other)
                     .expect("other attachment");
+                drop(batch);
                 drop(pending);
                 other.complete(driver.region_token());
-                drop(batch);
                 let mut released = false;
                 for _ in 0..6 {
                     let before = drops.count();

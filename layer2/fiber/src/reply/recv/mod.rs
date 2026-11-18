@@ -2,6 +2,9 @@
 
 pub mod attach;
 pub mod outcome;
+mod terminal;
+
+pub use terminal::{Collected, First};
 
 use std::{convert, mem, pin, task};
 
@@ -36,11 +39,18 @@ const _: () = {
     assert!(mem::size_of::<Option<Acceptance>>() == mem::size_of::<Acceptance>());
 };
 
-/// Extracts one logical value from a reply slot.
-pub trait Extract<'s, 'arena, 'credits, 'region, D: Footprint, E = D> {
+/// Selects reply admission before any data arrives.
+pub trait Spec<'s, 'arena, 'credits, 'region, D: Footprint, E = D> {
     type Context: Unpin;
-    type Output;
+    type Mode;
     const ACCEPTANCE: Acceptance = Acceptance::Payload;
+}
+
+/// Extracts one logical value from a reply slot.
+pub trait Extract<'s, 'arena, 'credits, 'region, D: Footprint, E = D>:
+    Spec<'s, 'arena, 'credits, 'region, D, E, Mode = ()>
+{
+    type Output;
 
     fn extract(
         context: &Self::Context,
@@ -61,6 +71,10 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
     ) -> state::Registered<'s, reply::Arena<'arena, 'credits, 'region, D, E, K>, &Self> {
         // SAFETY: this borrow precedes the owner's detach/drop retirement.
         unsafe { depot::raw::Proof::new((self.lane.arena, self.key)) }
+    }
+
+    fn retire(&self) {
+        self.lane.defer_retire(Retired::new(self.key.index()));
     }
 }
 
@@ -171,7 +185,7 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
 
     fn retire(&self) {
         if let Some(reg) = &self.reg {
-            reg.lane.defer_retire(Retired::new(reg.key.index()));
+            reg.retire();
         }
     }
 
@@ -196,7 +210,7 @@ pub struct Response<
     'credits,
     'region,
     D: Footprint,
-    X: Extract<'s, 'arena, 'credits, 'region, D, E>,
+    X: Spec<'s, 'arena, 'credits, 'region, D, E>,
     E = D,
     K = (),
 > {
@@ -210,7 +224,7 @@ impl<
     'credits,
     'region,
     D: Footprint,
-    X: Extract<'s, 'arena, 'credits, 'region, D, E>,
+    X: Spec<'s, 'arena, 'credits, 'region, D, E>,
     E,
     K,
 > Response<'s, 'arena, 'credits, 'region, D, X, E, K>
@@ -248,7 +262,7 @@ impl<
         make: impl FnOnce(I) -> ([V; N], F, K, R),
     ) -> Result<(order::Depth, R), (attach::Error, I)>
     where
-        Y: Extract<'s, 'arena, 'credits, 'region, D, E>,
+        Y: Spec<'s, 'arena, 'credits, 'region, D, E>,
         F: FnMut(usize, V) -> K,
     {
         const { assert!(N > 0 && N < usize::MAX) };
@@ -274,7 +288,7 @@ impl<
 
     pub const fn new() -> Self
     where
-        X: Extract<'s, 'arena, 'credits, 'region, D, E, Context = ()>,
+        X: Spec<'s, 'arena, 'credits, 'region, D, E, Context = ()>,
     {
         Self::with(())
     }
@@ -291,7 +305,10 @@ impl<
     pub fn try_take(
         &mut self,
         token: &mut region::Token<region::Identity<'region>>,
-    ) -> Option<X::Output> {
+    ) -> Option<X::Output>
+    where
+        X: Extract<'s, 'arena, 'credits, 'region, D, E>,
+    {
         let output = {
             let (mut slot, _) = self.handle.slot(token)?;
             X::extract(&self.extract, &mut slot)
@@ -312,7 +329,10 @@ impl<
             &mut reply::Slot<'_, 's, 'arena, 'credits, 'region, D, E>,
         ) -> Option<X::Output>,
         complete: impl FnOnce(X::Output) -> O,
-    ) -> task::Poll<O> {
+    ) -> task::Poll<O>
+    where
+        X: Extract<'s, 'arena, 'credits, 'region, D, E>,
+    {
         let me = self.get_mut();
         me.handle.poll(
             context,
@@ -330,7 +350,10 @@ impl<
     pub fn poll_next(
         mut self: pin::Pin<&mut Self>,
         context: pin::Pin<&mut context::Context<'_, 'region>>,
-    ) -> task::Poll<Option<X::Output>> {
+    ) -> task::Poll<Option<X::Output>>
+    where
+        X: Extract<'s, 'arena, 'credits, 'region, D, E>,
+    {
         let me = self.as_mut().get_mut();
         me.handle.poll(
             context,
@@ -355,7 +378,7 @@ impl<
 impl<'s, 'arena, 'credits, 'region, D: Footprint, X, E, K> Default
     for Response<'s, 'arena, 'credits, 'region, D, X, E, K>
 where
-    X: Extract<'s, 'arena, 'credits, 'region, D, E, Context = ()>,
+    X: Spec<'s, 'arena, 'credits, 'region, D, E, Context = ()>,
 {
     fn default() -> Self {
         Self::new()
@@ -368,7 +391,7 @@ impl<
     'credits,
     'region,
     D: Footprint,
-    X: Extract<'s, 'arena, 'credits, 'region, D, E>,
+    X: Spec<'s, 'arena, 'credits, 'region, D, E>,
     E,
     K,
 > attach::Attach<'s, 'arena, 'credits, 'region, D, E, K>

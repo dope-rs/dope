@@ -53,10 +53,16 @@ impl<'a> usage::Build<Scalar<'a>> for ScalarBuild<'a, '_> {
 }
 
 impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a: 'arena>
+    recv::Spec<'s, 'arena, 'credits, 'region, Scalar<'a>> for TakeScalar
+{
+    type Context = ();
+    type Mode = ();
+}
+
+impl<'s, 'arena, 'credits: 'arena, 'region: 'credits, 'a: 'arena>
     recv::Extract<'s, 'arena, 'credits, 'region, Scalar<'a>> for TakeScalar
 {
     type Output = Result<retain::Node<'arena, 'credits, 'region, Scalar<'a>>, Error>;
-    type Context = ();
 
     fn extract(
         _: &Self::Context,

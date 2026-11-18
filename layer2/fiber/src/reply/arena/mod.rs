@@ -5,7 +5,7 @@ use std::{cell, marker, num::NonZero};
 use dope::core::driver::{route::Identity, schedule::app};
 use o3::{alloc, base::cell::region, depot::capacity};
 
-use crate::reply::{self, Length, Storage, arena::state::Advance, layout, usage::Footprint};
+use crate::reply::{Length, Storage, arena::state::Advance, layout, usage::Footprint};
 
 pub(in crate::reply) mod backing;
 pub(in crate::reply) mod control;
@@ -25,9 +25,8 @@ use crate::reply::arena::progress::Work;
 pub struct Arena<'arena, 'credits, 'region, D: Footprint, E = D, K = ()> {
     state:
         region::Value<region::Identity<'region>, state::Book<'arena, 'credits, 'region, D, E, K>>,
-    retire: retire::State,
+    pub(in crate::reply) retire: retire::State,
     pub(in crate::reply) backing: &'arena Backing<'credits, 'region, D>,
-    pub(in crate::reply) batches: cell::OnceCell<reply::Batches<'arena, 'credits, 'region, D>>,
     lanes: NonZero<u32>,
     next: cell::Cell<Retirement>,
     owner: marker::PhantomData<fn(&'arena ()) -> &'arena ()>,
@@ -35,7 +34,6 @@ pub struct Arena<'arena, 'credits, 'region, D: Footprint, E = D, K = ()> {
 
 #[derive(Clone, Copy)]
 enum Retirement {
-    Batch,
     Released,
     Entry,
 }
@@ -43,9 +41,8 @@ enum Retirement {
 impl Retirement {
     const fn next(self) -> Self {
         match self {
-            Self::Batch => Self::Released,
             Self::Released => Self::Entry,
-            Self::Entry => Self::Batch,
+            Self::Entry => Self::Released,
         }
     }
 }
@@ -60,9 +57,8 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K> Arena<'arena, 'credits, 'reg
             state: proof.bind(state::Book::try_new(layout)?),
             retire: retire::State::try_new(capacity::Count::new(layout.entries().get()))?,
             backing,
-            batches: cell::OnceCell::new(),
             lanes: layout.lane_count(),
-            next: cell::Cell::new(Retirement::Batch),
+            next: cell::Cell::new(Retirement::Released),
             owner: marker::PhantomData,
         })
     }
@@ -97,11 +93,9 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K> Arena<'arena, 'credits, 'reg
     /// Returns deferred retirement and waiter work. The owning application's
     /// progress callback must retain this state even when every lane is idle.
     pub fn work(&self) -> Work {
-        if self.retire.has_active()
-            || !self.retire.is_empty()
+        if !self.retire.is_empty()
             || self.backing.resources.has_released()
             || self.backing.resources.has_pending()
-            || self.batches.get().is_some_and(reply::Batches::has_pending)
         {
             Work::Pending
         } else {
@@ -110,23 +104,16 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K> Arena<'arena, 'credits, 'reg
     }
 
     /// Examines at most one waiter and retires at most one value. Each ready
-    /// retirement class progresses within three permits, independent of batches.
+    /// retirement class progresses within two permits.
     fn advance(
         &self,
         token: &mut region::Token<region::Identity<'region>>,
     ) -> Option<Released<'arena>> {
         self.backing.resources.advance();
-        for _ in 0..3 {
+        for _ in 0..2 {
             let next = self.next.get();
             self.next.set(next.next());
             match next {
-                Retirement::Batch => {
-                    if let Some(batches) = self.batches.get()
-                        && let reply::Advance::Dropped = batches.advance()
-                    {
-                        return None;
-                    }
-                }
                 Retirement::Released => {
                     if let Some(released) = self.backing.resources.pop_released() {
                         return token
@@ -149,10 +136,10 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K> Arena<'arena, 'credits, 'reg
         &self,
         token: &mut region::Token<region::Identity<'region>>,
     ) -> Option<Option<Released<'arena>>> {
-        let retired = self.retire.active.take().or_else(|| self.retire.pop())?;
+        let retired = self.retire.pop()?;
         Some(match token.borrow_mut(&self.state).retire(retired) {
             Advance::Draining(retired) => {
-                self.retire.active.set(Some(retired));
+                self.retire.push(retired);
                 None
             }
             Advance::Complete(lane) => lane.map(|lane| Released::new(lane, self.domain())),
@@ -195,7 +182,7 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K> Arena<'arena, 'credits, 'reg
 impl<'region, D: Footprint, E, K> Arena<'_, '_, 'region, D, E, K> {
     /// Lends one arena while its original data and credit storage remain owned.
     /// The scope retains the arena itself, so abandoning a loan cannot skip
-    /// teardown of its registered entries and detached batches.
+    /// teardown of its registered entries.
     pub fn try_with<R>(
         layout: layout::Layout,
         proof: region::Identity<'region>,
@@ -205,27 +192,10 @@ impl<'region, D: Footprint, E, K> Arena<'_, '_, 'region, D, E, K> {
     ) -> Result<R, alloc::Error> {
         Storage::try_with(layout, proof, |storage| storage.try_arena(run))?
     }
-
-    /// Lends an arena and its matching fixed-capacity batch retirement owner.
-    /// The invariant arena brand prevents detaching into another arena's pool.
-    /// Allocation completes before lending; the stored owner cannot be replaced.
-    pub fn try_batches<R>(
-        layout: layout::Layout,
-        proof: region::Identity<'region>,
-        run: impl for<'scope, 'arena, 'credits> FnOnce(
-            &'scope Arena<'arena, 'credits, 'region, D, E, K>,
-            &'scope reply::Batches<'arena, 'credits, 'region, D>,
-        ) -> R,
-    ) -> Result<R, alloc::Error> {
-        Storage::try_with(layout, proof, |storage| storage.try_batches(run))?
-    }
 }
 
 impl<D: Footprint, E, K> Drop for Arena<'_, '_, '_, D, E, K> {
     fn drop(&mut self) {
-        if let Some(batches) = self.batches.get_mut() {
-            while let reply::Advance::Dropped = batches.advance() {}
-        }
         self.state.get_mut().clear();
     }
 }

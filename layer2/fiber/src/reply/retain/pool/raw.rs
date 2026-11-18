@@ -2,28 +2,6 @@ use std::{cell, marker};
 
 use o3::{depot, depot::arena::linked::fifo::ends};
 
-use crate::reply::{Owned, retain, usage::Footprint};
-
-impl<C: Footprint> Owned<'_, '_, '_, C> {
-    #[inline(always)]
-    pub(in crate::reply) fn retire(self) -> Option<Self> {
-        let Self { data, credit } = self;
-        let mut sum = credit.sum;
-        let edge = credit.edge;
-        let (item, data) = data.pop();
-        // SAFETY: try_new captures this completed slot's entire FIFO and sum
-        // together. This private owner removes each original member once and
-        // never accepts an independently supplied item or credit.
-        let part = unsafe { sum.take(item.amount) };
-        // SAFETY: the detached owner carries this sum's original issuing State.
-        unsafe { edge.active.key.parts().core.lanes.release_data(edge.source, part) };
-        Some(Self {
-            data: data?,
-            credit: retain::Batch { edge, sum },
-        })
-    }
-}
-
 const END: u32 = u32::MAX - 1;
 const VACANT: u32 = u32::MAX;
 
