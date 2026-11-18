@@ -168,7 +168,22 @@ pub struct Slot<'a, 's, 'arena, 'credits, 'region, D: Footprint, E = D> {
 
 impl<'s, 'arena, 'credits, 'region, D: Footprint, E> Slot<'_, 's, 'arena, 'credits, 'region, D, E> {
     pub(in crate::reply) fn drop_next(&mut self) -> bool {
-        self.pop().is_some() || self.pop_error().is_some()
+        if let Some(front) = self.state.data.front() {
+            let amount = front.get().amount;
+            drop(front.detach());
+            // SAFETY: the node and payload are gone; the retiring owner still
+            // holds their exact original amount in this sum.
+            unsafe { self.owners.payload.remove(amount) }.retire();
+            true
+        } else if let Some(Failed { value, amount }) = self.state.take_failure() {
+            drop(value);
+            // SAFETY: this destroyed failure's amount remains accounted by the
+            // same retiring slot until its matching credit return.
+            unsafe { self.owners.payload.remove(amount) }.retire();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn terminal(

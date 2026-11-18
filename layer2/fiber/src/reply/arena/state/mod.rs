@@ -201,6 +201,7 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K> Book<'arena, 'credits, 'regi
                 ..
             } = entry.remove();
             owners.clear_order();
+            owners.cancel_entry();
             if !matches!(state.end, reply::slot::End::Drained) {
                 let mut slot = reply::Slot {
                     state: &mut state,
@@ -209,7 +210,6 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K> Book<'arena, 'credits, 'regi
                 };
                 while slot.drop_next() {}
             }
-            owners.cancel_entry();
             owners.retire();
             owners.unbind();
         }

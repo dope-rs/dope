@@ -190,10 +190,20 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
     }
 
     fn release_data<A: mem::raw::Amount<3, usize>>(&self, amount: A) {
+        self.return_data(amount);
         let lanes = &self.key.parts().core.lanes;
-        // SAFETY: only a consumed Removal returns its member through this owner.
-        unsafe { lanes.release_data(self.source, amount) };
         lanes.wake_local(self.lane, self.key.state().index());
+    }
+
+    fn return_data<A: mem::raw::Amount<3, usize>>(&self, amount: A) {
+        // SAFETY: callers consume original members from this unchanged source.
+        unsafe {
+            self.key
+                .parts()
+                .core
+                .lanes
+                .release_data(self.source, amount)
+        };
     }
 
     fn try_lease<A: mem::raw::Amount<3, usize>>(
@@ -256,8 +266,8 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
     }
 
     /// # Safety
-    /// The caller must own the exact original slot member represented by amount.
-    /// That member must not have been removed from this sum before.
+    /// The caller owns this original member's still-accounted amount.
+    /// That amount must not have been removed from this sum before.
     pub(in crate::reply) unsafe fn remove<A>(
         &mut self,
         amount: A,
@@ -274,6 +284,13 @@ impl<A: mem::raw::Amount<3, usize>> Removal<'_, '_, '_, '_, A> {
         // SAFETY: Removal retains the original unremoved member and its sum.
         let amount = unsafe { self.owner.sum.take(self.amount) };
         self.owner.release_data(amount);
+    }
+
+    pub(in crate::reply) fn retire(self) {
+        // SAFETY: terminal/retiring owners destroyed the payload and retain its
+        // original accounted amount; the exact entry's local waiter is removed.
+        let amount = unsafe { self.owner.sum.take(self.amount) };
+        self.owner.return_data(amount);
     }
 }
 
