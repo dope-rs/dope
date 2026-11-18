@@ -29,9 +29,9 @@ fn retains_rows_after_tags() {
                     .try_push(Counted::mixed(&rows))
                     .is_ok()
             );
-            let selected = lane.select(&mut token);
+            let selected = lane.ordered(&mut token);
             assert!(selected.is_cutoff(cutoff));
-            selected.complete();
+            selected.into_push().complete();
             assert_eq!(tags.count(), 1);
             let row = done
                 .try_take(&mut token)
@@ -57,7 +57,7 @@ fn retains_rows_after_tags() {
             assert_eq!(pending.detach_order(&token), order::State::Linked);
             assert_eq!(pending.detach_order(&token), order::State::Detached);
             assert!(lane.contains_cutoff(cutoff, &token));
-            assert!(lane.select(&mut token).is_cutoff(cutoff));
+            assert!(lane.ordered(&mut token).is_cutoff(cutoff));
             drop(row);
             assert_eq!(rows.count(), 1);
         })

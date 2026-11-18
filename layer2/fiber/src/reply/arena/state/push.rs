@@ -34,7 +34,13 @@ impl Reject {
     }
 }
 
-/// One selected reply front retained through inspection and insertion.
+/// The ordered front and its original entry store.
+pub struct Selection<'a, 'arena, 'credits, 'region, D: Footprint, E = D, K = ()> {
+    front: Option<Front<'a, K>>,
+    slots: &'a mut state::Entries<'arena, 'credits, 'region, D, E>,
+    arena: &'a reply::Arena<'arena, 'credits, 'region, D, E, K>,
+}
+
 pub struct Push<'a, 'arena, 'credits, 'region, D: Footprint, E = D, K = ()> {
     front: Option<(
         Front<'a, K>,
@@ -44,22 +50,39 @@ pub struct Push<'a, 'arena, 'credits, 'region, D: Footprint, E = D, K = ()> {
 }
 
 impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
-    Push<'a, 'arena, 'credits, 'region, D, E, K>
+    Selection<'a, 'arena, 'credits, 'region, D, E, K>
 {
     pub(in crate::reply::arena) fn new(
         lane: reply::Lane<'a, 'arena, 'credits, 'region, D, E, K>,
         token: &'a mut region::Token<region::Identity<'region>>,
     ) -> Self {
         let state = token.borrow_mut(&lane.arena.state);
-        let front = match state.order.route(lane.index).front() {
+        Self {
+            front: state.order.route(lane.index).front(),
+            slots: &mut state.slots,
+            arena: lane.arena,
+        }
+    }
+
+    pub fn tag(&self) -> Option<&K> {
+        Some(self.front.as_ref()?.value().tag())
+    }
+
+    pub fn is_cutoff(&self, cutoff: order::Cutoff<'arena>) -> bool {
+        self.front
+            .as_ref()
+            .is_some_and(|front| Some(front.value().key()) == cutoff.key())
+    }
+
+    pub fn into_push(self) -> Push<'a, 'arena, 'credits, 'region, D, E, K> {
+        let front = match self.front {
             Some(front) => {
-                let key = front.value().key();
-                // SAFETY: Book inserts the entry before linking its order item;
-                // this retained front prevents that entry from being reclaimed.
+                let index = front.value().key().index().into();
+                // SAFETY: insertion precedes linking. The original front and disjoint
+                // store loan exclude retirement or replacement of this entry.
                 let live = unsafe {
                     depot::raw::Proof::<_, Initialized<state::Ordered<K>>>::new((
-                        (&mut state.slots.0, front),
-                        key.index().into(),
+                        (&mut self.slots.0, front), index,
                     ))
                 };
                 let (entry, front) = slab::Occupied::from_live(live);
@@ -67,22 +90,16 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
             }
             None => None,
         };
-        Self {
+        Push {
             front,
-            arena: lane.arena,
+            arena: self.arena,
         }
     }
+}
 
-    pub fn tag(&mut self) -> Option<&K> {
-        Some(self.front.as_mut()?.0.value().tag())
-    }
-
-    pub fn is_cutoff(&self, cutoff: order::Cutoff<'arena>) -> bool {
-        self.front
-            .as_ref()
-            .is_some_and(|(front, _)| Some(front.value().key()) == cutoff.key())
-    }
-
+impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
+    Push<'a, 'arena, 'credits, 'region, D, E, K>
+{
     pub fn front(&self) -> order::Front {
         let Some((_, entry)) = &self.front else {
             return order::Front::Empty;

@@ -20,7 +20,7 @@ pub use arena::{
     control::Control,
     lanes::{Error, Lane, LaneIndex, Released, Retirement},
     progress::{Progress, Work},
-    state::Push,
+    state::{Push, Selection},
 };
 pub(crate) use slot::State;
 pub(in crate::reply) use slot::{Failed, Item, Open};

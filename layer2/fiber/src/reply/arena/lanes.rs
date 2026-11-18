@@ -21,7 +21,7 @@ use crate::reply::{
         control::Control,
         retire::Retired,
         state,
-        state::{Failure, Push},
+        state::{Failure, Push, Selection},
     },
     layout::Domain,
     order, recv,
@@ -149,7 +149,16 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
             .contains_cutoff(self.index, cutoff)
     }
 
-    /// Retains this exact ordered front until its inspection or insertion ends.
+    pub fn ordered<'p>(
+        self,
+        token: &'p mut region::Token<region::Identity<'region>>,
+    ) -> Selection<'p, 'arena, 'credits, 'region, D, E, K>
+    where
+        'a: 'p,
+    {
+        Selection::new(self, token)
+    }
+
     pub fn select<'p>(
         self,
         token: &'p mut region::Token<region::Identity<'region>>,
@@ -157,7 +166,7 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
     where
         'a: 'p,
     {
-        Push::new(self, token)
+        self.ordered(token).into_push()
     }
 
     /// Reserves byte and protocol-value credit without installing a reply waiter.
