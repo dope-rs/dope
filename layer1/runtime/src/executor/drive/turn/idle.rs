@@ -29,18 +29,19 @@ where
 
     pub(crate) fn wait(
         mut self,
-        progress: schedule::Progress<'d>,
+        progress: impl FnOnce(&Self) -> schedule::Progress<'d>,
         source: impl Time,
     ) -> Result<(), poll::Error> {
-        let span = if matches!(progress, schedule::Progress::Runnable) || !self.is_quiet() {
-            Some(time::Duration::ZERO)
-        } else {
-            match progress {
+        let span = if self.is_quiet() {
+            match progress(&self) {
+                schedule::Progress::Runnable => Some(time::Duration::ZERO),
                 schedule::Progress::Waiting(wait) => wait
                     .deadline()
                     .map(|due| due.into_raw().saturating_duration_since(source.park())),
-                _ => None,
+                schedule::Progress::Quiescent => None,
             }
+        } else {
+            Some(time::Duration::ZERO)
         };
         let span = source.limit(span);
         driver::Context::wait(&mut self.core.driver, self.core.turn.reactor(), span)

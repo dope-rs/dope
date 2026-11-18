@@ -134,8 +134,7 @@ where
                     }
                     Err(error) => return Attempt::Cancel(root, error.into()),
                 };
-                let progress = idle.progress();
-                if let Err(error) = idle.wait(progress, self.source) {
+                if let Err(error) = idle.wait(|idle| idle.progress(), self.source) {
                     return Attempt::Cancel(root, error.into());
                 }
             }
@@ -154,7 +153,7 @@ where
                         Ok(poll::Commit::Pending) => {}
                         Err(error) => break Err(error.into()),
                     }
-                } else if let Err(error) = idle.wait(progress, self.source) {
+                } else if let Err(error) = idle.wait(|_| progress, self.source) {
                     break Err(error.into());
                 }
             }
@@ -280,8 +279,7 @@ where
                     task::Poll::Pending => match polled.park()? {
                         ControlFlow::Break(()) => return Ok(Outcome::Shutdown(None)),
                         ControlFlow::Continue(Some(idle)) => {
-                            let progress = idle.progress();
-                            idle.wait(progress, self.source)?;
+                            idle.wait(|idle| idle.progress(), self.source)?;
                         }
                         ControlFlow::Continue(None) => {}
                     },

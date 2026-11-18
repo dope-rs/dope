@@ -21,8 +21,7 @@ where
         match state.next_app(tick, &mut shutdown)?.park()? {
             ControlFlow::Break(()) => return Ok(()),
             ControlFlow::Continue(Some(idle)) => {
-                let progress = idle.progress();
-                idle.wait(progress, source)?;
+                idle.wait(|idle| idle.progress(), source)?;
             }
             ControlFlow::Continue(None) => {}
         }

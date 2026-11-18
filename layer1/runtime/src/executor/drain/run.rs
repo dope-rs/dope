@@ -34,7 +34,6 @@ where
         if idle.is_quiet() && matches!(drain, schedule::Progress::Quiescent) {
             return Ok(drain::Outcome::Quiesced);
         }
-        let progress = idle.progress().reduce(drain);
-        idle.wait(progress, source)?;
+        idle.wait(|idle| idle.progress().reduce(drain), source)?;
     }
 }

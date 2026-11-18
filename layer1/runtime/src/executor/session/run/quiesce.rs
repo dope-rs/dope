@@ -34,6 +34,6 @@ where
                 poll::Commit::Pending => continue,
             }
         }
-        idle.wait(progress, source)?;
+        idle.wait(|_| progress, source)?;
     }
 }
