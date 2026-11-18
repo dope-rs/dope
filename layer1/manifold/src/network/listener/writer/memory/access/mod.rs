@@ -16,7 +16,7 @@ pub(in crate::network::listener::writer) use step::Step;
 
 use crate::network::listener::{
     self, conn,
-    writer::{memory, memory::release, state::Send},
+    writer::{memory, state::Send},
 };
 
 mod raw;
@@ -169,7 +169,7 @@ pub(in crate::network::listener) trait Body<B> {
     fn begin<'p, 's, 'd, ID: Identity>(
         self,
         send: &mut Send<'p, 's, 'd, ID, B>,
-        slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        slot: memory::raw::DirectSlot<'p, 's, 'd, ID, B>,
         head: memory::Len,
         total: transfer::NonZero,
     )
@@ -189,7 +189,7 @@ impl<B> Body<B> for () {
     fn begin<'p, 's, 'd, ID: Identity>(
         self,
         send: &mut Send<'p, 's, 'd, ID, B>,
-        slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        slot: memory::raw::DirectSlot<'p, 's, 'd, ID, B>,
         head: memory::Len,
         total: transfer::NonZero,
     )
@@ -212,7 +212,7 @@ impl<B> Body<B> for egress::NonEmpty<B> {
     fn begin<'p, 's, 'd, ID: Identity>(
         self,
         send: &mut Send<'p, 's, 'd, ID, B>,
-        slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        slot: memory::raw::DirectSlot<'p, 's, 'd, ID, B>,
         head: memory::Len,
         total: transfer::NonZero,
     )
@@ -227,7 +227,7 @@ pub(in crate::network::listener) struct Direct<
     'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>,
 >
 {
-    lease: release::Lease<'p, 's, 'd, memory::Flight<B, B::Position>, ID>,
+    pub(in crate::network::listener::writer) lease: memory::raw::DirectSlot<'p, 's, 'd, ID, B>,
     head: memory::Len,
     source: Source,
     pub(in crate::network::listener::writer) progress: Progress,
@@ -240,7 +240,7 @@ enum Source {
 
 impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID, B> {
     fn new(
-        slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        slot: memory::raw::DirectSlot<'p, 's, 'd, ID, B>,
         head: memory::Len,
         total: transfer::NonZero,
         source: Source,
@@ -256,7 +256,7 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID,
 
 impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID, B> {
     pub(in crate::network::listener) fn body(
-        slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        slot: memory::raw::DirectSlot<'p, 's, 'd, ID, B>,
         body: egress::NonEmpty<B>,
     ) -> Self {
         let total = body.geometry().wire();
@@ -264,7 +264,7 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID,
     }
 
     fn with_body(
-        mut slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        mut slot: memory::raw::DirectSlot<'p, 's, 'd, ID, B>,
         head: memory::Len,
         total: transfer::NonZero,
         body: egress::NonEmpty<B>,

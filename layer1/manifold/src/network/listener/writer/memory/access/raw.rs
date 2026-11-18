@@ -1,11 +1,9 @@
-use std::{mem::ManuallyDrop, ptr};
-
 use dope_core::{
     driver::route::Identity,
     io::{socket::msg, transfer, transfer::progress},
 };
 use dope_net::{link::egress::data, wire::send};
-use o3::depot::array;
+use o3::{depot::array, mem::slot};
 
 use crate::network::listener;
 
@@ -98,20 +96,17 @@ impl<'d, ID: Identity, B: data::raw::Payload<'d>> Direct<'_, '_, 'd, ID, B> {
 }
 
 impl<'d, ID: Identity, B: data::raw::Payload<'d>> Direct<'_, '_, 'd, ID, B> {
-    pub(in crate::network::listener::writer) fn retire(self) -> Option<B> {
-        let mut this = ManuallyDrop::new(self);
-        let Self { lease, head: _, source, progress: _ } = &mut *this;
-        let body = if matches!(source, Source::Body) {
-            // SAFETY: body admission initialized this source once; consuming
-            // the phase after native retirement transfers its destruction owner.
-            Some(unsafe { lease.get_mut().project().source.assume_init_read() })
-        } else {
-            None
-        };
-        // SAFETY: the disarmed phase owns only this lease and scalar progress.
-        // Return the backing before publication and any body-release callback.
-        unsafe { ptr::drop_in_place(lease) };
-        body
+    pub(in crate::network::listener::writer) fn retire<'out>(
+        mut self,
+        place: slot::Vacant<'out, B>,
+    ) -> Option<slot::Occupied<'out, B>> {
+        if matches!(self.source, Source::Header) {
+            return None;
+        }
+        self.source = Source::Header;
+        // SAFETY: the quiescent body phase owns this initialized source once.
+        // The destination now owns it when the original flight returns to its lane.
+        Some(place.insert(unsafe { self.lease.get_mut().project().source.assume_init_read() }))
     }
 }
 

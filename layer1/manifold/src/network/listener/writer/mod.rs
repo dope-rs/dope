@@ -263,16 +263,17 @@ where
                                     if matches!(failure.into_error().cause(), SubmitCause::Full) {
                                         return Decision::runnable(&slot);
                                     }
-                                    let egress =
-                                        slot.state.send.fail(conn::Transmit::Rejected(failure));
-                                    if let Some(egress) = egress {
-                                        writer::release_egress(
-                                            app.as_mut(),
-                                            key,
-                                            egress,
-                                            handler::Disposition::Closed,
-                                        );
-                                    }
+                                    slot.state.send.release(
+                                        Some(conn::Transmit::Rejected(failure)),
+                                        |egress| {
+                                            writer::release_egress(
+                                                app.as_mut(),
+                                                key,
+                                                egress,
+                                                handler::Disposition::Closed,
+                                            );
+                                        },
+                                    );
                                     Decision::Ready
                                 }
                                 transmit::Finalize::Settled | transmit::Finalize::Abandoned => {

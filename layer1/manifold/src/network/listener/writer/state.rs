@@ -3,7 +3,7 @@ use std::mem;
 use dope_core::driver::route::{Identity, KeyTag};
 use dope_net::link::egress::data;
 use memory::access;
-use o3::buffer::resident;
+use o3::{buffer::resident, mem::slot};
 
 use crate::network::listener::{conn, writer::memory};
 
@@ -19,8 +19,21 @@ pub(in crate::network::listener) struct Send<
 
 enum State<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> {
     Queued,
+    Fixed(&'p memory::raw::Home<memory::Frame<'d, B>>),
     Direct(access::Direct<'p, 's, 'd, ID, B>),
-    Failed(conn::Transmit),
+    Failed(
+        conn::Transmit,
+        Option<&'p memory::raw::Home<memory::Frame<'d, B>>>,
+    ),
+}
+
+impl<'d, ID: Identity, B: data::raw::Payload<'d>> State<'_, '_, 'd, ID, B> {
+    fn retire<'out>(self, place: slot::Vacant<'out, B>) -> Option<slot::Occupied<'out, B>> {
+        match self {
+            Self::Direct(direct) => direct.retire(place),
+            _ => None,
+        }
+    }
 }
 
 #[repr(u8)]
@@ -29,15 +42,25 @@ pub(in crate::network::listener::writer) enum Mode {
     Direct,
 }
 
-impl<'d, ID: Identity, B: data::raw::Payload<'d>> Default for Send<'_, '_, 'd, ID, B> {
-    fn default() -> Self {
+impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B> {
+    pub(in crate::network::listener) fn new(
+        home: Option<&'p memory::raw::Home<memory::Frame<'d, B>>>,
+    ) -> Self {
         Self {
-            state: State::Queued,
+            state: home.map_or(State::Queued, State::Fixed),
         }
     }
-}
 
-impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B> {
+    pub(in crate::network::listener) fn home(
+        &self,
+    ) -> Option<&'p memory::raw::Home<memory::Frame<'d, B>>> {
+        match self.state {
+            State::Fixed(home) => Some(home),
+            State::Failed(_, home) => home,
+            State::Queued | State::Direct(_) => None,
+        }
+    }
+
     pub(in crate::network::listener) fn begin(
         &mut self,
         direct: access::Direct<'p, 's, 'd, ID, B>,
@@ -50,32 +73,24 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B
     ) -> Result<access::Prepared<'_>, access::Fault> {
         match &mut self.state {
             State::Direct(state) => state.prepare(),
-            State::Queued | State::Failed(_) => Ok(access::Prepared::Idle),
+            State::Queued | State::Fixed(_) | State::Failed(..) => Ok(access::Prepared::Idle),
         }
     }
 
     pub(in crate::network::listener) fn error(&self) -> Option<conn::Transmit> {
         match &self.state {
-            State::Queued => None,
+            State::Queued | State::Fixed(_) => None,
             State::Direct(state) => state.progress.error(),
-            State::Failed(error) => Some(*error),
+            State::Failed(error, _) => Some(*error),
         }
     }
 
-    /// Retires direct-send ownership after the net layer has quiesced its SQE.
-    pub(in crate::network::listener) fn retire(&mut self) -> (Option<B>, Option<conn::Transmit>) {
-        match mem::replace(&mut self.state, State::Queued) {
-            State::Direct(state) => {
-                let error = state.progress.error();
-                (state.retire(), error)
-            }
-            State::Queued => (None, None),
-            State::Failed(error) => (None, Some(error)),
-        }
-    }
-
-    pub(in crate::network::listener) fn fail(&mut self, failure: conn::Transmit) -> Option<B> {
-        self.take(Some(failure))
+    pub(in crate::network::listener) fn finish(&mut self) -> (Option<B>, Option<conn::Transmit>) {
+        let error = self.error();
+        let mut place = mem::MaybeUninit::uninit();
+        let body =
+            mem::replace(&mut self.state, State::Queued).retire(slot::Vacant::new(&mut place));
+        (body.map(slot::Occupied::into_inner), error)
     }
 
     pub(in crate::network::listener::writer) fn invalidate(&mut self, fault: access::Fault) {
@@ -89,32 +104,50 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B
     ) -> Option<&mut access::Progress> {
         match &mut self.state {
             State::Direct(state) => Some(&mut state.progress),
-            State::Queued | State::Failed(_) => None,
+            State::Queued | State::Fixed(_) | State::Failed(..) => None,
         }
     }
 
-    pub(in crate::network::listener::writer) fn take(
+    pub(in crate::network::listener::writer) fn take<'out>(
         &mut self,
         failure: Option<conn::Transmit>,
-    ) -> Option<B> {
-        let (body, error) = self.retire();
-        if let Some(error) = error.or(failure) {
-            self.state = State::Failed(error);
+        place: slot::Vacant<'out, B>,
+    ) -> Option<slot::Occupied<'out, B>> {
+        let home = match &self.state {
+            State::Direct(direct) => direct.lease.home(),
+            _ => self.home(),
+        };
+        if let Some(error) = self.error().or(failure) {
+            mem::replace(&mut self.state, State::Failed(error, home)).retire(place)
+        } else if let Some(home) = home {
+            mem::replace(&mut self.state, State::Fixed(home)).retire(place)
+        } else {
+            mem::replace(&mut self.state, State::Queued).retire(place)
         }
-        body
+    }
+
+    pub(in crate::network::listener::writer) fn release(
+        &mut self,
+        failure: Option<conn::Transmit>,
+        release: impl FnOnce(B),
+    ) {
+        let mut place = mem::MaybeUninit::uninit();
+        if let Some(body) = self.take(failure, slot::Vacant::new(&mut place)) {
+            release(body.into_inner());
+        }
     }
 
     pub(in crate::network::listener::writer) fn motion(&self) -> access::Motion {
         match &self.state {
-            State::Queued | State::Failed(_) => access::Motion::Empty,
+            State::Queued | State::Fixed(_) | State::Failed(..) => access::Motion::Empty,
             State::Direct(state) => state.progress.motion(),
         }
     }
 
     pub(in crate::network::listener::writer) const fn mode(&self) -> Mode {
         match self.state {
-            State::Queued => Mode::Queued,
-            State::Direct(_) | State::Failed(_) => Mode::Direct,
+            State::Queued | State::Fixed(_) => Mode::Queued,
+            State::Direct(_) | State::Failed(..) => Mode::Direct,
         }
     }
 }

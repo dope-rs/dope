@@ -249,7 +249,7 @@ impl<'p, 's, 'd, ID: Identity, W: wire::Spec, C, B: data::raw::Payload<'d>>
         mut state: State<'p, 's, 'd, ID, C, B>,
         kind: close::Kind,
     ) -> (Option<B>, Option<Self>) {
-        let (egress, transmit) = state.send.retire();
+        let (egress, transmit) = state.send.finish();
         let conn = match kind {
             close::Kind::Connected => Some(Self {
                 id: Id::from_key(key),

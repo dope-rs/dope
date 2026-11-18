@@ -83,6 +83,7 @@ pub(in crate::network::listener) fn accept<'w, 'd: 'w, ID: Identity, A, E>(
         let mut accept = this.accept.as_mut();
         let app = this.app.as_mut();
         let seed = driver.driver_ref().random_seed();
+        let writes = this.owner.writes;
         let result = this.owner.pool_mut().accept_with(
             accept.as_ref().get_ref().capacity,
             fd,
@@ -104,7 +105,10 @@ pub(in crate::network::listener) fn accept<'w, 'd: 'w, ID: Identity, A, E>(
                         return Err(Rejection::Application(error));
                     }
                 };
-                Ok(conn::State::<ID, A::Conn, A::Egress>::new(conn, admit))
+                // SAFETY: accept_with holds this installation's vacant physical
+                // lane before building the generation. Native retirement precedes reuse.
+                let home = unsafe { writes.home(key) };
+                Ok(conn::State::<ID, A::Conn, A::Egress>::new(conn, admit, home))
             },
             driver,
         );

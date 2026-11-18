@@ -82,6 +82,20 @@ impl<'d, ID: route::Identity, F: Fn(DirectWrite)> handler::Borrowed<'d, ID> for 
     ) -> Outcome {
         let mut consumed = None;
         let measure = Tracker::begin();
+        {
+            let mut place = std::mem::MaybeUninit::uninit();
+            let mut abandoned = conn
+                .write()
+                .try_open(driver, &mut place)
+                .expect("fixed output");
+            abandoned
+                .get_mut()
+                .parts()
+                .1
+                .write_byte(0xff)
+                .expect("prefix capacity");
+            std::mem::forget(abandoned);
+        }
         let mut output_slot = std::mem::MaybeUninit::uninit();
         let result = match conn.write().try_open(driver, &mut output_slot) {
             Ok(mut output) => {

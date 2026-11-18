@@ -1,4 +1,4 @@
-use std::{mem, pin};
+use std::{cell::UnsafeCell, mem, pin};
 
 use dope_core::{
     dope_sys::io::socket::msg,
@@ -23,6 +23,7 @@ use crate::network::listener::{self, writer};
 
 pub(in crate::network::listener) mod access;
 pub(in crate::network::listener) mod geometry;
+pub(in crate::network::listener) mod raw;
 pub(in crate::network::listener) mod release;
 
 pub(in crate::network::listener) use release::Claim;
@@ -31,6 +32,8 @@ pub(in crate::network::listener) const WRITE_BUF_CAP: usize = 16 * 1024;
 
 type DirectSource<'p, 's, 'd, ID, B> =
     release::Source<'p, 's, 'd, Flight<B, <B as data::raw::Payload<'d>>::Position>, ID>;
+pub(in crate::network::listener) type Frame<'d, B> =
+    Flight<B, <B as data::raw::Payload<'d>>::Position>;
 type HeaderSource<'p, 's, 'd, ID> = release::Source<'p, 's, 'd, Header, ID>;
 
 /// Byte length proven to fit one listener header owner.
@@ -77,10 +80,10 @@ pub(in crate::network::listener) struct Header {
 }
 
 impl Header {
-    fn init(slot: &mut mem::MaybeUninit<Self>) {
-        slot.write(Self {
+    fn new() -> Self {
+        Self {
             bytes: [mem::MaybeUninit::uninit(); WRITE_BUF_CAP],
-        });
+        }
     }
 
     pub(in crate::network::listener) fn as_slice(self: pin::Pin<&Self>) -> &[mem::MaybeUninit<u8>] {
@@ -104,17 +107,20 @@ pub(in crate::network::listener) struct Flight<B, P: data::position::State> {
 }
 
 impl<B, P: data::position::State> Flight<B, P> {
-    fn init(slot: &mut mem::MaybeUninit<Self>) {
-        let slot = slot.as_mut_ptr();
-        // SAFETY: disjoint field writes initialize the complete exclusive slot.
-        unsafe {
-            Header::init(&mut *(&raw mut (*slot).header).cast());
-            (&raw mut (*slot).source).write(mem::MaybeUninit::uninit());
-            (&raw mut (*slot).position).write(P::default());
-            (&raw mut (*slot).iovecs).write([mem::MaybeUninit::uninit(); listener::IOV_CAP]);
-            (&raw mut (*slot).message).write(mem::MaybeUninit::uninit());
+    fn new() -> Self {
+        Self {
+            header: Header::new(),
+            source: mem::MaybeUninit::uninit(),
+            position: P::default(),
+            iovecs: [mem::MaybeUninit::uninit(); listener::IOV_CAP],
+            message: mem::MaybeUninit::uninit(),
         }
     }
+}
+
+enum Supply<'s, 'd, ID: Identity, T> {
+    Fixed(&'s [raw::Home<T>]),
+    Shared(release::Gate<'s, 'd, T, ID>),
 }
 
 pub(in crate::network::listener) struct Arena<
@@ -123,7 +129,7 @@ pub(in crate::network::listener) struct Arena<
     ID: Identity,
     B: data::raw::Payload<'d> = resident::Shared<'d>,
 > {
-    direct: release::Gate<'s, 'd, Flight<B, <B as data::raw::Payload<'d>>::Position>, ID>,
+    direct: Supply<'s, 'd, ID, Frame<'d, B>>,
     headers: release::Gate<'s, 'd, Header, ID>,
 }
 
@@ -138,30 +144,51 @@ impl<'d, ID: Identity, B: data::raw::Payload<'d>> Arena<'_, 'd, ID, B> {
         ) -> R,
     ) -> Result<R, alloc::Error> {
         let (setup, direct, headers) = shape.into_parts();
-        let (direct, d_lanes) = match direct {
-            Some(count) => (count.get(), Some(lanes)),
-            None => (0, None),
+        enum Store<T> {
+            Fixed(alloc::array::Block<raw::Home<T>, capacity::Count>),
+            Shared(recycle::Store<T>),
+        }
+        let store = match direct {
+            Some(count) if count.get() == lanes.count().raw() => Store::Fixed(
+                alloc::array::Block::try_new(lanes.count(), ())?
+                    .repeat_with(|| raw::Home(UnsafeCell::new(Flight::new()))),
+            ),
+            count => Store::Shared(recycle::Store::try_from_fn(
+                capacity::Count::new(count.map_or(0, |count| count.get())),
+                |_| Flight::new(),
+            )?),
         };
         let (headers, h_lanes) = match headers {
             Some(count) => (count.get(), Some(lanes)),
             None => (0, None),
         };
-        // SAFETY: both factories initialize every field before returning.
-        let (direct, headers) = unsafe {
-            (
-                recycle::Store::try_init(capacity::Count::new(direct), |_, slot| {
-                    Flight::init(slot);
-                })?,
-                recycle::Store::try_init(capacity::Count::new(headers), |_, slot| {
-                    Header::init(slot);
-                })?,
-            )
-        };
+        let headers =
+            recycle::Store::try_from_fn(capacity::Count::new(headers), |_| Header::new())?;
         let arena = Arena {
-            direct: release::Gate::try_new(&direct, driver, d_lanes)?,
+            direct: match &store {
+                Store::Fixed(cells) => Supply::Fixed(cells),
+                Store::Shared(store) => Supply::Shared(release::Gate::try_new(
+                    store,
+                    driver,
+                    direct.map(|_| lanes),
+                )?),
+            },
             headers: release::Gate::try_new(&headers, driver, h_lanes)?,
         };
         Ok(build(&arena, setup))
+    }
+
+    /// # Safety
+    /// The key is the original connection vacancy from this arena's installation.
+    pub(in crate::network::listener) unsafe fn home(
+        &self,
+        key: pool::Key<'d, ID>,
+    ) -> Option<&raw::Home<Frame<'d, B>>> {
+        let Supply::Fixed(cells) = &self.direct else {
+            return None;
+        };
+        // SAFETY: the fixed array and connection pool use the same immutable extent.
+        Some(unsafe { cells.get_unchecked(key.lane().index().get() as usize) })
     }
 }
 
@@ -184,37 +211,44 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Retention<'p, 's, 'd, 
         Self { arena, lane }
     }
 
-    pub(in crate::network::listener) fn sources(
-        &self,
-    ) -> (
-        Option<DirectSource<'p, 's, 'd, ID, B>>,
-        Option<HeaderSource<'p, 's, 'd, ID>>,
-    ) {
-        (
-            release::Source::from(&self.arena.direct, self.lane),
-            release::Source::from(&self.arena.headers, self.lane),
-        )
+    pub(in crate::network::listener) fn shared(&self) -> Option<DirectSource<'p, 's, 'd, ID, B>> {
+        match &self.arena.direct {
+            Supply::Fixed(_) => None,
+            Supply::Shared(gate) => release::Source::from(gate, self.lane),
+        }
     }
 
-    pub(in crate::network::listener) fn take_direct(
+    pub(in crate::network::listener) fn is_fixed(&self) -> bool {
+        matches!(self.arena.direct, Supply::Fixed(_))
+    }
+
+    pub(in crate::network::listener) fn header(&self) -> Option<HeaderSource<'p, 's, 'd, ID>> {
+        release::Source::from(&self.arena.headers, self.lane)
+    }
+
+    pub(in crate::network::listener) fn cancel_header(&self, target: ready::Target<'d>) {
+        if let Some(header) = self.header() {
+            header.cancel(target);
+        }
+    }
+
+    pub(in crate::network::listener) fn claim_shared(
         &self,
         source: DirectSource<'p, 's, 'd, ID, B>,
         target: ready::Target<'d>,
-    ) -> Claim<DirectSlot<'p, 's, 'd, ID, B>> {
-        if let Some(header) = release::Source::from(&self.arena.headers, self.lane) {
-            header.cancel(target);
+    ) -> Claim<raw::DirectSlot<'p, 's, 'd, ID, B>> {
+        self.cancel_header(target);
+        match source.claim(target) {
+            Claim::Acquired(lease) => Claim::Acquired(raw::DirectSlot::shared(lease)),
+            Claim::Waiting => Claim::Waiting,
         }
-        source.claim(target)
     }
 
     pub(in crate::network::listener) fn cancel_wait(&self, target: ready::Target<'d>) {
-        let (direct, header) = self.sources();
-        if let Some(direct) = direct {
+        if let Some(direct) = self.shared() {
             direct.cancel(target);
         }
-        if let Some(header) = header {
-            header.cancel(target);
-        }
+        self.cancel_header(target);
     }
 
     pub(in crate::network::listener) fn take_header(
@@ -222,7 +256,7 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Retention<'p, 's, 'd, 
         source: HeaderSource<'p, 's, 'd, ID>,
         target: ready::Target<'d>,
     ) -> Claim<HeaderSlot<'p, 's, 'd, ID>> {
-        if let Some(direct) = release::Source::from(&self.arena.direct, self.lane) {
+        if let Some(direct) = self.shared() {
             direct.cancel(target);
         }
         source.claim(target)
@@ -249,9 +283,6 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Retention<'p, 's, 'd, 
 pub(in crate::network::listener) type HeaderSlot<'p, 's, 'd, ID> =
     release::Lease<'p, 's, 'd, Header, ID>;
 
-pub(in crate::network::listener) type DirectSlot<'p, 's, 'd, ID, B = resident::Shared<'d>> =
-    release::Lease<'p, 's, 'd, Flight<B, <B as data::raw::Payload<'d>>::Position>, ID>;
-
 pub(in crate::network::listener) type Plan<'a, 'p, 's, 'e, 'd, ID, B, G> =
     reserve::Plan<'a, 'e, 'd, writer::Payload<'p, 's, 'd, ID, B>, writer::Reserve<'d, B>, G>;
 
@@ -271,7 +302,7 @@ impl<'p, 's, 'd, ID: Identity> HeaderSlot<'p, 's, 'd, ID> {
 }
 
 impl<'d, ID: Identity, B: data::raw::Payload<'d>> AsMut<[mem::MaybeUninit<u8>; WRITE_BUF_CAP]>
-    for DirectSlot<'_, '_, 'd, ID, B>
+    for raw::DirectSlot<'_, '_, 'd, ID, B>
 {
     fn as_mut(&mut self) -> &mut [mem::MaybeUninit<u8>; WRITE_BUF_CAP] {
         self.get_mut().project().header.as_mut_slice()

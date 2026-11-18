@@ -4,7 +4,7 @@ use dope_core::driver::route::{Identity, KeyTag};
 use dope_net::link::egress::data;
 use o3::buffer::resident;
 
-use crate::network::listener::{conn, runtime::accept, writer::state};
+use crate::network::listener::{conn, runtime::accept, writer::{memory, state}};
 
 pub(crate) struct State<
     'p,
@@ -28,12 +28,13 @@ impl<'p, 's, 'd, ID: Identity, C, B: data::raw::Payload<'d>> State<'p, 's, 'd, I
     pub(in crate::network::listener) fn new(
         conn: C,
         admit: Option<accept::Admission<'d, ID>>,
+        home: Option<&'p memory::raw::Home<memory::Frame<'d, B>>>,
     ) -> Self {
         Self {
             conn,
             admission: admit,
             control: Control {
-                send: state::Send::default(),
+                send: state::Send::new(home),
                 failure: None,
             },
         }

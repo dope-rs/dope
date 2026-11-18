@@ -10,7 +10,7 @@ use o3::{
 
 use crate::network::listener::{
     conn::{self, write},
-    writer::{self, deadline::Slot, flow::Flow, memory},
+    writer::{self, deadline::Slot, memory},
 };
 
 mod raw;
@@ -74,7 +74,7 @@ pub(super) enum Reservation<
     Queued<'a, 'p, 's, 'e, 'd, ID, B, Q>: 'a,
 {
     Direct {
-        header: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        header: memory::raw::DirectSlot<'p, 's, 'd, ID, B>,
         driver: &'a mut driver::Context<'io, 'd>,
     },
     Queued(G::Stored<'a, Queued<'a, 'p, 's, 'e, 'd, ID, B, Q>>),
@@ -128,6 +128,27 @@ where
     W: wire::Spec + 'w + 'd,
     B: data::raw::Payload<'d>,
 {
+    pub(super) fn insert<'out>(
+        slot: &'a mut Slot<'c, 'p, 's, 'w, 'd, ID, W, C, B>,
+        open: &'a conn::Open<'c, 'p, 's, 'e, 'd, ID, B>,
+        work: app::Lease<'a, 'd>,
+        reservation: Reservation<'a, 'p, 's, 'e, 'io, 'd, ID, B, Q, G>,
+        output: &'out mut MaybeUninit<Self>,
+    ) -> slot::Occupied<'out, Self> {
+        slot::Vacant::new(output).insert(Self {
+            lease: Lease::open(
+                Owner {
+                    slot,
+                    open,
+                    work,
+                    scope: marker::PhantomData,
+                },
+                reservation,
+            ),
+            written: 0,
+        })
+    }
+
     pub(super) fn prepare<'out, P>(
         connection: &'a mut conn::Ctx<'e, 'c, 'p, 's, 'w, 'd, ID, W, C, B>,
         driver: &'a mut driver::Context<'io, 'd>,
@@ -170,47 +191,31 @@ where
         }
         let queue = &open.queue;
         let target = slot.io().wake_target();
-        let flow = slot.flow(queue.pending());
-        let (direct, header) = open.held.sources();
-        let has_direct = direct.is_some();
-        let insert = |slot, reservation| {
-            slot::Vacant::new(output).insert(Self {
-                lease: Lease::open(
-                    Owner {
-                        slot,
-                        open,
-                        work,
-                        scope: marker::PhantomData,
-                    },
-                    reservation,
-                ),
-                written: 0,
-            })
-        };
-        if let (Flow::Clear, Some(source)) = (&flow, direct) {
-            match open.held.take_direct(source, target) {
-                Claim::Acquired(header) => {
-                    queue.cancel_wait(driver.region_token());
-                    return Ok(insert(slot, Reservation::Direct { header, driver }));
-                }
-                Claim::Waiting => {}
-            }
-        }
-        let prepared = header.zip(prepare(queue));
-        if has_direct && prepared.is_none() {
-            let cause = if matches!(flow, Flow::Clear) {
+        let (slot, direct) = match slot.direct(&open.held, queue.pending(), target) {
+            Ok(granted) => {
                 queue.cancel_wait(driver.region_token());
-                write::Deferred::Capacity
-            } else {
-                open.held.cancel(driver.region_token(), queue, target);
-                write::Deferred::OrderedDrain
+                return Ok(granted.output(open, work, driver, output));
+            }
+            Err(other) => other,
+        };
+        let prepared = open.held.header().zip(prepare(queue));
+        let Some((header, (proof, prepared))) = prepared else {
+            let cause = match direct {
+                write::direct::Deferred::Absent => {
+                    open.held.cancel(driver.region_token(), queue, target);
+                    return Err(Admission::Rejected(write::Reject::Header));
+                }
+                write::direct::Deferred::Ordered => {
+                    open.held.cancel(driver.region_token(), queue, target);
+                    write::Deferred::OrderedDrain
+                }
+                write::direct::Deferred::Capacity => {
+                    queue.cancel_wait(driver.region_token());
+                    write::Deferred::Capacity
+                }
             };
             slot.ensure_send(driver.driver_ref().clock().now());
             return Err(Admission::Deferred(cause));
-        }
-        let Some((header, (proof, prepared))) = prepared else {
-            open.held.cancel(driver.region_token(), queue, target);
-            return Err(Admission::Rejected(write::Reject::Header));
         };
         let header = match open.held.take_header(header, target) {
             Claim::Acquired(header) => header,
@@ -234,8 +239,10 @@ where
         let pending = queue.pending();
         let now = driver.driver_ref().clock().now();
         let (vacant, acquire) = plan.prepare(driver.region_token());
-        let mut output = insert(
+        let mut output = Self::insert(
             slot,
+            open,
+            work,
             Reservation::Queued(G::store(
                 proof,
                 Queued {
@@ -244,6 +251,7 @@ where
                     pending,
                 },
             )),
+            output,
         );
         let (_, reservation) = output.get_mut().lease.parts_mut();
         let Reservation::Queued(queued) = reservation else {
@@ -270,9 +278,11 @@ where
         let (owner, reservation) = self.lease.parts_mut();
         let bytes = match reservation {
             Reservation::Direct { header, .. } => header.as_mut(),
-            Reservation::Queued(queued) => G::get_mut::<Queued<'a, 'p, 's, 'e, 'd, ID, B, Q>>(queued)
-                .header
-                .as_mut(),
+            Reservation::Queued(queued) => {
+                G::get_mut::<Queued<'a, 'p, 's, 'e, 'd, ID, B, Q>>(queued)
+                    .header
+                    .as_mut()
+            }
         };
         (owner.slot.conn, raw::borrow(bytes, &mut self.written))
     }

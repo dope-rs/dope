@@ -1,11 +1,11 @@
-use std::pin;
+use std::{mem::MaybeUninit, pin};
 
 use dope_core::driver::{self, route::Identity};
 use dope_net::{
     link::{egress, event, pool, pool::pending::Handle, slot::transmit},
     wire::send::reclaim,
 };
-use o3::depot;
+use o3::{depot, mem::slot};
 
 use crate::network::listener::{
     self, conn, handler,
@@ -79,24 +79,22 @@ pub(super) fn commit_end<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::T
     let key = slot.key();
     let finish = slot.sending().finish(slots, driver);
     pending.wait_send(slot.send_status().is_waiting());
-    let closed = match &finish {
-        transmit::Finalize::Rejected(failure) => {
-            slot.state.send.fail(conn::Transmit::Rejected(*failure))
-        }
-        transmit::Finalize::Armed(())
-        | transmit::Finalize::Settled
-        | transmit::Finalize::Abandoned => None,
-    };
     match finish {
         transmit::Finalize::Armed(()) => {
             slot.ensure_send(driver.driver_ref().clock().now());
         }
-        transmit::Finalize::Settled
-        | transmit::Finalize::Abandoned
-        | transmit::Finalize::Rejected(_) => slot.cancel_send(),
-    }
-    if let Some(body) = closed {
-        writer::release_egress(app, key, body, handler::Disposition::Closed);
+        transmit::Finalize::Rejected(failure) => {
+            let mut place = MaybeUninit::uninit();
+            let closed = slot.state.send.take(
+                Some(conn::Transmit::Rejected(failure)),
+                slot::Vacant::new(&mut place),
+            );
+            slot.cancel_send();
+            if let Some(body) = closed {
+                writer::release_egress(app, key, body.into_inner(), handler::Disposition::Closed);
+            }
+        }
+        transmit::Finalize::Settled | transmit::Finalize::Abandoned => slot.cancel_send(),
     }
 }
 
@@ -199,9 +197,9 @@ where
     let result = match result {
         Ok(result) => result,
         Err(failure) => {
-            if let Some(egress) = slot.state.send.fail(failure) {
+            slot.state.send.release(Some(failure), |egress| {
                 writer::release_egress(app.as_mut(), key, egress, handler::Disposition::Closed);
-            }
+            });
             flow::Flow::Clear
         }
     };

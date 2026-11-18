@@ -162,7 +162,7 @@ where
         let mut app = this.app.as_mut();
         this.owner
             .pool_mut()
-            .finish_keyed(proof, |state| state.send.retire().0, |key, released| match released {
+            .finish_keyed(proof, |state| state.send.finish().0, |key, released| match released {
                 Released::Payload(payload) => {
                     writer::release_payload(
                         app.as_mut(),

@@ -1,10 +1,11 @@
-use std::pin;
+use std::{mem::MaybeUninit, pin};
 
 use dope_core::{
     driver::{self, route::Identity, schedule},
     io::event::net::send::Completion,
 };
 use handler::{Runtime, send};
+use o3::mem::slot;
 
 use crate::{
     app::env,
@@ -27,9 +28,9 @@ pub(super) fn complete<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Tra
     let (_, mut connection, _, _) = super::sender::view::<ID, A, T>(source, deadlines);
     let key = connection.key();
     connection.cancel_send();
-    if let Some(body) = connection.state.send.retire().0 {
+    connection.state.send.release(None, |body| {
         writer::release_egress(app.as_mut(), key, body, handler::Disposition::Sent);
-    }
+    });
     notify(source, deadlines, writes, app, turn, driver);
 }
 
@@ -64,6 +65,8 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
     let this = listener.as_mut().project();
     let writer::Owner { pool, deadlines, writes } = this.owner;
     let mut ctx = (this.app, this.accept, deadlines);
+    let mut body = MaybeUninit::uninit();
+    let place = slot::Vacant::new(&mut body);
     let _ = pool.settle(
         done, driver, &mut ctx,
         |_, _| {},
@@ -80,30 +83,30 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
                         Some(progress) => {
                             progress.settle(consumed);
                             if progress.error().is_some() {
-                                (Action::Close, send.take(None))
+                                (Action::Close, send.take(None, place))
                             } else if progress.has_more() {
                                 (Action::Advance, None)
                             } else {
-                                (Action::Notify, send.take(None))
+                                (Action::Notify, send.take(None, place))
                             }
                         }
                         None => (Action::Close, None),
                     }
                 }
-                SendOutcome::DirectClosed => (Action::Close, connection.state.send.take(None)),
+                SendOutcome::DirectClosed => (Action::Close, connection.state.send.take(None, place)),
                 SendOutcome::Queued { .. } | SendOutcome::WriteShutdown => (Action::Queued, None),
                 SendOutcome::Terminal => (Action::Terminal, None),
                 SendOutcome::Rejected { failure } => (
                     Action::Close,
-                    connection.state.send.fail(conn::Transmit::Rejected(failure)),
+                    connection.state.send.take(Some(conn::Transmit::Rejected(failure)), place),
                 ),
                 SendOutcome::Failed { failure } => (
                     Action::Close,
-                    connection.state.send.fail(conn::Transmit::Io(failure)),
+                    connection.state.send.take(Some(conn::Transmit::Io(failure)), place),
                 ),
                 SendOutcome::Invalid { error } => (
                     Action::Close,
-                    connection.state.send.fail(conn::Transmit::Invalid(error)),
+                    connection.state.send.take(Some(conn::Transmit::Invalid(error)), place),
                 ),
                 SendOutcome::Close => (Action::Close, None),
             };
@@ -118,7 +121,7 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
                     _ => handler::Disposition::Sent,
                 };
                 let key = source.view().connection.key();
-                writer::release_egress(ctx.0.as_mut(), key, body, cause);
+                writer::release_egress(ctx.0.as_mut(), key, body.into_inner(), cause);
             }
             match action {
                 Action::Return => return,

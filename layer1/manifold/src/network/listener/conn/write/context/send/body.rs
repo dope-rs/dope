@@ -8,23 +8,9 @@ use dope_net::{
     wire,
 };
 use egress::reserve::{error, exact};
-use memory::access;
-use write::body::Admit;
+use write::{body::Admit, direct::Deferred};
 
-use crate::network::listener::{
-    conn,
-    writer::{
-        self,
-        flow::Flow::Clear,
-        memory::{self, Claim},
-    },
-};
-
-enum Direct {
-    Absent,
-    Queued,
-    Waiting,
-}
+use crate::network::listener::{conn, writer};
 
 pub(in crate::network::listener::conn::write::context) fn send<
     'a,
@@ -74,60 +60,38 @@ where
     if slot.send_status().is_closed() {
         return Admit::Closed(load);
     }
-    let Some(conn::Open {
-        slots,
-        permit,
-        held,
-        queue,
-    }) = scope.output
-    else {
+    let Some(open) = scope.output else {
         return Admit::Closed(load);
     };
-    let slots = *slots;
-    let ready = *permit;
+    let held = &open.held;
+    let queue = &open.queue;
+    let ready = open.permit;
     let target = slot.io().wake_target();
     let progress = 'admit: {
-        let flow = slot.flow(queue.pending());
-        let (direct, _) = held.sources();
-        let direct = if !matches!(&flow, Clear) {
-            if direct.is_some() {
-                Direct::Queued
-            } else {
-                Direct::Absent
+        let (slot, direct) = match slot.direct(held, queue.pending(), target) {
+            Ok(granted) => {
+                queue.cancel_wait(driver.region_token());
+                break 'admit granted.send(open, inject(load), now, driver);
             }
-        } else {
-            match direct {
-                Some(source) => match held.take_direct(source, target) {
-                    Claim::Acquired(flight) => {
-                        queue.cancel_wait(driver.region_token());
-                        slot.state
-                            .send
-                            .begin(access::Direct::body(flight, inject(load)));
-                        slot.ensure_send(now);
-                        break 'admit slot.advance_send(slots, ready, driver);
-                    }
-                    Claim::Waiting => Direct::Waiting,
-                },
-                None => Direct::Absent,
-            }
+            Err(other) => other,
         };
         let offer = match queue.offer(load) {
             Ok(offer) => offer,
             Err(error) => {
                 let (load, reason) = error.into_parts();
                 let cause = match direct {
-                    Direct::Absent => {
+                    Deferred::Absent => {
                         held.cancel(driver.region_token(), queue, target);
                         return Admit::Rejected {
                             cause: write::Reject::Geometry(error::Full::Reserve(reason)),
                             load,
                         };
                     }
-                    Direct::Queued => {
+                    Deferred::Ordered => {
                         held.cancel(driver.region_token(), queue, target);
                         write::Deferred::OrderedDrain
                     }
-                    Direct::Waiting => {
+                    Deferred::Capacity => {
                         queue.cancel_wait(driver.region_token());
                         write::Deferred::Capacity
                     }
