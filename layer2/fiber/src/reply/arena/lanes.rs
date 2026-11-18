@@ -206,7 +206,7 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
     pub(in crate::reply) fn register(
         self,
         token: &mut region::Token<region::Identity<'region>>,
-        accept: recv::Acceptance,
+        accept: recv::Accepted,
         tag: K,
     ) -> Result<state::EntryKey, attach::Error> {
         token

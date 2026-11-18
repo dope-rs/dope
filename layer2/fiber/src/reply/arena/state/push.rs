@@ -106,7 +106,7 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         };
         match entry.state.end {
             End::Open => match entry.owners.acceptance {
-                Some(recv::Acceptance::Unit) => order::Front::Denied,
+                Some(recv::Accepted::Unit) => order::Front::Denied,
                 _ => order::Front::Open,
             },
             _ => order::Front::Detached,
@@ -166,10 +166,10 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         let Some(accept) = open.acceptance() else {
             return Ok(None);
         };
-        if let recv::Acceptance::Unit = accept {
+        if let recv::Accepted::Unit = accept {
             return Err(Reject::Front(order::Front::Denied));
         }
-        open.try_data(usage).map(Some).map_err(Reject::Acquire)
+        open.try_data(usage, accept).map(Some).map_err(Reject::Acquire)
     }
 
     /// Retains the attached front before constructing its terminal error.

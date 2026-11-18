@@ -90,19 +90,25 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         }
     }
 
-    pub(in crate::reply) const fn acceptance(&self) -> Option<recv::Acceptance> {
+    pub(in crate::reply) const fn acceptance(&self) -> Option<recv::Accepted> {
         self.order.owner.acceptance
     }
 
     pub(in crate::reply) fn try_data(
         self,
         added: D::Amount,
+        accepted: recv::Accepted,
     ) -> Result<Push<'a, 'arena, 'credits, 'region, D>, Acquire> {
-        let lease = Lease::try_new(self.order.owner, payload::Value::new(added))?;
+        let signal = accepted.observes_data().then_some(self.signal);
+        let lease = Lease::try_new(
+            self.order.owner,
+            payload::Value::new(added),
+            accepted.acceptance(),
+        )?;
         Ok(fifo::Fifo::reserve(Reserve {
             queue: &mut self.state.data,
             lease,
-            signal: self.signal,
+            signal,
         }))
     }
 
@@ -147,7 +153,13 @@ impl<E: Footprint, K> Failure<'_, '_, '_, '_, E, K> {
         usage: usage::Usage,
     ) -> Result<Depth, (E, usage::Acquire)> {
         let amount = payload::Failure::new(usage);
-        let lease = match Lease::try_new(&mut *self.order.owner, amount) {
+        let acceptance = self
+            .order
+            .owner
+            .acceptance
+            .map(recv::Accepted::acceptance)
+            .unwrap_or(recv::Acceptance::Collected);
+        let lease = match Lease::try_new(&mut *self.order.owner, amount, acceptance) {
             Ok(lease) => lease,
             Err(cause) => return Err((value, cause)),
         };
@@ -263,13 +275,13 @@ const _: () = {
 pub(in crate::reply) struct Push<'a, 'arena, 'credits, 'region, C: Footprint> {
     entry: slots::Vacant<Item<C>, &'a mut fifo::Fifo<'arena, Item<C>, false>>,
     lease: Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>>,
-    signal: &'a mut state::Signal<'region>,
+    signal: Option<&'a mut state::Signal<'region>>,
 }
 
 struct Reserve<'a, 'arena, 'credits, 'region, C: Footprint> {
     queue: &'a mut fifo::Fifo<'arena, Item<C>, false>,
     lease: Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>>,
-    signal: &'a mut state::Signal<'region>,
+    signal: Option<&'a mut state::Signal<'region>>,
 }
 
 // SAFETY: try_data acquires Data for Usage or one Value for Bytes from this
@@ -282,7 +294,7 @@ unsafe impl<'a, 'arena: 'a, 'credits, 'region, C: Footprint + 'arena>
     type Item = Item<C>;
     type Credit = (
         Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>>,
-        &'a mut state::Signal<'region>,
+        Option<&'a mut state::Signal<'region>>,
     );
     type Reserved = Push<'a, 'arena, 'credits, 'region, C>;
 
@@ -314,7 +326,9 @@ impl<'a, 'arena, 'credits, 'region, C: Footprint> Push<'a, 'arena, 'credits, 're
         let amount = self.lease.amount();
         self.lease.keep();
         self.entry.push_back(Item { value, amount });
-        self.signal.notify();
+        if let Some(signal) = self.signal {
+            signal.notify();
+        }
     }
 }
 

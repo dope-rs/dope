@@ -18,7 +18,7 @@ use crate::reply::{
 
 pub(in crate::reply) struct Owner<'arena, 'credits, 'region> {
     order: order::State,
-    pub(in crate::reply) acceptance: Option<recv::Acceptance>,
+    pub(in crate::reply) acceptance: Option<recv::Accepted>,
     pub(in crate::reply) payload: pool::Payload<'arena, 'credits, 'region>,
 }
 
@@ -40,7 +40,7 @@ impl<'arena, 'credits, 'region> Owner<'arena, 'credits, 'region> {
     pub(in crate::reply) fn new(
         admitted: pool::Registration<'arena, 'credits, 'region, entries::Unit>,
         entry_index: Index,
-        acceptance: recv::Acceptance,
+        acceptance: recv::Accepted,
     ) -> Self {
         let (lane, source) = admitted.into_parts();
         let pool = lane.pool();
@@ -221,7 +221,10 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
 
     /// # Safety
     /// The original first node is detached, and its sole root owns this member.
-    pub(in crate::reply) unsafe fn take_first(&mut self, amount: payload::Value<usage::Bytes>) {
+    pub(in crate::reply) unsafe fn take_first<A: usage::amount::Amount>(
+        &mut self,
+        amount: payload::Value<A>,
+    ) {
         // SAFETY: the caller retains this exact member until its root takes custody.
         unsafe { self.sum.take(amount) };
         self.return_data(payload::Data);
@@ -229,7 +232,10 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
 
     /// # Safety
     /// The original first node has been freed; its retained amount returns once.
-    pub(in crate::reply) unsafe fn release_first(&self, amount: payload::Failure<usage::Bytes>) {
+    pub(in crate::reply) unsafe fn release_first<A: usage::amount::Amount>(
+        &self,
+        amount: payload::Failure<A>,
+    ) {
         self.return_data(amount);
     }
 

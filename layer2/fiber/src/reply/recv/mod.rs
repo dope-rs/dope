@@ -39,10 +39,61 @@ const _: () = {
     assert!(mem::size_of::<Option<Acceptance>>() == mem::size_of::<Acceptance>());
 };
 
+/// Selects when an attached response can observe progress.
+pub trait Observation {
+    const TERMINAL: bool;
+}
+
+impl Observation for () {
+    const TERMINAL: bool = false;
+}
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+pub(in crate::reply) enum Accepted {
+    Payload,
+    Unit,
+    Collected,
+    First,
+    Complete,
+    One,
+}
+
+impl Accepted {
+    const fn new<M: Observation>(acceptance: Acceptance) -> Self {
+        match acceptance {
+            Acceptance::Payload => Self::Payload,
+            Acceptance::Unit => Self::Unit,
+            Acceptance::Collected if M::TERMINAL => Self::Complete,
+            Acceptance::First if M::TERMINAL => Self::One,
+            Acceptance::Collected => Self::Collected,
+            Acceptance::First => Self::First,
+        }
+    }
+
+    pub(in crate::reply) const fn acceptance(self) -> Acceptance {
+        match self {
+            Self::Payload => Acceptance::Payload,
+            Self::Unit => Acceptance::Unit,
+            Self::Collected | Self::Complete => Acceptance::Collected,
+            Self::First | Self::One => Acceptance::First,
+        }
+    }
+
+    pub(in crate::reply) const fn observes_data(self) -> bool {
+        !matches!(self, Self::Complete | Self::One)
+    }
+}
+
+const _: () = {
+    assert!(mem::size_of::<Accepted>() == mem::size_of::<Acceptance>());
+    assert!(mem::size_of::<Option<Accepted>>() == mem::size_of::<Option<Acceptance>>());
+};
+
 /// Selects reply admission before any data arrives.
 pub trait Spec<'s, 'arena, 'credits, 'region, D: Footprint, E = D> {
     type Context: Unpin;
-    type Mode;
+    type Mode: Observation;
     const ACCEPTANCE: Acceptance = Acceptance::Payload;
 }
 
@@ -99,7 +150,7 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
         &self,
         token: &mut region::Token<region::Identity<'region>>,
         lane: Lane<'s, 'arena, 'credits, 'region, D, E, K>,
-        accept: Acceptance,
+        accept: Accepted,
         tag: K,
     ) -> Result<Registration<'s, 'arena, 'credits, 'region, D, E, K>, attach::Error> {
         self.check(lane)?;
@@ -124,7 +175,7 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
         &mut self,
         token: &mut region::Token<region::Identity<'region>>,
         lane: Lane<'s, 'arena, 'credits, 'region, D, E, K>,
-        accept: Acceptance,
+        accept: Accepted,
         tag: K,
     ) -> Result<order::Depth, attach::Error> {
         let reg = self.register(token, lane, accept, tag)?;
@@ -137,7 +188,7 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
         &mut self,
         token: &mut region::Token<region::Identity<'region>>,
         lane: Lane<'s, 'arena, 'credits, 'region, D, E, K>,
-        accept: Acceptance,
+        accept: Accepted,
         tag: K,
     ) -> Result<(), attach::Error> {
         let reg = self.register(token, lane, accept, tag)?;
@@ -237,7 +288,7 @@ impl<
         input: I,
         make: impl FnOnce(I) -> (X::Context, R),
     ) -> Result<(order::Depth, Self, R), (attach::Error, I)> {
-        let key = match lane.register(token, X::ACCEPTANCE, tag) {
+        let key = match lane.register(token, Accepted::new::<X::Mode>(X::ACCEPTANCE), tag) {
             Ok(key) => key,
             Err(cause) => return Err((cause, input)),
         };
@@ -276,7 +327,10 @@ impl<
         }
         let (key, output) = lane.group_with(
             token,
-            (X::ACCEPTANCE, Y::ACCEPTANCE),
+            (
+                Accepted::new::<X::Mode>(X::ACCEPTANCE),
+                Accepted::new::<Y::Mode>(Y::ACCEPTANCE),
+            ),
             commands,
             input,
             make,
@@ -403,7 +457,8 @@ impl<
         lane: Lane<'s, 'arena, 'credits, 'region, D, E, K>,
         tag: K,
     ) -> Result<order::Depth, attach::Error> {
-        self.handle.try_ordered(token, lane, X::ACCEPTANCE, tag)
+        self.handle
+            .try_ordered(token, lane, Accepted::new::<X::Mode>(X::ACCEPTANCE), tag)
     }
 
     fn try_tagged(
@@ -412,7 +467,8 @@ impl<
         lane: Lane<'s, 'arena, 'credits, 'region, D, E, K>,
         tag: K,
     ) -> Result<(), attach::Error> {
-        self.handle.try_attach(token, lane, X::ACCEPTANCE, tag)
+        self.handle
+            .try_attach(token, lane, Accepted::new::<X::Mode>(X::ACCEPTANCE), tag)
     }
 
     fn detach(&mut self) {

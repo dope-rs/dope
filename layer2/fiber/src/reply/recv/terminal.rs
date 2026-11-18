@@ -12,6 +12,14 @@ use super::{Acceptance, Handle, Response, Spec, outcome};
 pub struct First;
 pub struct Collected;
 
+impl super::Observation for First {
+    const TERMINAL: bool = true;
+}
+
+impl super::Observation for Collected {
+    const TERMINAL: bool = true;
+}
+
 impl<'s, 'arena, 'credits, 'region, D: usage::Footprint, E>
     Spec<'s, 'arena, 'credits, 'region, D, E> for Collected
 {
@@ -20,7 +28,7 @@ impl<'s, 'arena, 'credits, 'region, D: usage::Footprint, E>
     const ACCEPTANCE: Acceptance = Acceptance::Collected;
 }
 
-impl<'s, 'arena, 'credits, 'region, D: usage::Footprint<Amount = usage::Bytes>, E>
+impl<'s, 'arena, 'credits, 'region, D: usage::Footprint, E>
     Spec<'s, 'arena, 'credits, 'region, D, E> for First
 {
     type Context = ();
@@ -102,7 +110,7 @@ impl<'s, 'arena, 'credits, 'region, D: usage::Footprint, E, K>
     }
 }
 
-impl<'s, 'arena, 'credits, 'region, D: usage::Footprint<Amount = usage::Bytes>, E, K>
+impl<'s, 'arena, 'credits, 'region, D: usage::Footprint, E, K>
     Response<'s, 'arena, 'credits, 'region, D, First, E, K>
 {
     pub fn try_first(

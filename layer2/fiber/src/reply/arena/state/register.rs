@@ -57,7 +57,7 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K>
     pub(in crate::reply::arena) fn insert(
         &mut self,
         lane: reply::Lane<'_, 'arena, 'credits, 'region, D, E, K>,
-        accept: recv::Acceptance,
+        accept: recv::Accepted,
         tag: K,
     ) -> Result<state::EntryKey, attach::Error> {
         let state = self;
@@ -95,7 +95,7 @@ impl<'arena, 'credits, 'region, D: Footprint, E, K>
         lane: reply::Lane<'_, 'arena, 'credits, 'region, D, E, K>,
         vacant: Vacant<'_, 'arena, 'credits, 'region, D, E, ROOT>,
         plan: pool::Registration<'arena, 'credits, 'region, entries::Unit>,
-        accept: recv::Acceptance,
+        accept: recv::Accepted,
         tag: K,
     ) -> state::EntryKey {
         let raw = vacant.insert_with(|raw| {
@@ -120,7 +120,7 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E, K>
     pub(in crate::reply) fn group_with<I, V, F, O, R, const N: usize>(
         self,
         token: &mut region::Token<region::Identity<'region>>,
-        (accept, mode): (recv::Acceptance, recv::Acceptance),
+        (accept, mode): (recv::Accepted, recv::Accepted),
         outputs: &mut [O; N],
         input: I,
         make: impl FnOnce(I) -> ([V; N], F, K, R),

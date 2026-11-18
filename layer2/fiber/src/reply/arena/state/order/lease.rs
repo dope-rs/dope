@@ -3,7 +3,7 @@ use std::{marker, mem::size_of};
 use o3::mem::{self, lease};
 
 use crate::reply::{
-    recv::Acceptance,
+    recv::{Acceptance, Accepted},
     retain::{
         grant::payload,
         pool::{Acquire, Owner},
@@ -33,8 +33,8 @@ where
     pub(in crate::reply) fn try_new(
         owner: &'a mut Owner<'arena, 'credits, 'region>,
         amount: A,
+        acceptance: Acceptance,
     ) -> Result<Self, Acquire> {
-        let acceptance = owner.acceptance.unwrap_or(Acceptance::Collected);
         owner.payload.try_acquire(amount, acceptance)?;
         Ok(Self {
             inner: mem::Lease::open(
@@ -72,7 +72,7 @@ impl<A: mem::raw::Amount<3, usize> + Into<payload::Requested>> mem::Return
 impl<A: Amount> Lease<'_, '_, '_, '_, payload::Value<A>> {
     pub(in crate::reply) fn keep(self) {
         let owner = self.into_owner();
-        if owner.acceptance == Some(Acceptance::First) {
+        if matches!(owner.acceptance, Some(Accepted::First | Accepted::One)) {
             owner.acceptance = None;
         }
     }
