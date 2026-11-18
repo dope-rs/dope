@@ -57,130 +57,104 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
     E: env::Spec<Wire = A::Wire>,
 {
     use super::sender;
-    use dope_net::link::{event::{DirectStatus, SendFailure, SendOutcome}, pool::send::Completion};
+    use dope_net::link::event::SendOutcome;
     use o3::depot::raw::Proof;
     use writer::deadline::Slot;
 
     let this = listener.as_mut().project();
     let writer::Owner { pool, deadlines, writes } = this.owner;
-    pool.settle(
-        done, driver, &mut (this.app, this.accept, deadlines),
+    let mut ctx = (this.app, this.accept, deadlines);
+    let _ = pool.settle(
+        done, driver, &mut ctx,
         |_, _| {},
         |(app, _, _), key, body, _| {
             writer::release_payload(app.as_mut(), key, body, handler::Disposition::Sent);
         },
-        |ctx, completion, driver| {
-            let source = match completion {
-                Completion::Direct(direct) => {
-                    let (mut owner, status) = direct.into_parts();
-                    let key = owner.connection().key();
-                    match status {
-                        DirectStatus::Sent(done) => {
-                            let send = &mut owner.connection().state.send;
-                            if let Some(state) = send.direct() {
-                                state.progress.settle(done);
-                                if state.progress.error().is_none() {
-                                    if state.progress.has_more() {
-                                        let mut source = owner.publish(|conn| {
-                                            // SAFETY: publication retains this writer's admitted slot and deadline lane.
-                                            Slot::from(unsafe { Proof::new(((conn, &mut *ctx.2), key)) }).cancel_send();
-                                        });
-                                        advance::<ID, A, _>(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
-                                        let mut entry = source.into_entry();
-                                        if phase::finish(&mut entry, ctx.0.as_ref()) {
-                                            drop(writer::close(Ok(entry), *writes, ctx, turn, driver));
-                                        }
-                                        return;
-                                    }
-                                    let direct = send.take(None);
-                                    let publish = || owner.publish(|conn| {
-                                        // SAFETY: publication retains this writer's admitted slot and deadline lane.
-                                        Slot::from(unsafe { Proof::new(((conn, &mut *ctx.2), key)) }).cancel_send();
-                                    });
-                                    let mut source = match direct {
-                                        Some(direct) => direct.retire(publish, |_, body| {
-                                            writer::release_egress(ctx.0.as_mut(), key, body, handler::Disposition::Sent);
-                                        }),
-                                        None => publish(),
-                                    };
-                                    notify(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
-                                    let mut entry = source.into_entry();
-                                    if phase::finish(&mut entry, ctx.0.as_ref()) {
-                                        drop(writer::close(Ok(entry), *writes, ctx, turn, driver));
-                                    }
-                                    return;
-                                }
-                            }
-                            owner.publish(|conn| {
-                                // SAFETY: publication retains this writer's admitted slot and deadline lane.
-                                Slot::from(unsafe { Proof::new(((conn, &mut *ctx.2), key)) }).cancel_send();
-                            })
-                        }
-                        status => {
-                            let failure = match status {
-                                DirectStatus::Rejected(error) => Some(conn::Transmit::Rejected(SendFailure::Direct(error))),
-                                DirectStatus::Failed(error) => Some(conn::Transmit::Io(SendFailure::Direct(error))),
-                                DirectStatus::Closed => None,
-                                DirectStatus::Sent(_) => unreachable!("direct"),
-                            };
-                            let direct = owner.connection().state.send.take(failure);
-                            let publish = || owner.publish(|conn| {
-                                // SAFETY: publication retains this writer's admitted slot and deadline lane.
-                                Slot::from(unsafe { Proof::new(((conn, &mut *ctx.2), key)) }).cancel_send();
-                            });
-                            match direct {
-                                Some(direct) => direct.retire(publish, |_, body| {
-                                    writer::release_egress(ctx.0.as_mut(), key, body, handler::Disposition::Closed);
-                                }),
-                                None => publish(),
+        |ctx, connection, outcome| {
+            let key = connection.key();
+            let retired = match outcome {
+                SendOutcome::Pending => return (Action::Return, None),
+                SendOutcome::Direct { consumed } => {
+                    let send = &mut connection.state.send;
+                    match send.progress() {
+                        Some(progress) => {
+                            progress.settle(consumed);
+                            if progress.error().is_some() {
+                                (Action::Close, send.take(None))
+                            } else if progress.has_more() {
+                                (Action::Advance, None)
+                            } else {
+                                (Action::Notify, send.take(None))
                             }
                         }
+                        None => (Action::Close, None),
                     }
                 }
-                Completion::Ready(owner, outcome) => {
-                    let mut source = owner.publish(|conn| {
-                        if !matches!(outcome, SendOutcome::Pending) {
-                            let key = conn.key();
-                            // SAFETY: publication retains this writer's admitted slot and deadline lane.
-                            Slot::from(unsafe { Proof::new(((conn, &mut *ctx.2), key)) }).cancel_send();
-                        }
-                    });
-                    let failure = match outcome {
-                        SendOutcome::Queued { .. } | SendOutcome::WriteShutdown => {
-                            notify(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
-                            advance::<ID, A, _>(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
-                            let mut entry = source.into_entry();
-                            if phase::finish(&mut entry, ctx.0.as_ref()) {
-                                drop(writer::close(Ok(entry), *writes, ctx, turn, driver));
-                            }
-                            return;
-                        }
-                        SendOutcome::Terminal => {
-                            sender::commit_end::<ID, A, _>(&mut source, ctx.2, ctx.0.as_mut(), driver);
-                            let mut entry = source.into_entry();
-                            if phase::finish(&mut entry, ctx.0.as_ref()) {
-                                drop(writer::close(Ok(entry), *writes, ctx, turn, driver));
-                            }
-                            return;
-                        }
-                        SendOutcome::Rejected { failure } => Some(conn::Transmit::Rejected(failure)),
-                        SendOutcome::Failed { failure } => Some(conn::Transmit::Io(failure)),
-                        SendOutcome::Invalid { error } => Some(conn::Transmit::Invalid(error)),
-                        SendOutcome::Close => None,
-                        SendOutcome::Pending => return,
-                    };
-                    if let Some(failure) = failure {
-                        let key = source.view().connection.key();
-                        if let Some(body) = source.view().connection.state.send.fail(failure) {
-                            writer::release_egress(ctx.0.as_mut(), key, body, handler::Disposition::Closed);
-                        }
-                    }
-                    source
-                }
+                SendOutcome::DirectClosed => (Action::Close, connection.state.send.take(None)),
+                SendOutcome::Queued { .. } | SendOutcome::WriteShutdown => (Action::Queued, None),
+                SendOutcome::Terminal => (Action::Terminal, None),
+                SendOutcome::Rejected { failure } => (
+                    Action::Close,
+                    connection.state.send.fail(conn::Transmit::Rejected(failure)),
+                ),
+                SendOutcome::Failed { failure } => (
+                    Action::Close,
+                    connection.state.send.fail(conn::Transmit::Io(failure)),
+                ),
+                SendOutcome::Invalid { error } => (
+                    Action::Close,
+                    connection.state.send.fail(conn::Transmit::Invalid(error)),
+                ),
+                SendOutcome::Close => (Action::Close, None),
             };
-            drop(writer::close(Ok(source.into_entry()), *writes, ctx, turn, driver));
+            // SAFETY: settlement retains this connection and its original deadline lane.
+            Slot::from(unsafe { Proof::new(((connection, &mut *ctx.2), key)) }).cancel_send();
+            retired
+        },
+        |ctx, (action, body), mut source, driver| {
+            if let Some(body) = body {
+                let cause = match action {
+                    Action::Close => handler::Disposition::Closed,
+                    _ => handler::Disposition::Sent,
+                };
+                let key = source.view().connection.key();
+                writer::release_egress(ctx.0.as_mut(), key, body, cause);
+            }
+            match action {
+                Action::Return => return,
+                Action::Advance => {
+                    advance::<ID, A, _>(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
+                }
+                Action::Notify => {
+                    notify(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
+                }
+                Action::Queued => {
+                    notify(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
+                    advance::<ID, A, _>(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
+                }
+                Action::Terminal => {
+                    sender::commit_end::<ID, A, _>(&mut source, ctx.2, ctx.0.as_mut(), driver);
+                }
+                Action::Close => {
+                    drop(writer::close(Ok(source.into_entry()), *writes, ctx, turn, driver));
+                    return;
+                }
+            }
+            let mut entry = source.into_entry();
+            if phase::finish(&mut entry, ctx.0.as_ref()) {
+                drop(writer::close(Ok(entry), *writes, ctx, turn, driver));
+            }
         },
     );
+}
+
+enum Action {
+    Return,
+    Advance,
+    Notify,
+    Queued,
+    Terminal,
+    Close,
 }
 
 fn advance<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(

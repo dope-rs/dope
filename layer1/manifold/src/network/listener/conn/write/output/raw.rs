@@ -1,4 +1,4 @@
-use std::mem::MaybeUninit;
+use std::{mem::MaybeUninit, ptr};
 
 use dope_core::driver::route::Identity;
 use dope_net::link::{
@@ -37,18 +37,21 @@ impl<
         now: dope_core::driver::schedule::clock::Moment<'d>,
     ) {
         let mut output = output.into_uninit();
-        // SAFETY: the private preparation is initialized but unpublished. This
-        // consumes its sole Lease without running Output's abandonment policy.
+        // SAFETY: the consumed slot retains the initialized, unpublished lease.
         let Self { lease, written: _ } = unsafe { output.get_mut().assume_init_mut() };
-        let (owner, reservation) = unsafe { std::ptr::read(lease) }.into_parts();
+        let (owner, reservation) = lease.parts_mut();
         let Reservation::Queued(queued) = reservation else {
             unreachable!("output");
         };
+        // SAFETY: the disarmed output transfers its only refundable work and
+        // selected queued reservation; reference and marker fields need no drop.
+        let work = unsafe { ptr::read(&owner.work) };
         let Queued { header, vacant, pending: _ } =
-            G::into_inner::<Queued<'a, 'p, 's, 'e, 'd, ID, B, Q>>(queued);
+            G::into_inner::<Queued<'a, 'p, 's, 'e, 'd, ID, B, Q>>(unsafe { ptr::read(queued) });
         drop(header);
         drop(vacant);
         owner.slot.ensure_send(now);
+        drop(work);
     }
 
     pub(super) fn publish(
@@ -74,41 +77,43 @@ impl<
             None => written.transfer().nonzero(),
         };
         let mut output = output.into_uninit();
-        // SAFETY: validation retained this initialized Output's sole destruction
-        // owner. Consuming it leaves the same backing without a destructor.
-        // Only the Lease owns resources; the exhaustive pattern accounts for
-        // the remaining count without moving the whole Output.
+        // SAFETY: consuming the slot disarms Output's abandonment policy while
+        // retaining its initialized fields at their final addresses.
         let Self {
             lease,
             written: _,
         } = unsafe { output.get_mut().assume_init_mut() };
-        let (owner, reservation) = unsafe { std::ptr::read(lease) }.into_parts();
+        let (owner, reservation) = lease.parts_mut();
+        // SAFETY: this is the sole work owner; every exit commits or refunds it.
+        let work = unsafe { ptr::read(&owner.work) };
         match reservation {
-            Reservation::Direct { mut header, driver } => match total {
-                Some(total) => {
-                    body.retain(&mut header);
-                    owner.slot.state.send.begin(memory::access::Direct::new(
-                        header,
-                        written,
-                        total,
-                    ));
-                    owner.slot.ensure_send(driver.driver_ref().clock().now());
-                    let progress = owner
-                        .slot
-                        .advance_send(owner.open.slots, owner.open.permit, driver);
-                    let _permit = owner.work.commit();
-                    apply_end(owner.slot, end);
-                    if !matches!(progress, Progress::Submitted) {
-                        owner.open.permit.wake();
+            Reservation::Direct { header, driver } => {
+                // SAFETY: this selected lease is consumed once, with no whole
+                // Output/Reservation move or later abandonment destructor.
+                let header = unsafe { ptr::read(header) };
+                match total {
+                    Some(total) => {
+                        body.begin(&mut owner.slot.state.send, header, written, total);
+                        owner.slot.ensure_send(driver.driver_ref().clock().now());
+                        let progress = owner
+                            .slot
+                            .advance_send(owner.open.slots, owner.open.permit, driver);
+                        let _permit = work.commit();
+                        apply_end(owner.slot, end);
+                        if !matches!(progress, Progress::Submitted) {
+                            owner.open.permit.wake();
+                        }
+                    }
+                    None => {
+                        drop(header);
+                        owner.slot.cancel_send();
+                        apply_end(owner.slot, end);
                     }
                 }
-                None => {
-                    drop(header);
-                    owner.slot.cancel_send();
-                    apply_end(owner.slot, end);
-                }
-            },
+            }
             Reservation::Queued(queued) => {
+                // SAFETY: only this selected reservation owns these queue leaves.
+                let queued = unsafe { ptr::read(queued) };
                 let Queued {
                     header,
                     vacant,
@@ -138,7 +143,7 @@ impl<
                 };
                 match status {
                     reserve::Publish::Published => {
-                        let _permit = owner.work.commit();
+                        let _permit = work.commit();
                         apply_end(owner.slot, end);
                         owner.open.permit.wake();
                     }

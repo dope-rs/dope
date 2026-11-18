@@ -5,20 +5,21 @@ use dope_core::{
         result,
         route::{Identity, KeyTag},
     },
-    io::{socket::msg, transfer, transfer::progress},
+    io::{transfer, transfer::progress},
 };
 use dope_net::{
     link::{self, egress, egress::data, event},
     wire::send,
 };
-use o3::{buffer::resident, depot::array};
+use o3::buffer::resident;
 pub(in crate::network::listener::writer) use step::Step;
 
 use crate::network::listener::{
     self, conn,
-    writer::{memory, memory::release},
+    writer::{memory, memory::release, state::Send},
 };
 
+mod raw;
 mod step;
 
 pub(in crate::network::listener::writer) struct Progress(State);
@@ -165,7 +166,13 @@ const _: () = {
 pub(in crate::network::listener) trait Body<B> {
     fn wire(&self) -> Option<transfer::NonZero>;
     fn into_value(self) -> Option<egress::load::Value<B>>;
-    fn retain<'d, ID: Identity>(self, slot: &mut memory::DirectSlot<'_, '_, 'd, ID, B>)
+    fn begin<'p, 's, 'd, ID: Identity>(
+        self,
+        send: &mut Send<'p, 's, 'd, ID, B>,
+        slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        head: memory::Len,
+        total: transfer::NonZero,
+    )
     where
         B: data::raw::Payload<'d>;
 }
@@ -179,10 +186,17 @@ impl<B> Body<B> for () {
         None
     }
 
-    fn retain<'d, ID: Identity>(self, _: &mut memory::DirectSlot<'_, '_, 'd, ID, B>)
+    fn begin<'p, 's, 'd, ID: Identity>(
+        self,
+        send: &mut Send<'p, 's, 'd, ID, B>,
+        slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        head: memory::Len,
+        total: transfer::NonZero,
+    )
     where
         B: data::raw::Payload<'d>,
     {
+        send.begin(Direct::new(slot, head, total, Source::Header));
     }
 }
 
@@ -195,157 +209,70 @@ impl<B> Body<B> for egress::NonEmpty<B> {
         Some(egress::load::Value::Checked(self))
     }
 
-    fn retain<'d, ID: Identity>(self, slot: &mut memory::DirectSlot<'_, '_, 'd, ID, B>)
-    where
-        B: data::raw::Payload<'d>,
-    {
-        let flight = slot.get_mut().project();
-        *flight.source = o3::mem::slot::Storage::filled(self.into_inner(), ());
-        *flight.position = B::Position::default();
-    }
-}
-
-pub(in crate::network::listener) struct Direct<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>>
-{
-    lease: release::Lease<'p, 's, 'd, memory::Flight<B, B::Position>, ID>,
-    head: memory::Len,
-    pub(in crate::network::listener::writer) progress: Progress,
-}
-
-impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID, B> {
-    /// Preserves the accepted total: header bytes plus the unchanged source length.
-    pub(in crate::network::listener) fn new(
+    fn begin<'p, 's, 'd, ID: Identity>(
+        self,
+        send: &mut Send<'p, 's, 'd, ID, B>,
         slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
         head: memory::Len,
         total: transfer::NonZero,
+    )
+    where
+        B: data::raw::Payload<'d>,
+    {
+        send.begin(Direct::with_body(slot, head, total, self));
+    }
+}
+
+pub(in crate::network::listener) struct Direct<
+    'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>,
+>
+{
+    lease: release::Lease<'p, 's, 'd, memory::Flight<B, B::Position>, ID>,
+    head: memory::Len,
+    source: Source,
+    pub(in crate::network::listener::writer) progress: Progress,
+}
+
+enum Source {
+    Header,
+    Body,
+}
+
+impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID, B> {
+    fn new(
+        slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        head: memory::Len,
+        total: transfer::NonZero,
+        source: Source,
     ) -> Self {
         Self {
             lease: slot,
             head,
+            source,
             progress: Progress::new(total),
         }
     }
+}
 
+impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Direct<'p, 's, 'd, ID, B> {
     pub(in crate::network::listener) fn body(
-        mut slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
         body: egress::NonEmpty<B>,
     ) -> Self {
         let total = body.geometry().wire();
-        body.retain(&mut slot);
-        Self::new(slot, memory::Len::ZERO, total)
+        Self::with_body(slot, memory::Len::ZERO, total, body)
     }
 
-    pub(in crate::network::listener::writer) fn take_source(&mut self) -> Option<B> {
-        self.lease.get_mut().project().source.occupied().map(|source| source.take().0)
-    }
-
-    pub(in crate::network::listener::writer) fn retire<O>(
-        mut self,
-        publish: impl FnOnce() -> O,
-        release: impl FnOnce(&mut O, B),
-    ) -> O {
-        let Some(source) = self.lease.get_mut().project().source.occupied() else {
-            drop(self);
-            return publish();
-        };
-        let (body, _) = source.take();
-        drop(self);
-        let mut owner = publish();
-        release(&mut owner, body);
-        owner
-    }
-
-    pub(in crate::network::listener::writer) fn prepare(&mut self) -> Result<Prepared<'_>, Fault> {
-        let State::Active(active) = &self.progress.0 else {
-            return Ok(Prepared::Idle);
-        };
-        let end = self.head.transfer();
-        let consumed = active.sent.len();
-        let (start, offset) = if consumed < end {
-            (consumed, transfer::Len::ZERO)
-        } else {
-            (end, consumed.abs_diff(end))
-        };
-        let left = active.sent.left();
-        let this = self.lease.get_mut().project();
-        if start == transfer::Len::ZERO && left == end {
-            // SAFETY: Len proves the prefix fits this exact fixed header owner.
-            let bytes = unsafe {
-                this.header
-                    .into_ref()
-                    .as_slice()
-                    .get_unchecked(..end.into_raw())
-                    .assume_init_ref()
-            };
-            // SAFETY: Flight and its pool lease stay pinned through completion.
-            let plain = unsafe { send::raw::Plain::retain(bytes) };
-            return Ok(Prepared::Plain(plain, Step::new(&mut self.progress)));
-        }
-        let limit = left;
-        // SAFETY: the cursor is derived from this header's accepted progress.
-        let header = unsafe {
-            this.header
-                .into_ref()
-                .as_slice()
-                .get_unchecked(start.into_raw()..end.into_raw())
-                .assume_init_ref()
-        };
-        let mut sent = progress::State::new(limit);
-        let mut count = array::Len::<{ listener::IOV_CAP }>::ZERO;
-        if !header.is_empty() {
-            let step = sent.reserve(transfer::Len::prefix(header.len(), sent.left()));
-            let len = step.amount().into_raw();
-            // SAFETY: the step is bounded by header and the descriptor owner.
-            let bytes = unsafe { header.get_unchecked(..len) };
-            // SAFETY: the header owner stays pinned for the flight, and `bytes`
-            // is a committed in-bounds prefix of it.
-            let iovec = unsafe { msg::raw::Iovec::retain(bytes) };
-            this.iovecs[0].write(iovec);
-            count = array::Len::ONE;
-            step.commit();
-        }
-        if !sent.is_empty() {
-            let Some(source) = this.source.get() else {
-                return Err(Fault::new(offset, transfer::Len::ZERO, sent.left()));
-            };
-            // SAFETY: the accepted total is header plus unchanged source length.
-            // Confirmed progress stays within that total, so positive sent.left()
-            // after the header proves offset is inside this source. Speculative
-            // iovecs never move the checkpoint past that confirmed offset.
-            let mut chunks =
-                unsafe { source.resume(this.position, data::Offset::from_len(offset)) };
-            while let Some(vacant) = count.vacancy() {
-                let left = sent.left();
-                if left.is_zero() {
-                    break;
-                }
-                let Some(chunk) = sent.scatter(&mut chunks) else {
-                    let extent = transfer::Len::prefix(source.len(), transfer::Len::MAX);
-                    return Err(Fault::new(extent.abs_diff(left), extent, left));
-                };
-                // SAFETY: the direct lease keeps this source chunk fixed through
-                // terminal completion or quiescence.
-                let iovec = unsafe { msg::raw::Iovec::retain(chunk.bytes()) };
-                vacant.get_mut(this.iovecs).write(iovec);
-                count = vacant.commit();
-            }
-        }
-        let bytes = sent.len();
-        // SAFETY: Flight pins every descriptor and source owner until terminal
-        // completion or quiescence.
-        let raw = unsafe {
-            msg::raw::Vectored::retain((&mut *this.message, &*this.iovecs, count, bytes))
-        };
-        Ok(Prepared::Many(
-            send::Vectored::from_message(raw),
-            Step::new(&mut self.progress),
-        ))
-    }
-}
-
-impl<'d, B: data::raw::Payload<'d>, ID: Identity> Drop for Direct<'_, '_, 'd, ID, B> {
-    fn drop(&mut self) {
-        *self.lease.get_mut().project().source = o3::mem::slot::Storage::new(());
+    fn with_body(
+        mut slot: memory::DirectSlot<'p, 's, 'd, ID, B>,
+        head: memory::Len,
+        total: transfer::NonZero,
+        body: egress::NonEmpty<B>,
+    ) -> Self {
+        let flight = slot.get_mut().project();
+        flight.source.write(body.into_inner());
+        *flight.position = B::Position::default();
+        Self::new(slot, head, total, Source::Body)
     }
 }
 

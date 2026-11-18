@@ -339,23 +339,15 @@ impl Observed {
                             let sent = done.outcome();
                             let resubmit = {
                                 let mut driver = scope.context();
-                                let mut settlement = Err(Error::Sender);
                                 pool.settle(
                                     done, &mut driver, &mut (),
-                                    |_, slot| slot.discard(),
-                                    |_, _, _, _| {},
-                                    |_, completion, _| {
-                                        let dope_net::link::pool::send::Completion::Ready(owner, outcome) = completion else {
-                                            settlement = Err(Error::Submitted);
-                                            return;
-                                        };
-                                        drop(owner.publish(|_| {}));
+                                    |_, slot| slot.discard(), |_, _, _, _| {},
+                                    |_, _, outcome| outcome,
+                                    |_, outcome, mut sender, driver| {
                                         settled(outcome);
-                                        settlement = Ok(());
+                                        sender.submit(driver, drop)
                                     },
-                                );
-                                settlement?;
-                                pool.sender(key).ok_or(Error::Sender)?.submit(&mut driver, drop)
+                                ).ok_or(Error::Sender)?
                             };
                             let status = pool.get_mut(key).ok_or(Error::Connection)?.send_status();
                             Ok(Observed {

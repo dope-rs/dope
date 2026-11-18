@@ -73,34 +73,24 @@ fn partial_owner_cancel() {
                             return Err(Error::Timeout);
                         }
                         let done = native::next_send(scope)?;
-                        let mut outcome = None;
-                        pool.settle(
+                        let result = pool.settle(
                             done, &mut scope.context(), &mut returned, |_, _| {},
                             |count, _, _, _| *count += 1,
-                            |_, completion, _| {
-                                let dope::net::link::pool::send::Completion::Ready(owner, result) = completion else {
-                                    return;
-                                };
-                                assert_eq!(owner.publish(|_| {}).into_entry().get().key(), first);
-                                outcome = Some(result);
+                            |_, connection, outcome| {
+                                assert_eq!(connection.key(), first);
+                                match outcome {
+                                    SendOutcome::Queued { acknowledged, .. } => Ok(Some(acknowledged.into_raw())),
+                                    SendOutcome::Pending => Ok(None),
+                                    SendOutcome::Rejected { failure, .. } => Err(Error::Rejected(failure)),
+                                    SendOutcome::Failed { failure, .. } => Err(Error::Send(failure)),
+                                    SendOutcome::Invalid { error, .. } => Err(Error::Invalid(error)),
+                                    _ => Err(Error::Settlement),
+                                }
                             },
-                        );
-                        let outcome = outcome.ok_or(Error::Settlement)?;
-                        match outcome {
-                            SendOutcome::Queued { acknowledged, .. } => {
-                                break acknowledged.into_raw();
-                            }
-                            SendOutcome::Pending => {}
-                            SendOutcome::Rejected { failure, .. } => {
-                                return Err(Error::Rejected(failure));
-                            }
-                            SendOutcome::Failed { failure, .. } => {
-                                return Err(Error::Send(failure));
-                            }
-                            SendOutcome::Invalid { error, .. } => {
-                                return Err(Error::Invalid(error));
-                            }
-                            _ => return Err(Error::Settlement),
+                            |_, result, _, _| result,
+                        ).ok_or(Error::Settlement)?;
+                        if let Some(acknowledged) = result? {
+                            break acknowledged;
                         }
                     };
                     // One staging owner accepts at most two 16-KiB plaintext records.

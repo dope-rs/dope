@@ -65,122 +65,84 @@ where
     Self: close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>,
 {
     fn complete<'machine, 'turn, 'driver, 'context>(
-        mut self: pin::Pin<&'machine mut Self>,
+        self: pin::Pin<&'machine mut Self>,
         done: send::Completion<'d>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
     ) {
-        let mut engine = self.as_mut();
-        let target = engine.as_ref().backoff();
         let owner_clock = driver.driver_ref();
-        let mut closing = None;
-        {
-            let this = engine.as_mut().project();
-            let (pool, liveness) = this.links.parts();
-            pool.settle(
-                done, driver, &mut (this.app, this.controller, liveness),
-                |(app, _, _), slot| { let _ = conn::State::poll_close(slot, &**app); },
-                |(app, _, _), key, payload, token| {
-                    app.settled(conn::Id::from_key(key), payload, token);
-                },
-                |(app, controller, liveness), completion, driver| {
-                    use dope_net::link::{event::{DirectStatus, SendFailure}, pool::send::Completion};
-                    let (owner, result) = match completion {
-                        Completion::Ready(owner, result) => (owner, result),
-                        Completion::Direct(direct) => {
-                            let (mut owner, status) = direct.into_parts();
-                            let result = match status {
-                                DirectStatus::Sent(_) | DirectStatus::Closed => {
-                                    owner.connection().discard();
-                                    SendOutcome::Close
-                                }
-                                DirectStatus::Rejected(error) => SendOutcome::Rejected { failure: SendFailure::Direct(error) },
-                                DirectStatus::Failed(error) => SendOutcome::Failed { failure: SendFailure::Direct(error) },
-                            };
-                            (owner, result)
-                        }
-                    };
-                    let mut sender = owner.publish(|slot| {
-                        let key = slot.key();
-                        // SAFETY: publication retains this book's original admitted sender.
-                        let source = unsafe { engine::raw::reunite(&mut **liveness, slot, key) };
-                        let slot = liveness::Change::new(source, target);
-                        match &result {
-                            SendOutcome::Terminal => {}
-                            SendOutcome::Queued { .. } | SendOutcome::WriteShutdown if slot.state.is_attached() => {}
-                            _ => return,
-                        }
-                        if matches!(closing::Callback::new(&slot.state.closing), closing::Callback::Ready) {
-                            if slot.state.work.has_requests() && !matches!(&result, SendOutcome::Terminal) {
+        let (pool, mut context) = self.parts();
+        let _ = pool.settle(
+            done, driver, &mut context,
+            |context, slot| { let _ = conn::State::poll_close(slot, context.app); },
+            |context, key, payload, token| {
+                context.app.settled(conn::Id::from_key(key), payload, token);
+            },
+            |context, connection, result| {
+                match &result {
+                    SendOutcome::Terminal | SendOutcome::Queued { .. } | SendOutcome::WriteShutdown => {
+                        let key = connection.key();
+                        // SAFETY: completion retains this book's original admitted sender.
+                        let source = unsafe { engine::raw::reunite(context.liveness, connection, key) };
+                        let slot = liveness::Change::new(source, context.target);
+                        if (matches!(result, SendOutcome::Terminal) || slot.state.is_attached())
+                            && matches!(closing::Callback::new(&slot.state.closing), closing::Callback::Ready)
+                        {
+                            if slot.state.work.has_requests() && !matches!(result, SendOutcome::Terminal) {
                                 slot.arm_after(deadline::Fixed::Send, owner_clock.clock().now(),
                                     <E::Timing as crate::timing::Policy>::SEND_DEADLINE);
                             } else {
                                 slot.cancel(deadline::Kind::Send);
                             }
                         }
-                    });
-                    let queued = sender.has_queued();
-                    let key = sender.view().connection.key();
-                    let reason = match result {
-                        SendOutcome::Queued { .. } | SendOutcome::WriteShutdown => {
-                            <A::Requests as Policy<'w, 'd, ID, A>>::submit_admitted::<true, true, S, E, X>(
-                                *app,
-                                *controller,
-                                &mut sender,
-                                liveness,
-                                target,
-                                queued,
-                                turn.reborrow(),
-                                driver,
-                            );
-                            close::ready(*app, sender.view().connection, driver)
-                        }
-                        SendOutcome::Terminal => {
-                            <A::Requests as Policy<'w, 'd, ID, A>>::finish_admitted::<S, E, X>(
-                                *app,
-                                *controller,
-                                &mut sender,
-                                liveness,
-                                target,
-                                driver,
-                            );
-                            close::ready(*app, sender.view().connection, driver)
-                        }
-                        SendOutcome::Rejected { failure, .. } => {
-                            let slot = sender.view().connection;
-                            slot.state.fail(conn::Transmit::Rejected(failure));
-                            let error = controller
-                                .rejected(slot.state.owner.attempt(), failure.into_error());
-                            let rule = Directive::from_submit(error);
-                            slot.state.closing.apply(rule);
-                            Some(rule.reason())
-                        }
-                        SendOutcome::Failed { failure, .. } => {
-                            sender
-                                .view()
-                                .connection
-                                .state
-                                .fail(conn::Transmit::Io(failure));
-                            Some(Reason::Transport)
-                        }
-                        SendOutcome::Invalid { error, .. } => {
-                            sender
-                                .view()
-                                .connection
-                                .state
-                                .fail(conn::Transmit::Invalid(error));
-                            Some(Reason::Transport)
-                        }
-                        SendOutcome::Close => Some(Reason::Transport),
-                        SendOutcome::Pending => return,
-                    };
-                    closing = Some((key, reason));
-                },
-            );
-        }
-        if let Some((key, Some(reason))) = closing {
-            engine.close_slot(key, reason, turn, driver);
-        }
+                    }
+                    SendOutcome::Direct { .. } | SendOutcome::DirectClosed => connection.discard(),
+                    _ => {}
+                }
+                result
+            },
+            |context, result, mut sender, driver| {
+                let reason = match result {
+                    SendOutcome::Queued { .. } | SendOutcome::WriteShutdown => {
+                        let queued = sender.has_queued();
+                        <A::Requests as Policy<'w, 'd, ID, A>>::submit_admitted::<true, true, S, E, X>(
+                            context.app, context.controller, &mut sender, context.liveness,
+                            context.target, queued, turn.reborrow(), driver,
+                        );
+                        close::ready(context.app, sender.view().connection, driver)
+                    }
+                    SendOutcome::Terminal => {
+                        <A::Requests as Policy<'w, 'd, ID, A>>::finish_admitted::<S, E, X>(
+                            context.app, context.controller, &mut sender, context.liveness, context.target, driver,
+                        );
+                        close::ready(context.app, sender.view().connection, driver)
+                    }
+                    SendOutcome::Rejected { failure } => {
+                        let slot = sender.view().connection;
+                        slot.state.fail(conn::Transmit::Rejected(failure));
+                        let error = context.controller.rejected(slot.state.owner.attempt(), failure.into_error());
+                        let rule = Directive::from_submit(error);
+                        slot.state.closing.apply(rule);
+                        Some(rule.reason())
+                    }
+                    SendOutcome::Failed { failure } => {
+                        sender.view().connection.state.fail(conn::Transmit::Io(failure));
+                        Some(Reason::Transport)
+                    }
+                    SendOutcome::Invalid { error } => {
+                        sender.view().connection.state.fail(conn::Transmit::Invalid(error));
+                        Some(Reason::Transport)
+                    }
+                    SendOutcome::Close | SendOutcome::Direct { .. } | SendOutcome::DirectClosed => {
+                        Some(Reason::Transport)
+                    }
+                    SendOutcome::Pending => return,
+                };
+                if let Some(reason) = reason {
+                    drop(Self::close_entry(context, sender.into_entry(), reason, turn, driver));
+                }
+            },
+        );
     }
 }
 

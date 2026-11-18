@@ -423,24 +423,17 @@ pub fn settle<'p, 'w, 'd: 'w, B: Payload<'d>>(
     scope: &mut life::Scope<'_, 'd>,
 ) -> Result<Key<'d>, Error> {
     let mut driver = scope.context();
-    let mut result = Err(Error::Settlement);
     pool.settle(
         done, &mut driver, &mut (), |_, _| {}, |_, _, _, _| {},
-        |_, completion, _| {
-            let pool::send::Completion::Ready(owner, outcome) = completion else {
-                return;
-            };
-            let key = owner.publish(|_| {}).into_entry().get().key();
-            result = match outcome {
-                SendOutcome::Queued { .. } | SendOutcome::Terminal | SendOutcome::Pending => Ok(key),
-                SendOutcome::Rejected { failure } => Err(Error::Rejected(failure)),
-                SendOutcome::Failed { failure } => Err(Error::Send(failure)),
-                SendOutcome::Invalid { error } => Err(Error::Invalid(error)),
-                _ => Err(Error::Settlement),
-            };
+        |_, connection, outcome| match outcome {
+            SendOutcome::Queued { .. } | SendOutcome::Terminal | SendOutcome::Pending => Ok(connection.key()),
+            SendOutcome::Rejected { failure } => Err(Error::Rejected(failure)),
+            SendOutcome::Failed { failure } => Err(Error::Send(failure)),
+            SendOutcome::Invalid { error } => Err(Error::Invalid(error)),
+            _ => Err(Error::Settlement),
         },
-    );
-    result
+        |_, result, _, _| result,
+    ).ok_or(Error::Settlement)?
 }
 
 pub fn pending<'p, 'w, 'd: 'w, B: Payload<'d>>(

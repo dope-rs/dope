@@ -308,19 +308,13 @@ fn close_after_keeps_pending_reply() {
         .expect("response completion");
         {
             let mut driver = scope.context();
-            let mut observed = false;
             pool.settle(
-                output, &mut driver, &mut observed, |_, _| {}, |_, _, _, _| {},
-                |observed, completion, _| {
-                    let dope_net::link::pool::send::Completion::Ready(owner, outcome) = completion else {
-                        panic!("unexpected direct completion");
-                    };
-                    assert_eq!(owner.publish(|_| {}).into_entry().get().key(), key);
+                output, &mut driver, &mut (), |_, _| {}, |_, _, _, _| {},
+                |_, _, outcome| {
                     assert!(matches!(outcome, SendOutcome::Queued { acknowledged } if acknowledged.into_raw() == 5));
-                    *observed = true;
                 },
-            );
-            assert!(observed);
+                |_, (), sender, _| assert_eq!(sender.into_entry().get().key(), key),
+            ).expect("same native send owner");
         }
         let mut response = [0; 5];
         peer.read_exact(&mut response).expect("drained response");
@@ -395,19 +389,11 @@ fn shutdown_wakes_terminal() {
         ));
         {
             let mut driver = scope.context();
-            let mut observed = false;
             pool.settle(
-                output, &mut driver, &mut observed, |_, _| {}, |_, _, _, _| {},
-                |observed, completion, _| {
-                    let dope_net::link::pool::send::Completion::Ready(owner, outcome) = completion else {
-                        panic!("unexpected direct completion");
-                    };
-                    assert_eq!(owner.publish(|_| {}).into_entry().get().key(), key);
-                    assert!(matches!(outcome, SendOutcome::WriteShutdown));
-                    *observed = true;
-                },
-            );
-            assert!(observed);
+                output, &mut driver, &mut (), |_, _| {}, |_, _, _, _| {},
+                |_, _, outcome| assert!(matches!(outcome, SendOutcome::WriteShutdown)),
+                |_, (), sender, _| assert_eq!(sender.into_entry().get().key(), key),
+            ).expect("same native send owner");
         }
         assert!(matches!(
             eof::take_ready(scope, |token| {

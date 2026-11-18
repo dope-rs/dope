@@ -29,12 +29,13 @@ pub(in crate::link) enum Source {
     Terminal,
 }
 
-impl From<Source> for SendSource {
-    fn from(source: Source) -> Self {
+impl From<Option<Source>> for SendSource {
+    fn from(source: Option<Source>) -> Self {
         match source {
-            Source::Direct => Self::Direct,
-            Source::Queued => Self::Queued,
-            Source::Terminal => Self::Terminal,
+            Some(Source::Direct) => Self::Direct,
+            Some(Source::Queued) => Self::Queued,
+            Some(Source::Terminal) => Self::Terminal,
+            None => Self::WriteShutdown,
         }
     }
 }
@@ -64,10 +65,10 @@ pub(in crate::link) enum Inflight {
 }
 
 impl Inflight {
-    pub(in crate::link) fn origin(&self) -> SendSource {
+    pub(in crate::link) fn source(&self) -> Option<Source> {
         match self {
-            Self::Data(data) => data.source.into(),
-            Self::Shutdown => SendSource::WriteShutdown,
+            Self::Data(data) => Some(data.source),
+            Self::Shutdown => None,
         }
     }
 
@@ -80,7 +81,7 @@ impl Inflight {
             Err(Invalid::Excess {
                 sent,
                 limit,
-                origin: self.origin(),
+                origin: self.source().into(),
             })
         } else {
             Ok(())
@@ -295,7 +296,7 @@ impl<'d, P: reclaim::Policy> Sending<'d, P> {
     }
 
     pub(in crate::link) fn origin(&self) -> Option<SendSource> {
-        self.active.get().map(|active| active.inflight.origin())
+        self.active.get().map(|active| active.inflight.source().into())
     }
 
     pub(super) fn cancel(&mut self) -> ops::Cancel<'_, 'd, kind::Send> {

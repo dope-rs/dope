@@ -64,27 +64,31 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B
 
     /// Retires direct-send ownership after the net layer has quiesced its SQE.
     pub(in crate::network::listener) fn retire(&mut self) -> (Option<B>, Option<conn::Transmit>) {
-        let (direct, error) = self.extract();
-        (direct.and_then(|mut state| state.take_source()), error)
-    }
-
-    pub(in crate::network::listener) fn fail(&mut self, failure: conn::Transmit) -> Option<B> {
-        let (source, error) = self.retire();
-        self.state = State::Failed(error.unwrap_or(failure));
-        source
-    }
-
-    pub(in crate::network::listener::writer) fn invalidate(&mut self, fault: access::Fault) {
-        if let State::Direct(state) = &mut self.state {
-            state.progress.invalidate(fault);
+        match mem::replace(&mut self.state, State::Queued) {
+            State::Direct(state) => {
+                let error = state.progress.error();
+                (state.retire(), error)
+            }
+            State::Queued => (None, None),
+            State::Failed(error) => (None, Some(error)),
         }
     }
 
-    pub(in crate::network::listener::writer) fn direct(
+    pub(in crate::network::listener) fn fail(&mut self, failure: conn::Transmit) -> Option<B> {
+        self.take(Some(failure))
+    }
+
+    pub(in crate::network::listener::writer) fn invalidate(&mut self, fault: access::Fault) {
+        if let Some(progress) = self.progress() {
+            progress.invalidate(fault);
+        }
+    }
+
+    pub(in crate::network::listener::writer) fn progress(
         &mut self,
-    ) -> Option<&mut access::Direct<'p, 's, 'd, ID, B>> {
+    ) -> Option<&mut access::Progress> {
         match &mut self.state {
-            State::Direct(state) => Some(state),
+            State::Direct(state) => Some(&mut state.progress),
             State::Queued | State::Failed(_) => None,
         }
     }
@@ -92,23 +96,12 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B
     pub(in crate::network::listener::writer) fn take(
         &mut self,
         failure: Option<conn::Transmit>,
-    ) -> Option<access::Direct<'p, 's, 'd, ID, B>> {
-        let (direct, error) = self.extract();
+    ) -> Option<B> {
+        let (body, error) = self.retire();
         if let Some(error) = error.or(failure) {
             self.state = State::Failed(error);
         }
-        direct
-    }
-
-    fn extract(&mut self) -> (Option<access::Direct<'p, 's, 'd, ID, B>>, Option<conn::Transmit>) {
-        match mem::replace(&mut self.state, State::Queued) {
-            State::Direct(state) => {
-                let error = state.progress.error();
-                (Some(state), error)
-            }
-            State::Queued => (None, None),
-            State::Failed(error) => (None, Some(error)),
-        }
+        body
     }
 
     pub(in crate::network::listener::writer) fn motion(&self) -> access::Motion {

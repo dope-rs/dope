@@ -554,24 +554,20 @@ pub mod contract {
                                         _ => return Err(Error::Submitted),
                                     };
                                     let sent = done.outcome();
-                                    let mut buffered = false;
+                                    let buffered;
                                     {
                                         let mut driver = scope.context();
-                                        let mut observed = false;
-                                        pool.settle(
+                                        buffered = pool.settle(
                                             done, &mut driver, &mut (), |_, _| {},
                                             |_, _, body, _| release(body),
-                                            |_, completion, _| {
-                                                let dope_net::link::pool::send::Completion::Ready(owner, settled) = completion else {
-                                                    return;
-                                                };
-                                                drop(owner.publish(|slot| {
-                                                    buffered = matches!(slot.send_status().retention(), Retention::Held);
-                                                }));
-                                                observed = matches!(settled, SendOutcome::Queued { .. } | SendOutcome::Close);
+                                            |_, slot, outcome| match outcome {
+                                                SendOutcome::Queued { .. } | SendOutcome::Close => {
+                                                    Ok(matches!(slot.send_status().retention(), Retention::Held))
+                                                }
+                                                _ => Err(Error::Submitted),
                                             },
-                                        );
-                                        if !observed { return Err(Error::Submitted) }
+                                            |_, result, _, _| result,
+                                        ).ok_or(Error::Submitted)??;
                                     }
                                     assert_eq!(
                                         released.get(),

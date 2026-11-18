@@ -97,7 +97,7 @@ impl Header {
 pub(in crate::network::listener) struct Flight<B, P: data::position::State> {
     #[pin]
     pub(super) header: Header,
-    pub(super) source: o3::mem::slot::Storage<B>,
+    pub(super) source: mem::MaybeUninit<B>,
     pub(super) position: P,
     pub(super) iovecs: [mem::MaybeUninit<msg::Iovec>; listener::IOV_CAP],
     pub(super) message: mem::MaybeUninit<msg::Header>,
@@ -109,7 +109,7 @@ impl<B, P: data::position::State> Flight<B, P> {
         // SAFETY: disjoint field writes initialize the complete exclusive slot.
         unsafe {
             Header::init(&mut *(&raw mut (*slot).header).cast());
-            (&raw mut (*slot).source).write(o3::mem::slot::Storage::new(()));
+            (&raw mut (*slot).source).write(mem::MaybeUninit::uninit());
             (&raw mut (*slot).position).write(P::default());
             (&raw mut (*slot).iovecs).write([mem::MaybeUninit::uninit(); listener::IOV_CAP]);
             (&raw mut (*slot).message).write(mem::MaybeUninit::uninit());

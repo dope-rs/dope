@@ -152,10 +152,17 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
         queue.abort();
     }
 
-    pub(in crate::link) fn has_ack(&self) -> bool {
-        <<<W as wire::Spec>::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::has_pending(
+    pub(in crate::link) fn abort_conflict<const IOV: usize, B: data::raw::Payload<'d>, D: demand::Mode>(
+        &mut self, queue: &mut egress::Output<'_, '_, 'd, IOV, B, D>,
+    ) -> bool {
+        if queue.is_active() || <<W::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::has_pending(
             &self.slot.engine.operations.acknowledgements,
-        )
+        ) {
+            self.abort_queue(queue);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn flush_queue(

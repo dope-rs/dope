@@ -235,15 +235,6 @@ impl<'d> Control<'d> {
     }
 }
 
-/// Terminal direct-send state delivered to the exact completion callback.
-#[derive(Clone, Copy)]
-pub enum DirectStatus {
-    Sent(Option<link::Consumed>),
-    Rejected(result::SubmitError),
-    Failed(dope_core::Errno),
-    Closed,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SendSource {
     Direct,
@@ -286,6 +277,8 @@ impl<E> SendFailure<E> {
 /// The send result at its retained publication owner.
 #[must_use = "the send outcome must be dispatched"]
 pub enum SendOutcome {
+    Direct { consumed: Option<link::Consumed> },
+    DirectClosed,
     Queued { acknowledged: transfer::Len },
     WriteShutdown,
     Terminal,
@@ -333,7 +326,6 @@ const _: () = {
     assert!(
         std::mem::size_of::<SendFailure<result::SubmitError>>() <= std::mem::size_of::<usize>()
     );
-    assert!(std::mem::size_of::<DirectStatus>() == std::mem::size_of::<usize>());
     assert!(
         std::mem::size_of::<SendOutcome>() <= 3 * std::mem::size_of::<usize>()
     );
