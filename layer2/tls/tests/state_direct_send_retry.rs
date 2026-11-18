@@ -50,8 +50,8 @@ fn released_direct() {
         let inputs = Cell::new(0);
         let writes = Cell::new(0);
         let started = Gate::new();
-        let released = Cell::new([0; 2]);
-        let discarded = Cell::new(0);
+        let released = Cell::new([false; 2]);
+        let forcing = Cell::new(false);
         let observe = |event: Event| match event {
             Event::Open(cause) => panic!("TLS open: {cause:?}"),
             Event::Wire(cause) => panic!("TLS wire: {cause:?}"),
@@ -113,18 +113,22 @@ fn released_direct() {
                         let mut bytes = storage::Owned::try_from_charge(charge)
                             .expect("resident output storage");
                         bytes.try_extend(body).expect("initialized reply");
-                        Some(bytes.freeze())
+                        bytes.freeze()
                     });
+                    let addresses = bodies.each_ref().map(|body| body.as_ptr());
+                    let held_bytes =
+                        || released.get().into_iter().filter(|&done| !done).count() * body.len();
                     let capacity = |event: Change<'_>| match event {
                         Change::Ready(pending) => {
                             assert!(matches!(pending, egress::Pending::Absent));
                         }
-                        Change::Activated => {
+                        Change::Activated(index) => {
                             started.hit();
+                            assert!(!released.get()[index], "admission retains this owner");
                             if !forced {
                                 assert_eq!(
                                     released.get(),
-                                    [0; 2],
+                                    [false; 2],
                                     "both owners precede CQ settlement"
                                 );
                             }
@@ -136,22 +140,20 @@ fn released_direct() {
                             resident,
                             cause,
                         } => {
-                            if matches!(cause, handler::Disposition::Closed) {
-                                assert!(forced, "only forced output is discarded");
-                                discarded.set(discarded.get() + 1);
+                            let expected = if forcing.get() {
+                                handler::Disposition::Closed
                             } else {
-                                assert!(matches!(cause, handler::Disposition::Sent));
-                            }
+                                handler::Disposition::Sent
+                            };
+                            assert!(cause == expected, "release disposition for peer {index}");
+                            assert_eq!(returned.as_ptr(), addresses[index]);
                             assert_eq!(returned, body);
-                            let mut counts = released.get();
-                            assert_eq!(counts[index], 0, "one release per output owner");
+                            let mut done = released.get();
+                            assert!(!done[index], "one release per output owner");
                             assert_eq!(resident, body.len());
-                            assert!(
-                                budget.resident() >= resident,
-                                "the callback still owns the charged body"
-                            );
-                            counts[index] += 1;
-                            released.set(counts);
+                            assert_eq!(budget.resident(), held_bytes());
+                            done[index] = true;
+                            released.set(done);
                         }
                     };
                     let store = sess.storage();
@@ -173,7 +175,7 @@ fn released_direct() {
                                 observe: &observe,
                                 mode: Mode::Close,
                             },
-                            bodies,
+                            bodies: bodies.map(Some),
                             targets: &targets,
                             armed: &armed,
                             ready: ready.clone(),
@@ -212,12 +214,12 @@ fn released_direct() {
                                                             .expect("admit both queued replies"),
                                                         fibers::Wait::Reached
                                                     );
-                                                    assert_eq!(
-                                                        budget.resident(),
-                                                        body.len(),
-                                                        "one owner waits for ciphertext"
+                                                    assert!(
+                                                        released.get().contains(&false),
+                                                        "force shutdown with an admitted owner"
                                                     );
-                                                    assert_eq!(discarded.get(), 0);
+                                                    assert_eq!(budget.resident(), held_bytes());
+                                                    forcing.set(true);
                                                 } else {
                                                     assert_eq!(
                                                         harness
@@ -244,11 +246,6 @@ fn released_direct() {
                                                     })
                                                 ),
                                                 "forced listener cleanup: {driven:?}"
-                                            );
-                                            assert_eq!(
-                                                discarded.get(),
-                                                1,
-                                                "forced cleanup reports the waiting owner once"
                                             );
                                             drop(client.finish().expect("join quiesced TLS peers"));
                                             return;
@@ -284,7 +281,7 @@ fn released_direct() {
         });
         assert_eq!(inputs.get(), 2, "peers send only their readiness records");
         assert_eq!(started.hits(), 2);
-        assert_eq!(released.get(), [1; 2]);
+        assert_eq!(released.get(), [true; 2]);
         if !forced {
             assert_eq!(closes.hits(), 2);
         }

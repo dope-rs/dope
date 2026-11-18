@@ -229,7 +229,7 @@ pub struct Capacity<'r, 'd> {
 
 pub enum Change<'a> {
     Ready(egress::Pending),
-    Activated,
+    Activated(usize),
     Released {
         index: usize,
         body: &'a [u8],
@@ -268,11 +268,12 @@ impl<'d> Application<'d, KeyTag<0>> for Capacity<'_, 'd> {
         let this = self.get_mut();
         if this.armed.get() && !*conn.state() {
             *conn.state_mut() = true;
-            let body = this.bodies[conn.id().index().into_usize()]
+            let index = conn.id().index().into_usize();
+            let body = this.bodies[index]
                 .take()
                 .expect("one reply owner per connection");
             this.reply.send(&mut conn, driver, body);
-            (this.observe)(Change::Activated);
+            (this.observe)(Change::Activated(index));
             conn.close_after();
         }
     }
