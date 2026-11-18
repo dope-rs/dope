@@ -69,7 +69,10 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint> Terminal<'s, 'arena, 'credits,
         Batch { contents }
     }
 
-    pub(in crate::reply) fn first(self) -> Option<First<'s, 'arena, 'credits, 'region, D>> {
+    pub(in crate::reply) fn first(self) -> Option<First<'s, 'arena, 'credits, 'region, D>>
+    where
+        D: Footprint<Amount = usage::Bytes>,
+    {
         let Self { mut data, mut root } = self;
         // SAFETY: the consumed root excludes every other same-entry mutation.
         let front = unsafe { data.as_mut() }.front()?;
@@ -92,7 +95,7 @@ impl Drop for Root<'_, '_, '_, '_> {
     }
 }
 
-impl<D: Footprint> Drop for First<'_, '_, '_, '_, D> {
+impl<D: Footprint<Amount = usage::Bytes>> Drop for First<'_, '_, '_, '_, D> {
     fn drop(&mut self) {
         let (_, amount) = self.value.get().amount.split();
         // SAFETY: First owns the detached node once. Its original Root remains

@@ -221,21 +221,16 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
 
     /// # Safety
     /// The original first node is detached, and its sole root owns this member.
-    pub(in crate::reply) unsafe fn take_first<A: usage::amount::Amount>(
-        &mut self,
-        amount: payload::Value<A>,
-    ) {
-        // SAFETY: the caller retains this exact member until its root takes custody.
+    pub(in crate::reply) unsafe fn take_first(&mut self, amount: payload::Value<usage::Bytes>) {
+        // SAFETY: the root takes this original member. Its one retained Value
+        // continues to back the detached node when the Data credit is returned.
         unsafe { self.sum.take(amount) };
         self.return_data(payload::Data);
     }
 
     /// # Safety
     /// The original first node has been freed; its retained amount returns once.
-    pub(in crate::reply) unsafe fn release_first<A: usage::amount::Amount>(
-        &self,
-        amount: payload::Failure<A>,
-    ) {
+    pub(in crate::reply) unsafe fn release_first(&self, amount: payload::Failure<usage::Bytes>) {
         self.return_data(amount);
     }
 
