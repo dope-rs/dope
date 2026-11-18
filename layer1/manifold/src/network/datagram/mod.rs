@@ -25,7 +25,7 @@ mod socket;
 use dope_core::io::datagram::ReceiveError;
 pub use endpoint::Endpoint;
 use hook::ingress;
-pub use prepared::Prepared;
+pub use prepared::{Prepared, Source};
 pub use socket::Socket;
 pub const GSO_LIMITS: Option<datagram::GsoLimits> = datagram::GSO_LIMITS;
 

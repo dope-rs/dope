@@ -155,6 +155,12 @@ pub enum BindFailure<E> {
     Endpoint(BindError),
 }
 
+impl<E> From<BindError> for BindFailure<E> {
+    fn from(error: BindError) -> Self {
+        Self::Endpoint(error)
+    }
+}
+
 /// Endpoint execution with no app scheduler.
 pub struct Idle {
     work: reactor::NetGraph,
@@ -281,10 +287,11 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
         Ok(())
     }
 
-    fn prepare<'d, Q: buffer::Residency + buffer::raw::Source>(
+    fn open<'d, 'g: 'd, U: udp::Storage, Q: buffer::Residency + buffer::raw::Source>(
         self,
+        source: datagram::Source<'g>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Result<owner::Prepared<'d, ID, R, Q>, BindError> {
+    ) -> Result<owner::Socket<'d, ID, U, Q>, BindError> {
         let Self {
             config, datagram, ..
         } = self;
@@ -293,11 +300,13 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
             .driver_ref()
             .clock()
             .attach(|now| config.cid_rotation().schedule_at(now));
-        Ok(owner::Prepared {
-            packet: config.packet(),
+        let input = U::create::<ID>().map_err(BindError::Input)?;
+        let datagram = datagram.open(source, driver).map_err(BindError::Datagram)?;
+        Ok(owner::Socket {
             datagram,
+            input,
             rotation,
-            receive: marker::PhantomData,
+            packet: config.packet(),
         })
     }
 }
@@ -389,6 +398,23 @@ where
     B: Storage<'d, resident::Shared<'d>>,
     M: owner::Binding<'d, ID>,
 {
+    fn new(
+        socket: owner::Socket<'d, ID, Udp<'d, H, ID, B>, Q>,
+        mux: router::Router<H, ID, B, M::Mode>,
+        app: A,
+    ) -> Self
+    where
+        H: cert::Sink<ID, id::Driver<'d>>,
+        <H::Events as Dispatch<H, ID, B, resident::Shared<'d>, id::Driver<'d>>>::Packet:
+            packet::Mode<H, ID, B, resident::Shared<'d>, id::Driver<'d>, Output = ()>,
+    {
+        let engine = reactor::Engine::new(mux, app, socket.rotation, socket.input);
+        Self {
+            udp: socket.datagram.with_handler(engine),
+            packet: socket.packet,
+        }
+    }
+
     pub fn local_addr(&self) -> net::SocketAddr {
         self.udp.local_addr()
     }
@@ -480,9 +506,5 @@ const _: () = {
     assert!(mem::size_of::<Plan<0, receive::Copied>>() == mem::size_of::<config::Validation>());
     assert!(
         mem::size_of::<Plan<0, receive::Copied>>() == mem::size_of::<Plan<0, receive::Retained>>()
-    );
-    assert!(
-        mem::size_of::<owner::Prepared<'static, 0, receive::Copied, Sealed<'static>>>()
-            == mem::size_of::<owner::Prepared<'static, 0, receive::Retained, Sealed<'static>>>()
     );
 };

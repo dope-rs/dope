@@ -94,21 +94,21 @@ where
     B: stream::Recv,
     M: auth::Mode<ID, Send = Shared<'d>, Identity = id::Driver<'d>>,
 {
-    pub(super) fn try_new(
+    pub(super) fn new(
         mux: router::Router<H, ID, B, M>,
         app: A,
         rotation: clock::Bound<'d, cid::Schedule>,
-    ) -> Result<Self, crate::runtime::endpoint::BindError> {
-        Ok(Self {
+        input: Input<'d, H, ID, B>,
+    ) -> Self {
+        Self {
             mux,
             rotation,
             app,
             pooled: buffers::Pending::new(),
-            input: Udp::<'d, H, ID, B>::create::<ID>()
-                .map_err(crate::runtime::endpoint::BindError::Input)?,
+            input,
             flush: Gate::new(),
             stopping: false,
-        })
+        }
     }
 
     pub(super) fn mux_mut(self: pin::Pin<&mut Self>) -> pin::Pin<&mut router::Router<H, ID, B, M>> {

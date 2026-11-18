@@ -4,6 +4,7 @@ use std::net;
 use o3::{buffer::resident, depot::capacity};
 
 use dope::core::driver;
+use dope::manifold::network::datagram::Source;
 
 use crate::conn::id;
 use crate::runtime::endpoint::{self, config, owner};
@@ -66,8 +67,8 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
         )
         .bind(driver)
         .map_err(endpoint::BindError::Mux)?;
-        let ep = self.endpoint.prepare(driver)?;
-        ep.bind(self.bind, mux, endpoint::Idle::new(), driver)
+        let socket = self.endpoint.open(Source::Bind(self.bind), driver)?;
+        Ok(endpoint::Endpoint::new(socket, mux, endpoint::Idle::new()))
     }
 
     pub fn bind_app<'pool, 'd, H, A>(
@@ -90,13 +91,12 @@ impl<const ID: u8, R: receive::Policy> Plan<ID, R> {
         )
         .bind(driver)
         .map_err(endpoint::BindError::Mux)?;
-        let ep = self.endpoint.prepare(driver)?;
-        ep.bind(
-            self.bind,
+        let socket = self.endpoint.open(Source::Bind(self.bind), driver)?;
+        Ok(endpoint::Endpoint::new(
+            socket,
             mux,
             endpoint::Run::<_, app::Silent>::new(app),
-            driver,
-        )
+        ))
     }
 }
 

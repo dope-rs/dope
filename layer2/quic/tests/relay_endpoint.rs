@@ -31,6 +31,68 @@ use dope_test::{
 use common::routing::{CONFIG, Idle, capture};
 
 #[test]
+fn native_bind_precedes_application() {
+    use dope::{core::io::socket::install, manifold::app::creation, net::BindingError};
+    use endpoint::{BindError, BindFailure};
+    use std::{io, net::UdpSocket};
+
+    let occupied = UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("reserve address");
+    let address = occupied.local_addr().expect("reserved address");
+    let tls = common::peer::raw(0x38)
+        .expect("identity")
+        .0
+        .server()
+        .expect("server TLS");
+    let attempt = |application: Result<(), &'static str>| {
+        let plan = server::Plan::<0, receive::Copied>::new(
+            address,
+            tls.clone(),
+            Options::default(),
+            CONFIG,
+        )
+        .expect("server plan");
+        let settings = Needs::from_tree(plan.as_ref())
+            .expect("claims")
+            .apply_exact(config::Config::driver(
+                settings::Datagram::fixed::<2, 1200>(),
+            ))
+            .expect("driver configuration");
+        let mut calls = 0;
+        let result = Driver::new(settings).with_driver(
+            |mut driver| {
+                plan.bind_with::<app::Silent, _, _, _, _>(&mut driver, |_| {
+                    calls += 1;
+                    assert!(matches!(UdpSocket::bind(address), Err(error) if error.kind() == io::ErrorKind::AddrInUse));
+                    application.map(|()| (capture(), Idle))
+                }).map(|endpoint| endpoint.local_addr())
+            },
+            Policy::new(|_| {}, |failure: Recovery<'_, '_>| -> Infallible { failure.abort() }),
+            |result| match result {
+                Ok(bound) => bound,
+                Err(error) => panic!("driver lifecycle: {:?}", error.cause()),
+            },
+        );
+        (calls, result)
+    };
+
+    assert!(
+        matches!(attempt(Err("store")), (0, Err(BindFailure::Endpoint(BindError::Datagram(
+        creation::Error::Binding(BindingError::Bootstrap(install::Error::System {
+            operation: install::Operation::Bind, fault,
+        }))
+    )))) if io::Error::from_raw_os_error(fault.code().get()).kind() == io::ErrorKind::AddrInUse)
+    );
+    drop(occupied);
+    assert!(matches!(
+        attempt(Err("store")),
+        (1, Err(BindFailure::Application("store")))
+    ));
+    drop(UdpSocket::bind(address).expect("address reclaimed after builder failure"));
+    let (calls, bound) = attempt(Ok(()));
+    assert_eq!((calls, bound.expect("bound server")), (1, address));
+}
+
+#[test]
 fn receive_extent_keeps_inner_capacity() {
     let bind = routing::Single::new(([127, 0, 0, 1], 0).into());
     let direct = endpoint::Plan::<0, receive::Copied>::new(CONFIG).expect("direct plan");

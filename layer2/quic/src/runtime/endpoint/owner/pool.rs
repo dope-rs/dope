@@ -3,6 +3,7 @@ use std::net;
 use o3::buffer::resident;
 
 use dope::core::driver;
+use dope::manifold::network::datagram::Source;
 
 use crate::conn::id;
 use crate::conn::life::tls::servers;
@@ -53,8 +54,8 @@ impl<'tls, const ID: u8> Binding<'tls, ID> {
         let mux = builder::Builder::from_pool(events, opts, self.pool, routing::Plain, plan.mux())
             .bind(driver)
             .map_err(endpoint::BindError::Mux)?;
-        let ep = plan.prepare(driver)?;
-        ep.bind(bind, mux, endpoint::Idle::new(), driver)
+        let socket = plan.open(Source::Bind(bind), driver)?;
+        Ok(endpoint::Endpoint::new(socket, mux, endpoint::Idle::new()))
     }
 
     pub fn bind_routed<'pool, 'd, 'g: 'd, H, R>(
@@ -86,8 +87,8 @@ impl<'tls, const ID: u8> Binding<'tls, ID> {
         let mux = builder::Builder::from_pool(events, opts, self.pool, route, plan.mux())
             .bind(driver)
             .map_err(endpoint::BindError::Mux)?;
-        let ep = plan.prepare(driver)?;
-        ep.adopt(lease, mux, endpoint::Idle::new(), driver)
+        let socket = plan.open(Source::Adopt(lease), driver)?;
+        Ok(endpoint::Endpoint::new(socket, mux, endpoint::Idle::new()))
     }
 
     pub fn bind_single<'pool, 'd, H, R>(
@@ -119,7 +120,7 @@ impl<'tls, const ID: u8> Binding<'tls, ID> {
         let mux = builder::Builder::from_pool(events, opts, self.pool, route, plan.mux())
             .bind(driver)
             .map_err(endpoint::BindError::Mux)?;
-        let ep = plan.prepare(driver)?;
-        ep.bind(address, mux, endpoint::Idle::new(), driver)
+        let socket = plan.open(Source::Bind(address), driver)?;
+        Ok(endpoint::Endpoint::new(socket, mux, endpoint::Idle::new()))
     }
 }

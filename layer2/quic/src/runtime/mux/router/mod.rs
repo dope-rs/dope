@@ -20,7 +20,8 @@ use o3::{
     depot::{capacity, heap, queue::indexed::planes},
 };
 pub(in crate::runtime::mux) use records::AddressProof;
-pub(in crate::runtime::mux) use state::{Binding, Flush, State};
+pub(in crate::runtime) use state::State;
+pub(in crate::runtime::mux) use state::{Binding, Flush};
 use std::{ops, pin, time};
 pub(in crate::runtime::mux) use turn::Turn;
 

@@ -22,6 +22,11 @@ use crate::{
     },
 };
 
+pub enum Source<'g> {
+    Bind(net::SocketAddr),
+    Adopt(Lease<'g>),
+}
+
 /// Driver-bound resources awaiting their one socket binding.
 #[must_use = "prepared datagram resources must be consumed by one endpoint"]
 pub struct Prepared<
@@ -54,9 +59,7 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         H: datagram::Ingress<'d, ID>,
         H::Hooks: hook::Bundle<Buffer = B, Send = M>,
     {
-        let (binding, target, floor) = binding::Binding::bind(addr, driver)?;
-        let socket = self.finish(binding, target, floor, driver)?;
-        Ok(datagram::Endpoint { socket, handler })
+        Ok(self.open(Source::Bind(addr), driver)?.with_handler(handler))
     }
 
     pub fn adopt<'g: 'd, H>(
@@ -69,18 +72,20 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
         H: datagram::Ingress<'d, ID>,
         H::Hooks: hook::Bundle<Buffer = B, Send = M>,
     {
-        let (binding, target, floor) = binding::Binding::adopt(lease, driver)?;
-        let socket = self.finish(binding, target, floor, driver)?;
-        Ok(datagram::Endpoint { socket, handler })
+        Ok(self
+            .open(Source::Adopt(lease), driver)?
+            .with_handler(handler))
     }
 
-    fn finish(
+    pub fn open<'g: 'd>(
         self,
-        binding: binding::Binding<'d, ID>,
-        target: route::Target<'d, <ID as route::Materialize<Recv>>::With>,
-        floor: Option<route::Epoch>,
+        source: Source<'g>,
         driver: &mut driver::Context<'_, 'd>,
     ) -> Result<datagram::Socket<'d, ID, B, M>, creation::Error> {
+        let (binding, target, floor) = match source {
+            Source::Bind(addr) => binding::Binding::bind(addr, driver)?,
+            Source::Adopt(lease) => binding::Binding::adopt(lease, driver)?,
+        };
         let flights = driver
             .storage
             .reborrow()
@@ -110,5 +115,20 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode
                 .budget(Resident::bytes(bytes))
                 .map_err(creation::Error::Resident)?,
         ))
+    }
+}
+
+impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode>
+    datagram::Socket<'d, ID, B, M>
+{
+    pub fn with_handler<H>(self, handler: H) -> datagram::Endpoint<'d, ID, H, B, M>
+    where
+        H: datagram::Ingress<'d, ID>,
+        H::Hooks: hook::Bundle<Buffer = B, Send = M>,
+    {
+        datagram::Endpoint {
+            socket: self,
+            handler,
+        }
     }
 }

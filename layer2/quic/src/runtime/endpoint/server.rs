@@ -4,13 +4,14 @@ use std::net;
 
 use o3::buffer::resident;
 
-use dope::core::{driver, io::datagram::Lease};
+use dope::core::driver;
+use dope::manifold::network::datagram::Source;
 
 use crate::conn::id;
 use crate::conn::life::{accept, options};
 use crate::errors;
 use crate::runtime::endpoint::{self, config};
-use crate::runtime::mux::{app, builder, handler};
+use crate::runtime::mux::{app, handler, router};
 use crate::runtime::receive;
 use crate::{
     proto::{early, param},
@@ -29,17 +30,12 @@ pub struct Plan<
     R: receive::Policy = receive::Retained,
     L: routing::LocalRoute = routing::Plain,
 > {
-    bind: Socket<'g>,
+    bind: Source<'g>,
     route: L,
     source: rustls::ServerConfig,
     connection: options::Options,
     early: Option<early::ReplayCap>,
     endpoint: endpoint::Plan<ID, R>,
-}
-
-enum Socket<'g> {
-    Bind(net::SocketAddr),
-    Adopt(Lease<'g>),
 }
 
 impl<const ID: u8, R: receive::Policy> Plan<'static, ID, R> {
@@ -51,7 +47,7 @@ impl<const ID: u8, R: receive::Policy> Plan<'static, ID, R> {
     ) -> Result<Self, endpoint::PlanError> {
         let ep = endpoint::Plan::new(config).map_err(endpoint::PlanError::Config)?;
         Ok(Self::prepare(
-            Socket::Bind(bind),
+            Source::Bind(bind),
             routing::Plain,
             source,
             opts,
@@ -92,7 +88,7 @@ impl<const ID: u8, R: receive::Policy> Plan<'static, ID, R> {
         let ep = endpoint::Plan::single(config, &bind).map_err(endpoint::PlanError::Config)?;
         let (address, route) = bind.into_parts();
         Ok(Plan::prepare(
-            Socket::Bind(address),
+            Source::Bind(address),
             route,
             source,
             opts,
@@ -109,7 +105,7 @@ impl<const ID: u8, R: receive::Policy> Plan<'static, ID, R> {
     ) -> Result<Plan<'g, ID, R, routing::Routed>, endpoint::PlanError> {
         let ep = endpoint::Plan::routed(config, &bind).map_err(endpoint::PlanError::Config)?;
         let (lease, route) = bind.into_parts();
-        Ok(Plan::prepare(Socket::Adopt(lease), route, source, opts, ep))
+        Ok(Plan::prepare(Source::Adopt(lease), route, source, opts, ep))
     }
 }
 
@@ -121,7 +117,7 @@ impl<'g, const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<'g, ID, 
     }
 
     fn prepare(
-        bind: Socket<'g>,
+        bind: Source<'g>,
         route: L,
         source: rustls::ServerConfig,
         mut opts: options::Options,
@@ -150,32 +146,37 @@ impl<'g, const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<'g, ID, 
         <H::Events as Dispatch<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>>::Packet:
             packet::Mode<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>, Output = ()>,
     {
-        self.bind_runtime(events, endpoint::Idle::new(), driver)
+        self.bind_runtime(driver, |_| Ok((events, endpoint::Idle::new())))
     }
 
-    fn bind_runtime<'pool, 'd, H, A>(
+    fn bind_runtime<'pool, 'd, H, A, E>(
         self,
-        events: H,
-        app: A,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> endpoint::Bound<'d, ID, H, R, A, owner::Owned<L>, datagram::Sealed<'pool>>
+        build: impl FnOnce(driver::Binding<'d>) -> Result<(H, A), E>,
+    ) -> endpoint::Bound<'d, ID, H, R, A, owner::Owned<L>, datagram::Sealed<'pool>, E>
     where
         'g: 'd,
+        E: From<endpoint::BindError>,
         H: handler::Handler<ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>,
         H: cert::Sink<ID, id::Driver<'d>>,
         <H::Events as Dispatch<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>>>::Packet:
             packet::Mode<H, ID, R::Buffer<'d>, resident::Shared<'d>, id::Driver<'d>, Output = ()>,
     {
+        let binding = driver::Binding::new(driver.driver_ref().timer(), self.endpoint.owners());
         let auth = accept::Authority::from_parts(self.source, self.connection, self.early)
             .map_err(endpoint::BindError::Connection)?;
-        let mux = builder::Builder::server_in(events, auth, self.route, self.endpoint.mux())
-            .bind(driver)
+        let state = self
+            .endpoint
+            .mux()
+            .bind(driver, self.route, Some(auth))
             .map_err(endpoint::BindError::Mux)?;
-        let ep = self.endpoint.prepare(driver)?;
-        match self.bind {
-            Socket::Bind(address) => ep.bind(address, mux, app, driver),
-            Socket::Adopt(lease) => ep.adopt(lease, mux, app, driver),
-        }
+        let socket = self.endpoint.open(self.bind, driver)?;
+        let (handler, app) = build(binding)?;
+        Ok(endpoint::Endpoint::new(
+            socket,
+            router::Router { state, handler },
+            app,
+        ))
     }
 
     pub fn bind_with<'pool, 'd, Q, H, A, F, E>(
@@ -202,10 +203,10 @@ impl<'g, const ID: u8, R: receive::Policy, L: routing::LocalRoute> Plan<'g, ID, 
         Q: app::Receipt<'d, H, ID, R::Buffer<'d>, resident::Shared<'d>, A>,
         F: FnOnce(driver::Binding<'d>) -> Result<(H, A), E>,
     {
-        let binding = driver::Binding::new(driver.driver_ref().timer(), self.endpoint.owners());
-        let (events, app) = bind(binding).map_err(endpoint::BindFailure::Application)?;
-        self.bind_runtime(events, endpoint::Run::<A, Q>::new(app), driver)
-            .map_err(endpoint::BindFailure::Endpoint)
+        self.bind_runtime(driver, |binding| {
+            let (events, app) = bind(binding).map_err(endpoint::BindFailure::Application)?;
+            Ok((events, endpoint::Run::<A, Q>::new(app)))
+        })
     }
 }
 

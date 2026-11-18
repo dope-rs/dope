@@ -277,7 +277,11 @@ where
         let rng = issuer::Issuer::random()
             .map_err(errors::Connect::Entropy)
             .map_err(Failure::Connection)?;
-        self.finish(id, rng)
+        let state = self.limits.state(id, rng, self.route, self.server)?;
+        Ok(router::Router {
+            state,
+            handler: self.events,
+        })
     }
 
     /// Binds mux identity, randomness, and send owner to one driver domain.
@@ -293,37 +297,58 @@ where
                 Send = <id::Driver<'d> as issuer::Binding>::Send,
             >,
     {
+        let state = self.limits.bind(driver, self.route, self.server)?;
+        Ok(router::Router {
+            state,
+            handler: self.events,
+        })
+    }
+}
+
+impl Plan {
+    pub(in crate::runtime) fn bind<'d, A, C, const DOMAIN: u8, B: stream::Recv>(
+        self,
+        driver: &driver::Context<'_, 'd>,
+        route: A::LocalRoute,
+        server: Option<A::Server>,
+    ) -> Result<router::State<A, C, DOMAIN, B>, Failure>
+    where
+        A: auth::Mode<
+                DOMAIN,
+                Identity = id::Driver<'d>,
+                Random = <id::Driver<'d> as issuer::Binding>::Authority,
+                Send = <id::Driver<'d> as issuer::Binding>::Send,
+            >,
+    {
         let id = id::Domain::for_driver(driver).ok_or(Failure::Connection(
             errors::Connect::IdentifierSpaceExhausted,
         ))?;
         let issuer = issuer::Issuer::for_driver(driver)
             .map_err(errors::Connect::RandomSpaceExhausted)
             .map_err(Failure::Connection)?;
-        self.finish(id, issuer)
+        self.state(id, issuer, route, server)
     }
 
-    fn finish(
+    fn state<A: auth::Mode<DOMAIN>, C, const DOMAIN: u8, B: stream::Recv>(
         self,
         id: id::Domain<A::Identity, DOMAIN>,
         rng: A::Random,
-    ) -> Result<router::Router<H, DOMAIN, B, A>, Failure> {
-        let plan = self.limits;
+        route: A::LocalRoute,
+        server: Option<A::Server>,
+    ) -> Result<router::State<A, C, DOMAIN, B>, Failure> {
         let mut state = router::State::try_new(
             router::Binding {
                 domain: id,
-                route: self.route,
+                route,
                 issuer: rng,
-                opening_lifetime: plan.opening_lifetime,
+                opening_lifetime: self.opening_lifetime,
             },
-            plan.conns(),
-            capacity::Count::new(plan.queue.count().get()),
-            plan.bytes(),
-            self.server,
+            self.conns(),
+            capacity::Count::new(self.queue.count().get()),
+            self.bytes(),
+            server,
         )?;
-        state.outgoing.cache.gso = plan.gso;
-        Ok(router::Router {
-            state,
-            handler: self.events,
-        })
+        state.outgoing.cache.gso = self.gso;
+        Ok(state)
     }
 }
