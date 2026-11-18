@@ -1,6 +1,6 @@
 //! One absolute time budget backed by one reusable driver timer slot.
 
-use core::{ops::ControlFlow, pin, task};
+use core::{pin, task};
 use std::{mem, time};
 
 use crate::{
@@ -52,22 +52,17 @@ pub struct Check<'d> {
 #[doc(hidden)]
 #[must_use = "a fiber does nothing unless it is driven"]
 pub struct Timeout<'scope, 'd, F> {
+    alarm: &'scope mut timer::Alarm<'d>,
     deadline: clock::Deadline<'d>,
-    state: machine::Machine<State<'scope, 'd>>,
+    state: machine::Machine<State>,
     limit: Option<time::Duration>,
     #[pin]
     fiber: F,
 }
 
-enum State<'scope, 'd> {
-    Idle {
-        alarm: &'scope mut timer::Alarm<'d>,
-        elapsed: Elapsed,
-    },
-    Armed {
-        alarm: timer::Armed<'scope, 'd>,
-        elapsed: Elapsed,
-    },
+enum State {
+    Idle(Elapsed),
+    Armed(Elapsed),
 }
 
 #[doc(hidden)]
@@ -265,8 +260,9 @@ impl<'scope, 'd, F> Timeout<'scope, 'd, F> {
         fiber: F,
     ) -> Self {
         Self {
+            alarm,
             deadline,
-            state: machine::Machine::new(State::Idle { alarm, elapsed }),
+            state: machine::Machine::new(State::Idle(elapsed)),
             limit,
             fiber,
         }
@@ -284,35 +280,32 @@ where
 
         let (this, mut context) = call.into_parts();
         let this = this.project();
-        let deadline = this.deadline;
-        let limit = this.limit;
-        let fiber = this.fiber;
-        this.state.step(|state| {
+        this.state.turn(|state| {
             let now = context.as_mut().driver().driver_ref().clock().now();
             let wake = context.as_ref().completion();
-            let (polled, elapsed) = match state {
-                State::Idle { alarm, mut elapsed } => {
-                    if let Some(duration) = limit.take() {
-                        (*deadline, elapsed) = elapsed.narrow(*deadline, now, duration);
+            match *state {
+                State::Idle(elapsed) => {
+                    let (due, elapsed) = match *this.limit {
+                        Some(duration) => elapsed.narrow(*this.deadline, now, duration),
+                        None => (*this.deadline, elapsed),
+                    };
+                    if this.alarm.arm_and_poll(due, now, wake).is_ready() {
+                        return Poll::Ready(Err(elapsed));
                     }
-                    (alarm.arm_owned(*deadline, now, wake), elapsed)
+                    *state = State::Armed(elapsed);
                 }
-                State::Armed { alarm, elapsed } => (alarm.poll(now, wake), elapsed),
-            };
-            match polled {
-                timer::Poll::Ready => ControlFlow::Break(Err(elapsed)),
-                timer::Poll::Pending(alarm) => match unsafe {
-                    // SAFETY: this sole child receives the timeout's PollCall
-                    // admission. The machine ends its polling authority on Ready.
-                    context::raw::Live::new(fiber).delegate(context.as_mut())
-                } {
-                    Poll::Ready(output) => {
-                        alarm.cancel();
-                        ControlFlow::Break(Ok(output))
+                State::Armed(elapsed) => {
+                    if this.alarm.poll(now, wake).is_ready() {
+                        return Poll::Ready(Err(elapsed));
                     }
-                    Poll::Pending => ControlFlow::Continue(State::Armed { alarm, elapsed }),
-                },
+                }
             }
+            // SAFETY: this sole child receives the timeout's PollCall admission.
+            // The machine ends its polling authority on Ready.
+            unsafe { context::raw::Live::new(this.fiber).delegate(context.as_mut()) }.map(|output| {
+                this.alarm.clear();
+                Ok(output)
+            })
         })
     }
 }
@@ -320,8 +313,9 @@ where
 #[pin_project::pinned_drop]
 impl<F> PinnedDrop for Timeout<'_, '_, F> {
     fn drop(self: pin::Pin<&mut Self>) {
-        if let Some(State::Armed { alarm, .. }) = self.project().state.take() {
-            alarm.cancel();
+        let this = self.project();
+        if let Some(State::Armed(_)) = this.state.take() {
+            this.alarm.clear();
         }
     }
 }
@@ -329,11 +323,7 @@ impl<F> PinnedDrop for Timeout<'_, '_, F> {
 const _: () = {
     assert!(mem::size_of::<Error>() <= mem::size_of::<clock::Range>() + mem::size_of::<usize>());
     assert!(mem::size_of::<Elapsed>() == 1);
-    assert!(mem::size_of::<State<'static, 'static>>() == 2 * mem::size_of::<usize>());
-    assert!(
-        mem::size_of::<machine::Machine<State<'static, 'static>>>()
-            == mem::size_of::<State<'static, 'static>>()
-    );
+    assert!(mem::size_of::<machine::Machine<State>>() <= 2);
     assert!(
         mem::size_of::<Budget<'static>>()
             == mem::size_of::<time::Instant>() + mem::size_of::<timer::Alarm<'static>>()

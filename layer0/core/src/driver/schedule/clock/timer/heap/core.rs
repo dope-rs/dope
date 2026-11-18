@@ -135,7 +135,7 @@ impl<P: Ord, R> Core<P, R> {
         unsafe { *self.storage.extra_mut().0.get_unchecked_mut(slot.offset()) = state };
     }
 
-    fn phase(&self, slot: Slot) -> State<order::Position> {
+    pub(super) fn phase(&self, slot: Slot) -> State<order::Position> {
         // SAFETY: the branded live slot is within this heap's initialized plane.
         match unsafe { *self.storage.extra().0.get_unchecked(slot.offset()) } {
             IDLE => State::Idle,

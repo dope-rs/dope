@@ -267,13 +267,13 @@ fn rearm_replaces_delivery() {
         let late = late.expect("second deadline");
         assert!(
             alarm
-                .poll_or_arm(early, moment, Waker::from(first.target()))
+                .poll_until(&early, moment, Waker::from(first.target()))
                 .is_pending()
         );
         alarm.arm(late, Waker::from(first.target()));
         assert!(
             alarm
-                .poll_or_arm(early, moment, Waker::from(second.target()))
+                .poll_after(&Duration::ZERO, moment, Waker::from(second.target()))
                 .is_pending()
         );
 
@@ -314,8 +314,12 @@ fn rearm_replaces_delivery() {
         assert!(expected[0].matches(fired[0]));
         assert!(
             alarm
-                .poll_or_arm(next, moment, Waker::from(first.target()))
+                .poll_until(&next, moment, Waker::from(first.target()))
                 .is_ready()
         );
+        assert!(
+            alarm.poll_until(&early, moment, Waker::from(first.target())).is_ready()
+        );
+        assert_eq!(timer.earliest(), None);
     });
 }

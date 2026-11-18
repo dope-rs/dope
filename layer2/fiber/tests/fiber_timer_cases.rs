@@ -84,11 +84,20 @@ fn reuses_timer_slot() {
                         let mut budget = (Budget::try_new(
                             timer,
                             started,
-                            Duration::from_secs(1),
+                            Duration::from_secs(60),
                         )).expect("reuse the released timer slot");
                         drop(budget.sleep(Duration::ZERO));
                         let first = budget.timeout(Ready::new(1_u8)).await;
                         assert!(matches!(first, Ok(1)));
+                        poll_fn(|context| {
+                            let pending = budget.timeout(Pending::<Infallible>::new());
+                            let mut task = pin!(dope_fiber::abi::Task::new(pending));
+                            assert!(context.poll(task.as_mut()).is_pending());
+                            assert!(timer.earliest().is_some());
+                            Poll::Ready(())
+                        })
+                        .await;
+                        assert!(timer.earliest().is_none());
                         let second = budget.timeout(Ready::new(2_u8)).await;
                         assert!(matches!(second, Ok(2)));
                     }))

@@ -2,7 +2,10 @@ use std::{mem, pin, task, time};
 
 use crate::{
     abi, context,
-    core::driver::schedule::clock::{self, timer},
+    core::driver::schedule::{
+        clock::{self, timer},
+        ready::wake,
+    },
 };
 
 pub const MAXIMUM_DURATION: time::Duration = time::Duration::new(i64::MAX as u64 / 2, 999_999_999);
@@ -34,30 +37,38 @@ impl From<timer::Exhausted> for Error {
 #[must_use = "a fiber does nothing unless it is driven"]
 pub struct Sleep<'d, T = time::Duration> {
     alarm: timer::Alarm<'d>,
-    state: State<T>,
-}
-
-#[derive(Clone, Copy)]
-enum State<T> {
-    New(T),
-    Armed,
-    Done,
+    state: abi::machine::Machine<T>,
 }
 
 #[doc(hidden)]
-pub trait Start<'d>: Copy + Unpin {
-    fn deadline(self, now: clock::Moment<'d>) -> clock::Deadline<'d>;
+pub trait Start<'d>: Unpin {
+    fn poll(
+        &self,
+        alarm: &timer::Alarm<'d>,
+        now: clock::Moment<'d>,
+        wake: wake::Waker<'d>,
+    ) -> task::Poll<()>;
 }
 
 impl<'d> Start<'d> for time::Duration {
-    fn deadline(self, now: clock::Moment<'d>) -> clock::Deadline<'d> {
-        now.clamp_add(self)
+    fn poll(
+        &self,
+        alarm: &timer::Alarm<'d>,
+        now: clock::Moment<'d>,
+        wake: wake::Waker<'d>,
+    ) -> task::Poll<()> {
+        alarm.poll_after(self, now, wake)
     }
 }
 
 impl<'d> Start<'d> for clock::Deadline<'d> {
-    fn deadline(self, _: clock::Moment<'d>) -> Self {
-        self
+    fn poll(
+        &self,
+        alarm: &timer::Alarm<'d>,
+        now: clock::Moment<'d>,
+        wake: wake::Waker<'d>,
+    ) -> task::Poll<()> {
+        alarm.poll_until(self, now, wake)
     }
 }
 
@@ -68,7 +79,7 @@ impl<'d> Sleep<'d> {
         }
         Ok(Self {
             alarm: timer.try_alarm()?,
-            state: State::New(duration),
+            state: abi::machine::Machine::new(duration),
         })
     }
 
@@ -78,7 +89,7 @@ impl<'d> Sleep<'d> {
     ) -> Result<Sleep<'d, clock::Deadline<'d>>, Error> {
         Ok(Sleep {
             alarm: timer.try_alarm()?,
-            state: State::New(deadline),
+            state: abi::machine::Machine::new(deadline),
         })
     }
 }
@@ -90,22 +101,10 @@ impl<'d, T: Start<'d>> Sleep<'d, T> {
         &mut self,
         mut context: pin::Pin<&mut context::Context<'_, 'd>>,
     ) -> task::Poll<()> {
-        if let State::Done = self.state {
-            return task::Poll::Pending;
-        }
-        let wake = context.as_ref().completion();
-        let now = context.as_mut().driver().driver_ref().clock().now();
-        let polled = if let State::New(start) = self.state {
-            let polled = self.alarm.arm_and_poll(start.deadline(now), now, wake);
-            self.state = State::Armed;
-            polled
-        } else {
-            self.alarm.poll(now, wake)
-        };
-        if polled.is_ready() {
-            self.state = State::Done;
-        }
-        polled
+        self.state.turn(|start| {
+            let now = context.as_mut().driver().driver_ref().clock().now();
+            start.poll(&self.alarm, now, context.as_ref().completion())
+        })
     }
 }
 

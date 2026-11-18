@@ -66,20 +66,6 @@ pub struct Alarm<'d> {
     lease: Lease<Access<'d>, lease::Open>,
 }
 
-/// Exclusive proof that one alarm remains armed or fired.
-#[must_use = "an armed alarm must be polled or cancelled"]
-#[repr(transparent)]
-pub struct Armed<'a, 'd> {
-    alarm: &'a mut Alarm<'d>,
-}
-
-/// State transition after polling an exclusively armed alarm.
-#[must_use]
-pub enum Poll<'a, 'd> {
-    Pending(Armed<'a, 'd>),
-    Ready,
-}
-
 impl<'d> Command<'_, 'd> {
     fn due(
         &mut self,
@@ -89,42 +75,19 @@ impl<'d> Command<'_, 'd> {
         (*minimum.priority() <= now).then_some(minimum)
     }
 
-    fn set_target(&mut self, slot: &heap::Lease<'d, Tag>, wake: &wake::Waker<'d>) {
-        self.resident(slot).set(*wake.key());
-    }
-
     fn arm_alarm(
         &mut self,
         slot: &heap::Lease<'d, Tag>,
         due: time::Instant,
         wake: &wake::Waker<'d>,
     ) {
-        self.set_target(slot, wake);
+        self.resident(slot).set(*wake.key());
         self.set(slot, due);
     }
 
     fn clear_alarm(&mut self, slot: &heap::Lease<'d, Tag>) {
         self.clear(slot);
         self.resident(slot).clear();
-    }
-
-    fn poll_alarm(
-        &mut self,
-        slot: &heap::Lease<'d, Tag>,
-        now: time::Instant,
-        target: &wake::Waker<'d>,
-    ) -> task::Poll<()> {
-        match self.state(slot) {
-            heap::State::Armed(due) if *due > now => {
-                self.set_target(slot, target);
-                task::Poll::Pending
-            }
-            heap::State::Idle => task::Poll::Pending,
-            heap::State::Armed(_) | heap::State::Fired => {
-                self.clear_alarm(slot);
-                task::Poll::Ready(())
-            }
-        }
     }
 }
 
@@ -201,43 +164,37 @@ impl<'d> Alarm<'d> {
         })
     }
 
-    /// Arms an idle alarm; otherwise polls without replacing its deadline.
-    pub fn poll_or_arm(
+    pub fn poll_after(
         &self,
-        due: clock::Deadline<'d>,
+        delay: &time::Duration,
         now: clock::Moment<'d>,
         target: wake::Waker<'d>,
     ) -> task::Poll<()> {
-        self.lease.sink().0.command(|mut cmd| {
-            let slot = self.lease.item();
-            if cmd.state(slot) == heap::State::Idle {
-                cmd.arm_alarm(slot, due.into_raw(), &target);
-                task::Poll::Pending
-            } else {
-                cmd.poll_alarm(slot, now.into_raw(), &target)
-            }
-        })
+        self.poll_with(now, target, || Some(now.clamp_add(delay).into_raw()))
     }
 
-    /// Replaces and polls this deadline, retaining exclusive proof while pending.
-    pub fn arm_owned<'a>(
-        &'a mut self,
-        due: clock::Deadline<'d>,
+    pub fn poll_until(
+        &self,
+        due: &clock::Deadline<'d>,
         now: clock::Moment<'d>,
         target: wake::Waker<'d>,
-    ) -> Poll<'a, 'd> {
-        if self.arm_and_poll(due, now, target).is_pending() {
-            Poll::Pending(Armed { alarm: self })
-        } else {
-            Poll::Ready
-        }
+    ) -> task::Poll<()> {
+        self.poll_with(now, target, || Some(due.into_raw()))
     }
 
     pub fn poll(&self, now: clock::Moment<'d>, target: wake::Waker<'d>) -> task::Poll<()> {
-        self.lease
-            .sink()
-            .0
-            .command(|mut cmd| cmd.poll_alarm(self.lease.item(), now.into_raw(), &target))
+        self.poll_with(now, target, || None)
+    }
+
+    fn poll_with(
+        &self,
+        now: clock::Moment<'d>,
+        target: wake::Waker<'d>,
+        start: impl FnOnce() -> Option<time::Instant>,
+    ) -> task::Poll<()> {
+        self.lease.sink().0.command(|mut cmd| {
+            cmd.poll_alarm(self.lease.item(), now.into_raw(), &target, start)
+        })
     }
 
     pub fn clear(&self) {
@@ -245,22 +202,6 @@ impl<'d> Alarm<'d> {
             .sink()
             .0
             .command(|mut cmd| cmd.clear_alarm(self.lease.item()));
-    }
-}
-
-impl<'a, 'd> Armed<'a, 'd> {
-    /// Polls without losing the proof when the alarm remains live.
-    pub fn poll(self, now: clock::Moment<'d>, target: wake::Waker<'d>) -> Poll<'a, 'd> {
-        if self.alarm.poll(now, target).is_pending() {
-            Poll::Pending(self)
-        } else {
-            Poll::Ready
-        }
-    }
-
-    /// Cancels an alarm proven not to be idle.
-    pub fn cancel(self) {
-        self.alarm.clear();
     }
 }
 
@@ -281,7 +222,4 @@ const _: () = {
     assert!(mem::size_of::<Command<'static, 'static>>() == mem::size_of::<usize>());
     assert!(mem::size_of::<Alarm<'static>>() == 2 * mem::size_of::<usize>());
     assert!(mem::align_of::<Alarm<'static>>() == mem::align_of::<usize>());
-    assert!(mem::size_of::<Armed<'static, 'static>>() == mem::size_of::<usize>());
-    assert!(mem::size_of::<Option<Armed<'static, 'static>>>() == mem::size_of::<usize>());
-    assert!(mem::size_of::<Poll<'static, 'static>>() == mem::size_of::<usize>());
 };

@@ -1,9 +1,15 @@
-use std::{marker, mem};
+use std::{marker, mem, task, time};
 
 use o3::base::marker::ThreadBound;
 use vacancy::Vacancy;
 
-use crate::driver::schedule::clock::timer::heap::{Lease, Minimum, State, core};
+use crate::driver::schedule::{
+    clock::timer::{
+        self,
+        heap::{IDLE, Lease, Minimum, State, core, order},
+    },
+    ready::wake,
+};
 
 pub(in crate::driver::schedule::clock::timer::heap) mod vacancy;
 
@@ -73,6 +79,40 @@ impl<'a, 'id, P: Ord, R, Tag> Min<'a, 'id, P, R, Tag> {
 
     pub fn peek(&self) -> Option<&P> {
         self.core.peek()
+    }
+}
+
+impl<'d> timer::Command<'_, 'd> {
+    pub(in crate::driver::schedule::clock::timer) fn poll_alarm(
+        &mut self,
+        lease: &Lease<'d, timer::Tag>,
+        now: time::Instant,
+        target: &wake::Waker<'d>,
+        start: impl FnOnce() -> Option<time::Instant>,
+    ) -> task::Poll<()> {
+        let slot = lease.slot();
+        match self.core.phase(slot) {
+            State::Idle => {
+                let Some(due) = start() else {
+                    return task::Poll::Pending;
+                };
+                if due <= now {
+                    return task::Poll::Ready(());
+                }
+                order::insert(self.core, slot, due);
+            }
+            State::Armed(position) if *self.core.priority_at(position) > now => {}
+            phase @ (State::Armed(_) | State::Fired) => {
+                if let State::Armed(position) = phase {
+                    self.core.remove_at(position);
+                    self.core.resident(slot).clear();
+                }
+                self.core.write_state(slot, IDLE);
+                return task::Poll::Ready(());
+            }
+        }
+        self.core.resident(slot).set(*target.key());
+        task::Poll::Pending
     }
 }
 
