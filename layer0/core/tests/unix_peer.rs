@@ -27,6 +27,21 @@ use common::{
 
 pub mod common;
 
+fn diagnostic(error: polling::Error<tuning::Failure<'_>>) -> String {
+    use polling::Error;
+    use tuning::Failure;
+
+    match error {
+        Error::Timeout(waited) => format!("native event timeout: {waited:?}"),
+        Error::Overflow(waited) => format!("native event deadline overflow: {waited:?}"),
+        Error::Source(Failure::Wait(error)) => format!("native wait: {error:?}"),
+        Error::Source(Failure::Dispatch(error)) => format!("native dispatch: {error:?}"),
+        Error::Source(Failure::Event(event)) => {
+            format!("unexpected native event: {:?}", std::mem::discriminant(&event))
+        }
+    }
+}
+
 #[test]
 fn accepted_uid_and_pending_retirement() {
     let directory = Directory::try_with(Path::new("/tmp"), "unix_peer", common::file::cleanup)
@@ -61,7 +76,7 @@ fn accepted_uid_and_pending_retirement() {
                     for (round, abandon) in [false, true, false].into_iter().enumerate() {
                         let mut peer = UnixStream::connect(&path).expect("Unix peer");
                         let done = tuning::wait(&mut driver, turn)
-                            .map_err(tuning::diagnostic)
+                            .map_err(diagnostic)
                             .expect("native accept event");
                         let done = match done {
                             Kind::Accept(done) => Some(done),
@@ -87,7 +102,7 @@ fn accepted_uid_and_pending_retirement() {
                             Query::Pending(pending) if abandon => {
                                 drop(pending);
                                 let done = tuning::wait(&mut driver, turn)
-                                    .map_err(tuning::diagnostic)
+                                    .map_err(diagnostic)
                                     .expect("abandoned query terminal");
                                 assert!(matches!(done, Kind::Tuning(_)));
                             }
@@ -108,7 +123,7 @@ fn accepted_uid_and_pending_retirement() {
                                     listener = returned;
                                 }
                                 let done = tuning::wait(&mut driver, turn)
-                                    .map_err(tuning::diagnostic)
+                                    .map_err(diagnostic)
                                     .expect("peer query terminal");
                                 let done = match done {
                                     Kind::Tuning(done) => Some(done),

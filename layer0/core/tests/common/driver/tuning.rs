@@ -20,18 +20,6 @@ pub enum Failure<'d> {
     Event(Kind<'d>),
 }
 
-pub(crate) fn diagnostic(error: Error<Failure<'_>>) -> String {
-    match error {
-        Error::Timeout(waited) => format!("native event timeout: {waited:?}"),
-        Error::Overflow(waited) => format!("native event deadline overflow: {waited:?}"),
-        Error::Source(Failure::Wait(error)) => format!("native wait: {error:?}"),
-        Error::Source(Failure::Dispatch(error)) => format!("native dispatch: {error:?}"),
-        Error::Source(Failure::Event(event)) => {
-            format!("unexpected native event: {:?}", std::mem::discriminant(&event))
-        }
-    }
-}
-
 pub(crate) fn wait<'d>(
     driver: &mut driver::Context<'_, 'd>,
     turn: &mut scope::Guard<'_, 'd>,
