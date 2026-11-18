@@ -1,8 +1,6 @@
 use std::{mem::ManuallyDrop, ptr::NonNull};
 
 use o3::{
-    alloc,
-    alloc::array,
     base::num::bounded,
     depot::{self, arena::linked, queue::pool::fifo},
 };
@@ -125,45 +123,29 @@ impl<D: Footprint> Terminal<'_, '_, '_, '_, D> {
         // SAFETY: every returned borrow is bounded by this immutable root owner.
         unsafe { self.data.as_ref() }.iter()
     }
-
-    fn map_next<R>(&mut self, make: impl FnOnce(&D) -> R) -> R {
-        // SAFETY: consuming Batch excludes outward row borrows; the exact count
-        // and FIFO stay paired through each callback and original-member removal.
-        let Some(front) = (unsafe { self.data.as_mut() }).front() else {
-            unreachable!("batch")
-        };
-        let result = make(&front.get().value);
-        let amount = front.get().amount;
-        drop(front.detach());
-        // SAFETY: the node and payload are gone; their original amount remains
-        // accounted by this sole root until this matching credit return.
-        unsafe { self.root.payload.as_mut().remove(amount) }.retire();
-        result
-    }
 }
 
 impl<C: Footprint> Batch<'_, '_, '_, '_, C> {
-    /// Maps this retained batch into one exactly sized allocation. Each slot's
-    /// consuming insertion commits its value before further callback work.
-    /// Visited rows retire after their callbacks; errors defer the remaining rows.
-    pub fn try_map<T, E>(
-        mut self,
-        mut make: impl for<'slot> FnMut(&C, array::Slot<'slot, T>) -> Result<array::Written<'slot>, E>,
-    ) -> Result<Result<Vec<T>, E>, alloc::Error> {
-        let count = self.len().get();
-        let block = array::Block::try_new(count, ())?;
-        // SAFETY: this consumed batch retains the FIFO and its exact count together.
-        // Each iteration borrows its current row through the callback, then retires
-        // that row once. Callback failure leaves the remainder owned by Batch.
-        let values = unsafe {
-            alloc::raw::try_map(block, 0..count, move |slot, _| {
-                let Some(owned) = self.contents.as_mut() else {
-                    unreachable!("batch")
-                };
-                owned.map_next(|value| make(value, slot))
-            })
+    /// Retires each visited item, including the item that returned an error.
+    /// The unvisited suffix stays in this batch.
+    pub fn try_drain<E>(&mut self, mut visit: impl FnMut(&C) -> Result<(), E>) -> Result<(), E> {
+        let Some(terminal) = &mut self.contents else {
+            return Ok(());
         };
-        Ok(values.map(array::Block::into_vec))
+        // SAFETY: the original registration owns this FIFO and the exclusive
+        // batch borrow excludes references from iterators during the drain.
+        let data = unsafe { terminal.data.as_mut() };
+        while let Some(front) = data.front() {
+            let item = front.get();
+            let result = visit(&item.value);
+            let amount = item.amount;
+            drop(front.detach());
+            // SAFETY: this node and its payload are gone. Their original amount
+            // is still charged to the same terminal registration.
+            unsafe { terminal.root.payload.as_mut().remove(amount) }.retire();
+            result?;
+        }
+        Ok(())
     }
 }
 

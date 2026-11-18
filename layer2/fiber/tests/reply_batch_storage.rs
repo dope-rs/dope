@@ -54,10 +54,9 @@ fn first_transfers_root_and_retained_credit() {
 }
 
 #[test]
-fn map_retires_consumed_rows() {
-    for stop in [0, 2, 4] {
+fn drain_retires_visited_items() {
+    for stop in [2, 4] {
         let source = Drops::new();
-        let output = Drops::new();
         region::Token::scope(|mut token| {
             let layout = layout::Layout::bounded(capacity(1, 1, 4, 4, 4)).expect("reply layout");
             Arena::try_with(layout, token.proof(), |arena| {
@@ -74,49 +73,29 @@ fn map_retires_consumed_rows() {
                     );
                 }
                 lane.complete(&mut token);
-                let batch = reply
+                let mut batch = reply
                     .try_all(&mut token)
                     .expect("completed batch")
                     .map_err(|error| error.failure)
                     .expect("batch");
                 let mut visited = 0;
-                let result = Tracker::fail_after(usize::from(stop != 0), || {
-                    batch.try_map(|row, slot| {
-                        assert_eq!(source.count(), visited);
-                        assert_eq!(row.bytes, 1);
-                        if visited != 0 {
-                            drop(
-                                lane.try_reserve(usage::Usage::new(
-                                    usage::Bytes::new(visited),
-                                    usage::Values::new(visited),
-                                ))
-                                .expect("returned credit"),
-                            );
-                        }
-                        visited += 1;
-                        let written = slot.insert(Counted::mixed(&output));
-                        if visited == stop && stop < 4 {
-                            Err(7)
-                        } else {
-                            Ok(written)
-                        }
-                    })
-                });
-                assert_eq!(visited, stop);
-                assert_eq!(source.count(), stop);
-                match (stop, result) {
-                    (0, Err(_)) | (2, Ok(Err(7))) => assert_eq!(output.count(), stop),
-                    (4, Ok(Ok(values))) => {
-                        assert_eq!(output.count(), 0);
-                        assert_eq!(values.len(), 4);
-                        drop(values);
+                let result = batch.try_drain(|row| {
+                    assert_eq!(source.count(), visited);
+                    assert_eq!(row.bytes, 1);
+                    visited += 1;
+                    if visited == 2 && stop == 2 {
+                        return Err(7);
                     }
-                    _ => panic!("mapping result"),
-                }
+                    Ok(())
+                });
+                assert_eq!(result, if stop == 2 { Err(7) } else { Ok(()) });
+                assert_eq!(source.count(), stop);
+                assert_eq!(batch.len().get(), 4 - stop);
+                let returned = usage::Usage::new(usage::Bytes::new(stop), usage::Values::new(stop));
+                drop(lane.try_reserve(returned).expect("returned prefix credit"));
             })
             .expect("batch arena");
         });
         assert_eq!(source.count(), 4);
-        assert_eq!(output.count(), stop);
     }
 }
