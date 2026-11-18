@@ -12,10 +12,9 @@ impl Sum {
     }
 
     /// # Safety
-    /// Admission has committed this disjoint amount to the same issuing State.
-    pub(in crate::reply) unsafe fn add<A: Amount<3, usize>>(&mut self, amount: A) {
-        let part = amount.get();
-        self.0 = array::from_fn(|axis| self.0[axis].wrapping_add(part[axis]));
+    /// These are the checked totals after the original source admitted the member.
+    pub(in crate::reply) unsafe fn commit(&mut self, items: usize, usage: usage::Usage) {
+        self.0 = [items, usage.values().get(), usage.bytes().get()];
     }
 
     pub(in crate::reply) fn len(&self) -> usize {

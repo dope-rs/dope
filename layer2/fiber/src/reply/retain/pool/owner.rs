@@ -148,32 +148,7 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
             })?;
         let held = self.sum.len();
         let mut blocked = None;
-        for (resource, current, added, limit, exceeded) in [
-            (
-                usage::Resource::Items,
-                held,
-                items,
-                limit.data().get(),
-                items > limit.data().get() - held,
-            ),
-            (
-                usage::Resource::Bytes,
-                current.bytes().get(),
-                bytes,
-                limit.bytes().get(),
-                next.bytes() > limit.bytes(),
-            ),
-            (
-                usage::Resource::Values,
-                current.values().get(),
-                values,
-                limit.values().get(),
-                next.values() > limit.values(),
-            ),
-        ] {
-            if !exceeded {
-                continue;
-            }
+        let mut exceeded = |resource, current, added, limit| {
             if acceptance != recv::Acceptance::Payload || added > limit {
                 lanes.cancel_entry(self.lane, key);
                 return Err(Acquire::Capacity(usage::Capacity::Limit {
@@ -183,22 +158,42 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
                     limit: usage::Limit::new(limit),
                 }));
             }
-            if blocked.is_none() {
-                blocked = Some(usage::Backpressure::new(
+            blocked.get_or_insert_with(|| {
+                usage::Backpressure::new(
                     resource,
                     usage::Required::new(added),
                     usage::Available::new(limit - current),
-                ));
-            }
+                )
+            });
+            Ok(())
+        };
+        if items > limit.data().get() - held {
+            exceeded(usage::Resource::Items, held, items, limit.data().get())?;
+        }
+        if next.bytes() > limit.bytes() {
+            exceeded(
+                usage::Resource::Bytes,
+                current.bytes().get(),
+                bytes,
+                limit.bytes().get(),
+            )?;
+        }
+        if next.values() > limit.values() {
+            exceeded(
+                usage::Resource::Values,
+                current.values().get(),
+                values,
+                limit.values().get(),
+            )?;
         }
         if let Some(cause) = blocked {
             lanes.wait_local(self.lane, key);
             return Err(Acquire::Backpressure(cause));
         }
         lanes.take_waiting(self.lane, key, self.source, amount, acceptance)?;
-        // SAFETY: the same State just admitted this disjoint member; its checked
-        // total bounds the sum, and no user code runs before this commit.
-        unsafe { self.sum.add(amount) };
+        // SAFETY: the original source admitted this member. Both usage totals
+        // were checked above and items fit the remaining data limit.
+        unsafe { self.sum.commit(held.wrapping_add(items), next) };
         Ok(())
     }
 
