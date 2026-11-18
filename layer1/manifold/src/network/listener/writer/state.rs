@@ -68,12 +68,12 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B
         self.state = State::Direct(direct);
     }
 
-    pub(in crate::network::listener::writer) fn prepare(
+    pub(in crate::network::listener::writer) fn direct(
         &mut self,
-    ) -> Result<access::Prepared<'_>, access::Fault> {
+    ) -> Option<&mut access::Direct<'p, 's, 'd, ID, B>> {
         match &mut self.state {
-            State::Direct(state) => state.prepare(),
-            State::Queued | State::Fixed(_) | State::Failed(..) => Ok(access::Prepared::Idle),
+            State::Direct(direct) => Some(direct),
+            State::Queued | State::Fixed(_) | State::Failed(..) => None,
         }
     }
 
@@ -91,21 +91,6 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B
         let body =
             mem::replace(&mut self.state, State::Queued).retire(slot::Vacant::new(&mut place));
         (body.map(slot::Occupied::into_inner), error)
-    }
-
-    pub(in crate::network::listener::writer) fn invalidate(&mut self, fault: access::Fault) {
-        if let Some(progress) = self.progress() {
-            progress.invalidate(fault);
-        }
-    }
-
-    pub(in crate::network::listener::writer) fn progress(
-        &mut self,
-    ) -> Option<&mut access::Progress> {
-        match &mut self.state {
-            State::Direct(state) => Some(&mut state.progress),
-            State::Queued | State::Fixed(_) | State::Failed(..) => None,
-        }
     }
 
     pub(in crate::network::listener::writer) fn take<'out>(

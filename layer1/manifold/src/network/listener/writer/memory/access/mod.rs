@@ -7,25 +7,20 @@ use dope_core::{
     },
     io::{transfer, transfer::progress},
 };
-use dope_net::{
-    link::{self, egress, egress::data, event},
-    wire::send,
-};
+use dope_net::link::{self, egress, egress::data, event};
 use o3::buffer::resident;
-pub(in crate::network::listener::writer) use step::Step;
 
 use crate::network::listener::{
-    self, conn,
+    conn,
     writer::{memory, state::Send},
 };
 
 mod raw;
-mod step;
 
 pub(in crate::network::listener::writer) struct Progress(State);
 
 #[repr(u8)]
-pub(in crate::network::listener::writer) enum Arm {
+enum Arm {
     Idle,
     Armed,
 }
@@ -52,16 +47,10 @@ pub(in crate::network::listener::writer) enum Motion {
 }
 
 #[derive(Clone, Copy)]
-pub(in crate::network::listener::writer) struct Fault {
+struct Fault {
     offset: transfer::Len,
     length: transfer::Len,
     remaining: transfer::Len,
-}
-
-pub(in crate::network::listener::writer) enum Prepared<'a> {
-    Idle,
-    Plain(send::Plain<'a>, Step<'a>),
-    Many(send::Vectored<'a, { listener::IOV_CAP }>, Step<'a>),
 }
 
 impl Progress {
@@ -70,17 +59,6 @@ impl Progress {
             motion: Motion::Ready,
             sent: progress::State::new(transfer::Len::from_nonzero(total)),
         }))
-    }
-
-    pub(in crate::network::listener::writer) fn invalidate(&mut self, fault: Fault) {
-        self.0 = State::Failed(fault);
-    }
-
-    pub(in crate::network::listener::writer) fn reject(
-        &mut self,
-        failure: event::SendFailure<result::SubmitError>,
-    ) {
-        self.0 = State::Rejected(failure);
     }
 
     pub(in crate::network::listener::writer) fn error(&self) -> Option<conn::Transmit> {
@@ -124,7 +102,7 @@ impl Progress {
         }
     }
 
-    pub(in crate::network::listener::writer) fn record(&mut self, done: link::Consumed, arm: Arm) {
+    fn record(&mut self, done: link::Consumed, arm: Arm) {
         let sent = done.into_len();
         self.settle(Some(done));
         let State::Active(active) = &mut self.0 else {

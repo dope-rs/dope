@@ -1,12 +1,8 @@
-use dope_core::driver::{self, route::Identity};
+use dope_core::driver::route::Identity;
 use dope_net::{
     link::{
         egress::{self, data},
-        pool::pending,
-        slot::{
-            transmit::{direct::raw, outcome},
-            types,
-        },
+        slot::{transmit::outcome, types},
     },
     wire::{self, send},
 };
@@ -72,46 +68,5 @@ impl<'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw:
 {
     pub(in crate::network::listener) fn flow(&self, pending: egress::Pending) -> Flow {
         flow(self.source, &self.state.send, pending)
-    }
-
-    pub(in crate::network::listener) fn advance_send(
-        &mut self,
-        slots: &crate::Flights<'d, ID>,
-        pending: pending::Handle<'_, 'd, ID>,
-        driver: &mut driver::Context<'_, 'd>,
-    ) -> outcome::Progress {
-        let state = &mut *self.state;
-        let (result, step) = match state.send.prepare() {
-            Err(error) => {
-                state.send.invalidate(error);
-                self.io().close();
-                return outcome::Progress::Idle;
-            }
-            Ok(access::Prepared::Idle) => return outcome::Progress::Idle,
-            Ok(access::Prepared::Plain(input, step)) => {
-                // SAFETY: prepare borrows this connection's pinned Flight header.
-                // Its direct state keeps the exact lease until send retirement;
-                // completion or quiescence precedes releasing that owner.
-                (
-                    unsafe { raw::submit_plain(self.source, slots, driver, input) },
-                    step,
-                )
-            }
-            Ok(access::Prepared::Many(input, step)) => {
-                // SAFETY: prepare derives the message, iovecs, header, and payload
-                // from this connection's pinned Flight. Its exact lease and source
-                // remain retained until completion or quiescence permits retirement.
-                (
-                    unsafe { raw::submit_many(self.source, input, slots, driver) },
-                    step,
-                )
-            }
-        };
-        let progress = step.finish(result);
-        if let outcome::Progress::Rejected(_) = progress {
-            self.source.discard();
-        }
-        pending.wait_send(self.send_status().is_waiting());
-        progress
     }
 }

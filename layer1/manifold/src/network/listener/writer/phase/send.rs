@@ -79,8 +79,9 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
                 SendOutcome::Pending => return (Action::Return, None),
                 SendOutcome::Direct { consumed } => {
                     let send = &mut connection.state.send;
-                    match send.progress() {
-                        Some(progress) => {
+                    match send.direct() {
+                        Some(direct) => {
+                            let progress = &mut direct.progress;
                             progress.settle(consumed);
                             if progress.error().is_some() {
                                 (Action::Close, send.take(None, place))
