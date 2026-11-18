@@ -58,6 +58,12 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
     let routes = router.generate(life);
     let (wcall, wake_set) = router.wakes(life);
     let (plan, select, cursors) = router.park_plan();
+    let parks = if app.coordinate || app.owners.iter().any(|owner| !owner.is_app()) {
+        quote::quote! { true }
+    } else {
+        let children = app.owners.iter().map(Owner::inner);
+        quote::quote! { false #( || <#children as #exec::executor::raw::App<#life>>::PARK )* }
+    };
     let (coords, measure) = router.coords();
     let shares = router.shares();
     let ticks = router.ticks();
@@ -217,7 +223,7 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
             }
 
             const COORDS: ::core::primitive::usize = #coords;
-            const PARK: ::core::primitive::bool = true;
+            const PARK: ::core::primitive::bool = #parks;
 
             fn select_park() -> Self::ParkPlan {
                 #select
