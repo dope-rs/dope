@@ -50,13 +50,6 @@ pub struct Transfer<'d, ID: Identity> {
 }
 
 impl<'d, ID: Identity> Transfer<'d, ID> {
-    pub(crate) const fn new(
-        queued: owners::Queued<'d, ID>,
-        flight: owners::Flight<'d, ID>,
-    ) -> Self {
-        Self { queued, flight }
-    }
-
     pub const fn queued(self) -> owners::Queued<'d, ID> {
         self.queued
     }

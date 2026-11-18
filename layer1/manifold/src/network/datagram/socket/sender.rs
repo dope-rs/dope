@@ -21,7 +21,6 @@ use o3::{
         resident::{Budget, Charge},
     },
     depot::arena::slab::Vacancy,
-    mem::quota,
 };
 use plan::bounds;
 use send::{flights, kernel, owners, pending, retained};
@@ -271,8 +270,7 @@ mod raw {
     use dope_core::driver::retained::raw::Submission;
 
     use super::{
-        Context, Identity, Send, Sender, Vacancy, app, buffer, flights, handles, owners, pending,
-        quota, result, send,
+        Context, Identity, Send, Sender, Vacancy, app, buffer, flights, handles, owners, result, send,
     };
 
     impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode>
@@ -301,21 +299,17 @@ mod raw {
                 send::Phase::Deferred => *phase = send::Phase::Ready,
                 send::Phase::Failed(_) | send::Phase::Stopped => return Ok(()),
             }
-            loop {
-                let step = work.run(|| {
-                    let front = queue.front()?;
-                    let slot = match slots.access().try_reserve() {
-                        Ok(slot) => slot,
-                        Err(Vacancy::Full) => return None,
-                        Err(Vacancy::IdentityExhausted) => {
-                            let error = result::SubmitError::from(Vacancy::IdentityExhausted);
-                            *phase = send::Phase::Failed(error);
-                            return Some(Err(error));
-                        }
-                    };
+            while let Some(front) = queue.front() {
+                let Some(credit) = work.lease() else { break };
+                let slot = match slots.access().try_reserve() {
+                    Err(Vacancy::Full) => break,
+                    slot => slot,
+                };
+                let submitted = credit.commit().run(|| {
+                    let slot = slot.map_err(result::SubmitError::from)?;
                     let key = slot.key();
                     let target = (*space).bind(key.slot(), key.epoch());
-                    let moved = front.submit(|queued| {
+                    front.try_submit(|queued| {
                         let fd = select(&queued.control);
                         let mut slot = slot.stage(flights::Backing::new(queued));
                         let (message, flight) = slot.get_mut().fill_message();
@@ -332,31 +326,20 @@ mod raw {
                             }
                             Err(error) => Err((error, slot.reject().into_queued())),
                         }
-                    });
-                    Some(match moved {
-                        pending::Commit::Submitted((queued, flight)) => {
-                            transfer(send::Transfer::new(queued, flight));
-                            Ok(true)
-                        }
-                        pending::Commit::Deferred(error) => match error.cause() {
-                            result::SubmitCause::Full => {
-                                *phase = send::Phase::Deferred;
-                                Ok(false)
-                            }
-                            result::SubmitCause::IdentityExhausted => {
-                                *phase = send::Phase::Failed(error);
-                                Err(error)
-                            }
-                        },
                     })
                 });
-                match step {
-                    quota::Admission::Item(result) => {
-                        if !result? {
+                match submitted {
+                    Ok(event) => transfer(event),
+                    Err(error) => match error.cause() {
+                        result::SubmitCause::Full => {
+                            *phase = send::Phase::Deferred;
                             break;
                         }
-                    }
-                    quota::Admission::Empty | quota::Admission::Exhausted => break,
+                        result::SubmitCause::IdentityExhausted => {
+                            *phase = send::Phase::Failed(error);
+                            return Err(error);
+                        }
+                    },
                 }
             }
             Ok(())

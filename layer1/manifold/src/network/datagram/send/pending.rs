@@ -3,6 +3,7 @@ use std::{marker, mem};
 use dope_core::driver::{
     result,
     route::{Epoch, Identity, KeyTag, table},
+    schedule::maint,
 };
 use o3::{
     alloc,
@@ -36,11 +37,6 @@ pub(in crate::network::datagram) struct Front<'a, 'd, ID: Identity, B, M: send::
     entry: ring::Front<'a, ring::Fifo<send::Queued<'d, B, M>>>,
     owner: owners::Queued<'d, ID>,
     series: &'a mut Series,
-}
-
-pub(in crate::network::datagram) enum Commit<T> {
-    Submitted(T),
-    Deferred(result::SubmitError),
 }
 
 struct Series(Option<Epoch>);
@@ -85,6 +81,20 @@ impl<'d, ID: Identity, B, M: send::Mode> Pending<'d, ID, B, M> {
         Some(self.front()?.pop())
     }
 
+    pub(in crate::network::datagram) fn drain(
+        &mut self,
+        work: maint::Work<'_, 'd>,
+        mut retire: impl FnMut(owners::Queued<'d, ID>, send::Queued<'d, B, M>),
+    ) {
+        while let Some(front) = self.front() {
+            let Some(permit) = work.permit() else { break };
+            permit.run(|| {
+                let (owner, queued) = front.pop();
+                retire(owner, queued);
+            });
+        }
+    }
+
     pub(in crate::network::datagram) fn clear(&mut self) {
         self.series.advance_by(self.queue.count().raw());
         self.queue.clear();
@@ -119,21 +129,24 @@ impl<'d, ID: Identity, B, M: send::Mode> Back<'_, 'd, ID, B, M> {
 }
 
 impl<'d, ID: Identity, B, M: send::Mode> Front<'_, 'd, ID, B, M> {
-    pub(in crate::network::datagram) fn submit<R>(
+    pub(in crate::network::datagram) fn try_submit(
         self,
         commit: impl FnOnce(
             send::Queued<'d, B, M>,
-        ) -> Result<R, (result::SubmitError, send::Queued<'d, B, M>)>,
-    ) -> Commit<(owners::Queued<'d, ID>, R)> {
+        ) -> Result<owners::Flight<'d, ID>, (result::SubmitError, send::Queued<'d, B, M>)>,
+    ) -> Result<send::Transfer<'d, ID>, result::SubmitError> {
         let (value, vacancy) = self.entry.take();
         match commit(value) {
-            Ok(value) => {
+            Ok(flight) => {
                 self.series.advance_by(1);
-                Commit::Submitted((self.owner, value))
+                Ok(send::Transfer {
+                    queued: self.owner,
+                    flight,
+                })
             }
             Err((error, value)) => {
                 vacancy.push_front(value);
-                Commit::Deferred(error)
+                Err(error)
             }
         }
     }
@@ -164,30 +177,9 @@ impl Series {
 
 const _: () = {
     assert!(mem::size_of::<Series>() == mem::size_of::<u64>());
-    assert!(mem::size_of::<Commit<()>>() == 1);
-    assert!(mem::align_of::<Commit<()>>() == 1);
-    assert!(
-        mem::size_of::<
-            Commit<(
-                owners::Queued<'static, KeyTag<0>>,
-                owners::Flight<'static, KeyTag<0>>
-            )>,
-        >() == mem::size_of::<(
-            owners::Queued<'static, KeyTag<0>>,
-            owners::Flight<'static, KeyTag<0>>
-        )>()
-    );
-    assert!(
-        mem::align_of::<
-            Commit<(
-                owners::Queued<'static, KeyTag<0>>,
-                owners::Flight<'static, KeyTag<0>>
-            )>,
-        >() == mem::align_of::<(
-            owners::Queued<'static, KeyTag<0>>,
-            owners::Flight<'static, KeyTag<0>>
-        )>()
-    );
+    type Transfer = send::Transfer<'static, KeyTag<0>>;
+    assert!(mem::size_of::<Result<Transfer, result::SubmitError>>() == mem::size_of::<Transfer>());
+    assert!(mem::align_of::<Result<Transfer, result::SubmitError>>() == mem::align_of::<Transfer>());
     assert!(
         mem::size_of::<Pending<'static, KeyTag<0>>>()
             == mem::size_of::<ring::Fifo<send::Queued<'static>>>() + mem::size_of::<u64>()

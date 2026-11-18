@@ -3,35 +3,50 @@ use std::pin;
 use dope_core::{
     driver::{
         result,
-        route::{Identity, kind::Send},
+        route::{Identity, Materialize, kind::Send, table::entries::occupied},
         schedule::{clock, maint},
     },
     io::event::net::send,
 };
-use o3::{base::cell::region, buffer, mem::quota};
+use o3::{base::cell::region, buffer};
 
 use crate::network::datagram::{
     self, hook,
-    send::{Mode, Outcome, Owner, Phase, owners},
+    send::{Mode, Outcome, Owner, Phase, flights, owners},
     socket::sender::Sender,
 };
 
 impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode> Sender<'d, ID, B, M> {
-    pub(in crate::network::datagram) fn complete(
+    fn retire<R>(
         &mut self,
         done: send::Completion<'d>,
-    ) -> Result<Option<Outcome>, send::Completion<'d>> {
+        stale: R,
+        matched: impl FnOnce(
+            occupied::Entry<'_, flights::Backing<'d, B, M>, <ID as Materialize<Send>>::With>,
+            owners::Flight<'d, ID>,
+            Outcome,
+        ) -> R,
+    ) -> Result<R, send::Completion<'d>> {
         let Ok(target) = self.space.parse(done.token()) else {
             return Err(done);
         };
         let Some(entry) = self.in_flight.access().occupied(target.parts()) else {
-            return Ok(None);
+            return Ok(stale);
         };
         if !entry.get().matches(done.token()) {
             return Err(done);
         }
-        entry.discard();
-        Ok(Some(done.outcome().into()))
+        Ok(matched(entry, owners::Flight::new(target), done.outcome().into()))
+    }
+
+    pub(in crate::network::datagram) fn complete(
+        &mut self,
+        done: send::Completion<'d>,
+    ) -> Result<Option<Outcome>, send::Completion<'d>> {
+        self.retire(done, None, |entry, _, outcome| {
+            entry.discard();
+            Some(outcome)
+        })
     }
 
     pub(in crate::network::datagram) fn settle<H>(
@@ -45,22 +60,10 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode> Send
         H: datagram::Settlement<'d, ID>,
         H::Hooks: hook::Bundle<Buffer = B>,
     {
-        let Ok(target) = self.space.parse(done.token()) else {
-            return Err(done);
-        };
-        let Some(entry) = self.in_flight.access().occupied(target.parts()) else {
-            return Ok(());
-        };
-        if !entry.get().matches(done.token()) {
-            return Err(done);
-        }
-        let owner = owners::Flight::new(target);
-        let (addr, hold, result) = match done.outcome() {
-            Ok(bytes) => entry.remove().finish(Outcome::Sent(bytes)),
-            Err(error) => entry.remove().finish(Outcome::Failed(error)),
-        };
-        hold.retire(Owner::Flight(owner), addr, result, at, sink, token);
-        Ok(())
+        self.retire(done, (), |entry, owner, outcome| {
+            let (addr, hold, result) = entry.remove().finish(outcome);
+            hold.retire(Owner::Flight(owner), addr, result, at, sink, token);
+        })
     }
 
     pub(in crate::network::datagram) fn drain(
@@ -68,20 +71,12 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode> Send
         work: maint::Work<'_, 'd>,
         mut failed: impl FnMut(result::SubmitError),
     ) {
-        while !self.pending.is_empty() {
-            if !matches!(
-                work.run(|| {
-                    drop(self.pending.pop()?);
-                    if let Phase::Failed(error) = self.phase {
-                        failed(error);
-                    }
-                    Some(())
-                }),
-                quota::Admission::Item(())
-            ) {
-                break;
+        self.pending.drain(work, |_, queued| {
+            drop(queued);
+            if let Phase::Failed(error) = self.phase {
+                failed(error);
             }
-        }
+        });
     }
 
     pub(in crate::network::datagram) fn drain_event<H>(
@@ -94,23 +89,16 @@ impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: Mode> Send
         H: datagram::Settlement<'d, ID>,
         H::Hooks: hook::Bundle<Buffer = B>,
     {
-        while !self.pending.is_empty() {
-            match work.run(|| {
-                let (owner, queued) = self.pending.pop()?;
-                queued.retained.retire(
-                    Owner::Queued(owner),
-                    queued.addr,
-                    self.phase.retirement(),
-                    at,
-                    sink.as_mut(),
-                    token,
-                );
-                Some(())
-            }) {
-                quota::Admission::Item(()) => {}
-                quota::Admission::Empty | quota::Admission::Exhausted => break,
-            }
-        }
+        self.pending.drain(work, |owner, queued| {
+            queued.retained.retire(
+                Owner::Queued(owner),
+                queued.addr,
+                self.phase.retirement(),
+                at,
+                sink.as_mut(),
+                token,
+            );
+        });
     }
 
     pub(in crate::network::datagram) fn finish(
