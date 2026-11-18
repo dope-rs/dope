@@ -63,7 +63,7 @@ fn write<'d, ID: route::Identity>(
     driver: &mut driver::Context<'_, 'd>,
 ) {
     let mut output_slot = std::mem::MaybeUninit::uninit();
-    let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+    let mut output = conn.try_prefix(driver, &mut output_slot).expect("prefix admission");
     output.get_mut().parts().1.write_byte(b'x').expect("prefix capacity");
     conn::write::Output::finish(output, conn::write::End::Open)
         .map_err(conn::write::error::Mismatch::into_cause)
@@ -395,7 +395,7 @@ impl<'d, ID: route::Identity> handler::Application<'d, ID> for Released {
             assert_eq!(conn.deadline().try_arm(at), Err(Error::Sealed));
             let mut output = std::mem::MaybeUninit::uninit();
             assert!(matches!(
-                conn.write().try_prefix(driver, &mut output),
+                conn.try_prefix(driver, &mut output),
                 Err(conn::write::error::Admission::Closed)
             ));
             self.activated.hit();
@@ -418,7 +418,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Released {
         conn.deadline().try_arm(at).expect("live deadline");
         for _ in 0..2 {
             let mut slot = std::mem::MaybeUninit::uninit();
-            let mut output = conn.write().try_prefix(driver, &mut slot).expect("queued output");
+            let mut output = conn.try_prefix(driver, &mut slot).expect("queued output");
             output.get_mut().parts().1.write_byte(b'x').expect("prefix capacity");
             conn::write::Output::finish(output, conn::write::End::Open)
                 .map_err(conn::write::error::Mismatch::into_cause)

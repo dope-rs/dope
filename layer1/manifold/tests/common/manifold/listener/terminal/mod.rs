@@ -219,7 +219,7 @@ where
                 ));
             }
             Ingress::Shutting(peer) => {
-                if peer.hits() == 0 || matches!(conn.write().pending(), egress::Pending::Present) {
+                if peer.hits() == 0 || matches!(conn.pending_output(), egress::Pending::Present) {
                     return handler::Timeout::Continue(handler::Deadline::Ensure(
                         driver.driver_ref().clock().now(),
                     ));
@@ -363,8 +363,7 @@ where
             Ingress::Fail => Outcome::Failed(receive::Failure::Contract),
             Ingress::AcceptFailure(cause) => Outcome::Failed(*cause),
             Ingress::Rejected(ready) => {
-                conn.write()
-                    .reject(body::Failure::Capacity(write::Reject::Header));
+                conn.reject_write(body::Failure::Capacity(write::Reject::Header));
                 ready.hit();
                 Outcome::Continue
             }
@@ -373,7 +372,7 @@ where
             }
             Ingress::Reply => {
                 let mut output_slot = std::mem::MaybeUninit::uninit();
-                let result = match conn.write().try_prefix(driver, &mut output_slot) {
+                let result = match conn.try_prefix(driver, &mut output_slot) {
                     Ok(mut output) => {
                         output.get_mut().parts().1.write_slice(b"reply").unwrap();
                         write::Output::finish(output, write::End::Open)
@@ -393,7 +392,7 @@ where
                 let Some(body) = body.take() else {
                     return Outcome::Failed(receive::Failure::Contract);
                 };
-                (this.observe)(Observation::Owned(conn.write().admit(body, driver)));
+                (this.observe)(Observation::Owned(conn.admit(body, driver)));
                 Outcome::Continue
             }
             Ingress::Close | Ingress::Released => Outcome::CloseAfter,

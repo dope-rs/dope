@@ -80,13 +80,13 @@ impl<'d, ID: Identity> Application<'d, ID> for App {
     ) -> handler::Timeout<'d> {
         assert!(self.abandon);
         assert!(matches!(
-            conn.write().pending(),
+            conn.pending_output(),
             dope_net::link::egress::Pending::Present
         ));
         let before = conn.work().remaining();
         for _ in 0..2 {
             let mut output_slot = std::mem::MaybeUninit::uninit();
-            let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("queued admission");
+            let mut output = conn.try_prefix(driver, &mut output_slot).expect("queued admission");
             output.get_mut().parts().1.write_byte(b'X').unwrap();
             drop(output);
             assert_eq!(conn.work().remaining(), before);
@@ -139,7 +139,7 @@ impl<'d, ID: Identity> handler::Borrowed<'d, ID> for App {
             return Outcome::Continue;
         };
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+        let mut output = conn.try_prefix(driver, &mut output_slot).expect("prefix admission");
         let (state, mut prefix) = output.get_mut().parts();
         assert_eq!(*state, 0);
         *state = 1;

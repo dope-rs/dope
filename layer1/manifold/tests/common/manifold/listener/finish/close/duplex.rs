@@ -68,7 +68,7 @@ impl<'d, ID: Identity> Application<'d, ID> for Fence {
         .expect("EOF before input");
         *conn.state_mut() = Phase::Held(input);
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+        let mut output = conn.try_prefix(driver, &mut output_slot).expect("prefix admission");
         let (state, mut prefix) = output.get_mut().parts();
         assert!(matches!(state, Phase::Held(_)));
         prefix.write_slice(REPLY).unwrap();
@@ -185,7 +185,7 @@ impl<'d, ID: Identity> handler::Borrowed<'d, ID> for Duplex {
             Stage::Fresh => {
                 *conn.state_mut() = Stage::Seen;
                 let mut output_slot = std::mem::MaybeUninit::uninit();
-                let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+                let mut output = conn.try_prefix(driver, &mut output_slot).expect("prefix admission");
                 let (state, mut prefix) = output.get_mut().parts();
                 assert!(matches!(state, Stage::Seen));
                 prefix.write_slice(REPLY).unwrap();
@@ -195,7 +195,7 @@ impl<'d, ID: Identity> handler::Borrowed<'d, ID> for Duplex {
                 conn.shutdown();
                 let mut output_slot = std::mem::MaybeUninit::uninit();
                 assert!(matches!(
-                    conn.write().try_prefix(driver, &mut output_slot),
+                    conn.try_prefix(driver, &mut output_slot),
                     Err(write::error::Admission::Closed)
                 ));
             }

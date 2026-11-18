@@ -373,7 +373,7 @@ impl<
         self.slot.conn
     }
 
-    pub(super) fn pending(&self) -> egress::Pending {
+    pub fn pending_output(&self) -> egress::Pending {
         let pending = match self.output {
             Some(open) => open.queue.pending(),
             None => egress::Pending::Absent,
@@ -427,7 +427,7 @@ impl<
 
     /// Consumes a listener send callback at its exact egress-drain boundary.
     pub(super) fn try_drain(self) -> Result<Drained<'e, 'a, 'p, 's, 'w, 'd, ID, W, C, B>, Self> {
-        if matches!(self.pending(), egress::Pending::Present) {
+        if matches!(self.pending_output(), egress::Pending::Present) {
             return Err(self);
         }
         Ok(Drained {
@@ -446,10 +446,6 @@ impl<
     /// Returns a driver- and generation-branded target for deferred wakeups.
     pub fn wake_target(&self) -> ready::Target<'d> {
         self.slot.io().wake_target()
-    }
-
-    pub fn write(&mut self) -> write::Context<'e, '_, 'a, 'p, 's, 'w, 'd, ID, W, C, B> {
-        write::Context::new(self)
     }
 
     /// Whether this connection already carries a transport close-after fence.

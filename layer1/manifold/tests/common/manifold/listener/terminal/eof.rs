@@ -124,7 +124,7 @@ impl<'d, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CONTROL: bo
         *conn.state_mut() = State::Eof;
         if !CONTROL {
             let mut output_slot = std::mem::MaybeUninit::uninit();
-            let result = match conn.write().try_prefix(driver, &mut output_slot) {
+            let result = match conn.try_prefix(driver, &mut output_slot) {
                 Ok(mut output) => {
                     output.get_mut().parts().1.write_slice(b"after").unwrap();
                     write::Output::finish(output, write::End::Open)
@@ -243,7 +243,7 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CON
             if !CONTROL {
                 this.events.push(Event::Deferred(chunk.as_ref().to_vec()));
                 let mut output_slot = std::mem::MaybeUninit::uninit();
-                let result = match conn.write().try_prefix(driver, &mut output_slot) {
+                let result = match conn.try_prefix(driver, &mut output_slot) {
                     Ok(mut output) => {
                         output.get_mut().parts().1.write_slice(b"before").unwrap();
                         write::Output::finish(output, write::End::Open)

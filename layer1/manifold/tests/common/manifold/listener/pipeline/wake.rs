@@ -41,10 +41,7 @@ impl Wake {
             let commits = self.commits.clone();
             let mut callback = None;
             let result = if self.changed.replace(false) {
-                match conn
-                    .write()
-                    .admit(egress::NonEmpty::from_array(b"C"), driver)
-                {
+                match conn.admit(egress::NonEmpty::from_array(b"C"), driver) {
                     write::body::Admit::Committed => {
                         let state = conn.state_mut();
                         callback = Some(*state);
@@ -68,7 +65,7 @@ impl Wake {
                 }
             } else {
                 let mut output_slot = std::mem::MaybeUninit::uninit();
-                match conn.write().try_prefix(driver, &mut output_slot) {
+                match conn.try_prefix(driver, &mut output_slot) {
                     Ok(mut output) => {
                         let (state, mut prefix) = output.get_mut().parts();
                         prefix.write_byte(b'A' + *state).unwrap();
@@ -209,7 +206,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Zero {
         let mut capacity = None;
         let measure = Tracker::begin();
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let zero = match conn.write().try_prefix(driver, &mut output_slot) {
+        let zero = match conn.try_prefix(driver, &mut output_slot) {
             Ok(mut output) => {
                 capacity = Some(output.get_mut().parts().1.remaining());
                 write::Output::finish(output, write::End::Open)
@@ -227,11 +224,11 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Zero {
             result: zero,
             allocations: (activity.allocations, activity.allocated_bytes),
             remaining: conn.work().remaining(),
-            pending: conn.write().pending(),
+            pending: conn.pending_output(),
         };
         let measure = Tracker::begin();
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let sent = match conn.write().try_prefix(driver, &mut output_slot) {
+        let sent = match conn.try_prefix(driver, &mut output_slot) {
             Ok(mut output) => {
                 output.get_mut().parts().1.write_byte(b'Z').unwrap();
                 write::Output::finish(output, write::End::Close)

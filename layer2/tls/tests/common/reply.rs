@@ -109,7 +109,7 @@ impl Reply<'_> {
         bytes: resident::Shared<'d>,
     ) {
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let result = match conn.write().try_open(driver, &mut output_slot) {
+        let result = match conn.try_output(driver, &mut output_slot) {
             Ok(mut output) => {
                 output.get_mut().parts().1.write_slice(PREFIX).unwrap();
                 let body = egress::Load::new(bytes)
@@ -310,13 +310,13 @@ impl<'r, 'w, 'd: 'w> failures::Policy<'w, 'd, Capacity<'r, 'd>, KeyTag<0>> for C
 impl<'d> handler::Borrowed<'d, KeyTag<0>> for Capacity<'_, 'd> {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, KeyTag<0>, Wire, bool, Small<'d>>,
+        conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, KeyTag<0>, Wire, bool, Small<'d>>,
         chunk: R,
         _: &mut Context<'_, 'd>,
     ) -> Outcome {
         let this = self.get_mut();
         (this.reply.observe)(Event::Input(chunk.as_ref().to_vec()));
-        (this.observe)(Change::Ready(conn.write().pending()));
+        (this.observe)(Change::Ready(conn.pending_output()));
         let mut targets = this.targets.get();
         targets[conn.id().index().into_usize()] = Some(conn.wake_target());
         this.targets.set(targets);

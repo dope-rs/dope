@@ -155,7 +155,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for App {
                 return Outcome::Failed(Failure::Contract);
             }
         };
-        let (admitted, alloc) = Tracker::usage(|| conn.write().admit(payload, driver));
+        let (admitted, alloc) = Tracker::usage(|| conn.admit(payload, driver));
         self.events.record(Event::Admitted(
             admitted.into(),
             alloc,

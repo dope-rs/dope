@@ -191,7 +191,8 @@ where
         }
         let queue = &open.queue;
         let target = slot.io().wake_target();
-        let (slot, direct) = match slot.direct(&open.held, queue.pending(), target) {
+        let pending = queue.pending();
+        let (slot, direct) = match slot.direct(&open.held, pending, target) {
             Ok(granted) => {
                 queue.cancel_wait(driver.region_token());
                 return Ok(granted.output(open, work, driver, output));
@@ -230,13 +231,12 @@ where
             Err(cause) => {
                 drop(header);
                 queue.cancel_wait(driver.region_token());
-                slot.cancel_idle(queue.pending());
+                slot.cancel_idle(pending);
                 return Err(Admission::Rejected(write::Reject::Geometry(
                     reserve::error::Full::Lane(cause),
                 )));
             }
         };
-        let pending = queue.pending();
         let now = driver.driver_ref().clock().now();
         let (vacant, acquire) = plan.prepare(driver.region_token());
         let mut output = Self::insert(

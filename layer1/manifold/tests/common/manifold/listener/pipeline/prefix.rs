@@ -84,7 +84,7 @@ impl Prefix {
         let mut callback = None;
         let measure = Tracker::begin();
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let result = match conn.write().try_prefix(driver, &mut output_slot) {
+        let result = match conn.try_prefix(driver, &mut output_slot) {
             Ok(mut output) => {
                 let (state, mut prefix) = output.get_mut().parts();
                 callback = Some(*state);
@@ -171,9 +171,9 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Prefix {
         self.seen.set(seen);
         if *conn.state() == State::Fresh {
             let body = egress::NonEmpty::from_array(&QUEUED_BODY);
-            let admitted = conn.write().admit(body, driver).into();
+            let admitted = conn.admit(body, driver).into();
             *conn.state_mut() = State::Queued;
-            let event = (admitted, conn.write().pending());
+            let event = (admitted, conn.pending_output());
             let mut seen = self.seen.take();
             seen.admissions.push(event);
             self.seen.set(seen);

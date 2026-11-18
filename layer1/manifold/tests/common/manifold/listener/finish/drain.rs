@@ -58,7 +58,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Drain {
         assert!(!chunk.as_ref().is_empty());
         let payload = &self.as_ref().get_ref().payload;
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+        let mut output = conn.try_prefix(driver, &mut output_slot).expect("prefix admission");
         output.get_mut().parts().1.write_slice(payload).unwrap();
         write::Output::finish(output, write::End::Close)
             .map_err(write::error::Mismatch::into_cause)

@@ -12,7 +12,7 @@ use write::{body::Admit, direct::Deferred};
 
 use crate::network::listener::{conn, writer};
 
-pub(in crate::network::listener::conn::write::context) fn send<
+pub(in crate::network::listener::conn::write) fn send<
     'a,
     'token,
     'p,

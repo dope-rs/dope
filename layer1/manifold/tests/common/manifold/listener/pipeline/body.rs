@@ -68,7 +68,7 @@ impl Body {
         if *conn.state() == State::First {
             let before = conn.work().remaining();
             let mut output_slot = std::mem::MaybeUninit::uninit();
-            let cause = match conn.write().try_open(driver, &mut output_slot) {
+            let cause = match conn.try_output(driver, &mut output_slot) {
                 Ok(mut output) => {
                     output.get_mut().parts().1.write_byte(b'X').unwrap();
                     drop(output);
@@ -89,7 +89,7 @@ impl Body {
         };
         let mut capacity = None;
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let result = match conn.write().try_open(driver, &mut output_slot) {
+        let result = match conn.try_output(driver, &mut output_slot) {
             Ok(mut output) => {
                 let (state, prefix) = output.get_mut().parts();
                 capacity = Some(prefix.remaining());

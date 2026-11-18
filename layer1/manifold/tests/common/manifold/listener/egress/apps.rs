@@ -85,8 +85,7 @@ impl<'d, ID: route::Identity, F: Fn(DirectWrite)> handler::Borrowed<'d, ID> for 
         {
             let mut place = std::mem::MaybeUninit::uninit();
             let mut abandoned = conn
-                .write()
-                .try_open(driver, &mut place)
+                .try_output(driver, &mut place)
                 .expect("fixed output");
             abandoned
                 .get_mut()
@@ -97,7 +96,7 @@ impl<'d, ID: route::Identity, F: Fn(DirectWrite)> handler::Borrowed<'d, ID> for 
             std::mem::forget(abandoned);
         }
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let result = match conn.write().try_open(driver, &mut output_slot) {
+        let result = match conn.try_output(driver, &mut output_slot) {
             Ok(mut output) => {
                 let (state, mut prefix) = output.get_mut().parts();
                 {
@@ -192,7 +191,7 @@ impl<'d, ID: route::Identity, F: Fn(BoundedEvent)> handler::Application<'d, ID> 
         }
         let mut body = None;
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let result = match conn.write().try_open(driver, &mut output_slot) {
+        let result = match conn.try_output(driver, &mut output_slot) {
             Ok(mut output) => {
                 let (state, mut prefix) = output.get_mut().parts();
                 called.set(true);
@@ -232,7 +231,7 @@ impl<'d, ID: route::Identity, F: Fn(BoundedEvent)> handler::Borrowed<'d, ID> for
         let mut consumed = None;
         let measure = Tracker::begin();
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let result = match conn.write().try_open(driver, &mut output_slot) {
+        let result = match conn.try_output(driver, &mut output_slot) {
             Ok(mut output) => {
                 let (state, mut prefix) = output.get_mut().parts();
                 prefix.write_byte(0xb5).expect("prefix capacity");
@@ -268,7 +267,7 @@ impl<'d, ID: route::Identity, F: Fn(BoundedEvent)> handler::Borrowed<'d, ID> for
         let called = self.as_ref().get_ref().called.clone();
         let mut body = None;
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let result = match conn.write().try_open(driver, &mut output_slot) {
+        let result = match conn.try_output(driver, &mut output_slot) {
             Ok(mut output) => {
                 let (state, _) = output.get_mut().parts();
                 called.set(true);

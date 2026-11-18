@@ -86,7 +86,7 @@ impl<'d> handler::Application<'d, KeyTag<0>> for App<'d> {
         if matches!(this.phase, Phase::Sealing) {
             this.phase = Phase::Sealed;
             let mut output_slot = std::mem::MaybeUninit::uninit();
-            let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+            let mut output = conn.try_prefix(driver, &mut output_slot).expect("prefix admission");
             output.get_mut().parts().1.write_byte(b's').unwrap();
             write::Output::finish(output, write::End::Open)
                 .map_err(write::error::Mismatch::into_cause)
@@ -122,7 +122,7 @@ impl<'d> handler::Borrowed<'d, KeyTag<0>> for App<'d> {
         assert_eq!(chunk.as_ref(), [byte]);
         *conn.state_mut() = byte == b'b';
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let mut output = conn.write().try_prefix(driver, &mut output_slot).expect("prefix admission");
+        let mut output = conn.try_prefix(driver, &mut output_slot).expect("prefix admission");
         output.get_mut().parts().1.write_byte(byte).unwrap();
         write::Output::finish(output, write::End::Open)
             .map_err(write::error::Mismatch::into_cause)

@@ -32,12 +32,12 @@ pub(super) struct Queue<'scope, 'w, 'd: 'w, W: input::Execution, F, ID: Identity
 }
 
 impl<'scope, 'w, 'd: 'w, W: input::Execution, F, ID: Identity> Queue<'scope, 'w, 'd, W, F, ID> {
-    fn sync_send<'r>(&self, conn: &mut conn::Ctx<'_, '_, '_, '_, 'r, 'd, ID, W, ()>)
+    fn sync_send<'r>(&self, conn: &conn::Ctx<'_, '_, '_, '_, 'r, 'd, ID, W, ()>)
     where
         'd: 'r,
     {
         let id = conn.id();
-        let pending = conn.write().pending();
+        let pending = conn.pending_output();
         self.port.connections.channel().sync_send(id, pending);
     }
 }
@@ -71,10 +71,10 @@ where
 
     fn activate<'e>(
         self: pin::Pin<&mut Self>,
-        mut conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, W, (), Self::Egress>,
+        conn: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, W, (), Self::Egress>,
         _: &mut driver::Context<'_, 'd>,
     ) {
-        self.as_ref().get_ref().sync_send(&mut conn);
+        self.sync_send(&conn);
     }
 
     fn eof<'e>(
@@ -215,10 +215,10 @@ impl<'scope, 'w, 'd: 'w, W: input::Execution + 'd, F: FnMut(open::Error<'w, W>),
 {
     fn send(
         self: pin::Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, W, (), Self::Egress>,
+        conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, W, (), Self::Egress>,
         _: &mut driver::Context<'_, 'd>,
     ) {
-        self.as_ref().get_ref().sync_send(&mut conn);
+        self.sync_send(&conn);
     }
 }
 

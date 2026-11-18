@@ -387,7 +387,7 @@ where
         let this = self.get_mut();
         for frame in this.frames.iter().skip(usize::from(*conn.state())) {
             let mut output_slot = std::mem::MaybeUninit::uninit();
-            let result = match conn.write().try_prefix(driver, &mut output_slot) {
+            let result = match conn.try_prefix(driver, &mut output_slot) {
                 Ok(mut output) => {
                     let (state, mut prefix) = output.get_mut().parts();
                     prefix.write_slice(frame).unwrap();

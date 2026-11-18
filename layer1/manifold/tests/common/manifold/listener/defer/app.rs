@@ -56,7 +56,7 @@ impl<F: for<'a> Fn(Event<'a>)> App<F> {
                 State::Done => return,
             };
             let mut output_slot = std::mem::MaybeUninit::uninit();
-            let result = match conn.write().try_open(driver, &mut output_slot) {
+            let result = match conn.try_output(driver, &mut output_slot) {
                 Ok(mut output) => {
                     let (state, mut prefix) = output.get_mut().parts();
                     *state = next;

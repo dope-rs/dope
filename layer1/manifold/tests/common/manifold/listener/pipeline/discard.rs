@@ -197,7 +197,7 @@ fn reply<'w, 'd: 'w, ID: route::Identity>(
         observe(Event::Request(chunk));
         conn.state_mut().extend_from_slice(chunk);
         let mut output_slot = std::mem::MaybeUninit::uninit();
-        let result = match conn.write().try_prefix(driver, &mut output_slot) {
+        let result = match conn.try_prefix(driver, &mut output_slot) {
             Ok(mut output) => {
                 output.get_mut().parts().1.write_slice(ACK).unwrap();
                 write::Output::finish(output, write::End::Open)
@@ -225,7 +225,7 @@ fn reply<'w, 'd: 'w, ID: route::Identity>(
         return Outcome::Continue;
     }
     let mut output_slot = std::mem::MaybeUninit::uninit();
-    let result = match conn.write().try_prefix(driver, &mut output_slot) {
+    let result = match conn.try_prefix(driver, &mut output_slot) {
         Ok(mut output) => {
             let (state, mut prefix) = output.get_mut().parts();
             observe(Event::Length(state.len()));

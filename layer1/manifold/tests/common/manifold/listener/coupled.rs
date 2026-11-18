@@ -92,7 +92,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for App {
                 this.state = State::Second;
                 assert!(matches!(this.state, State::Second));
                 assert!(matches!(
-                    conn.write().admit(body, driver),
+                    conn.admit(body, driver),
                     write::body::Admit::Committed
                 ));
                 this.first.hit();
@@ -231,7 +231,7 @@ impl<'d, ID: route::Identity, const DRAIN: bool> send::Notify<'d, ID> for Dynami
         let mut conn = conn.map_state(|state| &mut state.0);
         conn.state_mut().prefix_completions += 1;
         this.prefix.hit();
-        if matches!(conn.write().pending(), egress::Pending::Absent) {
+        if matches!(conn.pending_output(), egress::Pending::Absent) {
             assert!(!this.gated || !DRAIN);
             this.drained(conn.state_mut());
             if !this.gated {
@@ -289,7 +289,7 @@ impl<'w, 'd: 'w, ID: route::Identity, const DRAIN: bool> handler::Scoped<'w, 'd,
                 let body = egress::NonEmpty::from_array(&QUEUED_BODY);
                 assert_eq!(conn.state().phase, 1);
                 assert!(matches!(
-                    conn.write().admit(body, driver),
+                    conn.admit(body, driver),
                     write::body::Admit::Committed
                 ));
                 this.first.hit();
@@ -508,7 +508,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for BorrowedApp {
         match chunk.as_ref() {
             b"A" => {
                 let body = egress::NonEmpty::from_array(&QUEUED_BODY);
-                let done = conn.write().admit(body, driver);
+                let done = conn.admit(body, driver);
                 self.written
                     .record(matches!(done, write::body::Admit::Committed));
                 self.first.hit();

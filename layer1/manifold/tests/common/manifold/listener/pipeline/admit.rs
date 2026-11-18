@@ -95,7 +95,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Admit {
             (SECOND_REPLY.as_slice(), None),
         ] {
             let mut output_slot = std::mem::MaybeUninit::uninit();
-            let result = match conn.write().try_open(driver, &mut output_slot) {
+            let result = match conn.try_output(driver, &mut output_slot) {
                 Ok(mut output) => {
                     let (_, mut prefix) = output.get_mut().parts();
                     prefix.write_slice(header).unwrap();
@@ -116,7 +116,7 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Admit {
                 }
                 Err(cause) => Err(cause),
             };
-            let event = Event::Write(result, conn.write().pending());
+            let event = Event::Write(result, conn.pending_output());
             self.events.push(event);
         }
         Outcome::CloseAfter
