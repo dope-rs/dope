@@ -136,7 +136,7 @@ where
                 return Outcome::Missing(claim);
             }
         };
-        let key = entry.key;
+        let key = entry.sender.key;
         let pool::change::raw::Prepared {
             slab,
             egress,
@@ -144,7 +144,7 @@ where
             flights,
             pending,
             ..
-        } = &mut *entry.root;
+        } = &mut *entry.sender.root;
         // SAFETY: consumption retains the original initialized slot and all paired owners.
         let (slot, recv) = tail::Slot::from_live(unsafe { Proof::new((slab, key.parts().slot())) });
         let (branch, waiting) = 'close: {

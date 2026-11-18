@@ -54,7 +54,7 @@ where
         let key = self.keys.parse(token).ok()?;
         let mut sender = self.sender(key.connection())?;
         let (retired, space) = {
-            let (flights, connection, pending, mut queue) = sender.entry.reborrow().into_transmit();
+            let (flights, connection, pending, mut queue) = sender.transmit();
             let inflight = connection.observe_send(token, |slot| before(context, slot))?;
             let origin = inflight.source();
             let mut space = send::Availability::Unchanged;
@@ -180,9 +180,9 @@ where
             pending.wait_send(connection.send_status().is_waiting());
             (retired, space)
         };
-        <M::Ingress as input::Dispatch<W>>::release::<ID>(space, &mut sender.entry.root.runtime);
+        <M::Ingress as input::Dispatch<W>>::release::<ID>(space, &mut sender.root.runtime);
         if space == send::Availability::Released {
-            sender.entry.root.pending.release_send();
+            sender.root.pending.release_send();
         }
         Some(complete(context, retired, sender, driver))
     }

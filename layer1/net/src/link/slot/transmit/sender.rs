@@ -36,7 +36,8 @@ pub struct Sender<
     const IOV: usize,
     D: demand::Mode = demand::Fallible,
 > {
-    pub(in crate::link) entry: pool::Entry<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
+    pub(in crate::link) root: &'a mut pool::change::raw::Prepared<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
+    pub(in crate::link) key: pool::Key<'d, ID>,
 }
 
 impl<
@@ -59,25 +60,12 @@ where
     M: input::Mode<W>,
     D: demand::Mode,
 {
-    pub fn into_entry(self) -> pool::Entry<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
-        self.entry
-    }
-
-    /// Borrows application state and append access while retaining send ownership.
-    pub fn view(&mut self) -> pool::EgressMut<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D> {
-        self.entry.view()
-    }
-
-    pub fn has_queued(&mut self) -> bool {
-        self.entry.has_queued()
-    }
-
     pub fn submit(
         &mut self,
         driver: &mut driver::Context<'_, 'd>,
         release: impl FnMut(B),
     ) -> Attempt {
-        let (flights, connection, pending, mut queue) = self.entry.reborrow().into_transmit();
+        let (flights, connection, pending, mut queue) = self.transmit();
         let outcome = run(connection, &mut queue, flights, driver, release);
         pending.wait_send(connection.send_status().is_waiting());
         outcome

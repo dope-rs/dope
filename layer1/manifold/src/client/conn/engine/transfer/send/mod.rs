@@ -68,12 +68,10 @@ where
     {
         let (pool, mut context) = engine.as_mut().parts();
         let Ok(mut entry) = pool.entry(key) else { return };
-        {
-            let Some(mut sender) = entry.sender() else { return };
-            Self::finish_admitted::<S, E, X>(
-                context.app, context.controller, &mut sender, context.liveness, context.target, driver,
-            );
-        }
+        let Some(sender) = entry.sender() else { return };
+        Self::finish_admitted::<S, E, X>(
+            context.app, context.controller, sender, context.liveness, context.target, driver,
+        );
         drop(<engine::Machine<'p, 'w, 'd, ID, A, S, E, X> as close::ClosePhase<'p, 'w, 'd, ID, A, S, E, X>>::maybe_entry(
             &mut context, entry, turn, driver,
         ));
@@ -164,8 +162,8 @@ where
     {
         let queued = entry.has_queued();
         match entry.sender() {
-            Some(mut sender) => Self::submit_admitted::<SENT, DRAIN, S, E, X>(
-                context.app, context.controller, &mut sender,
+            Some(sender) => Self::submit_admitted::<SENT, DRAIN, S, E, X>(
+                context.app, context.controller, sender,
                 context.liveness, context.target, queued, turn.reborrow(), driver,
             ),
             None => { let _ = State::poll_close(entry.get_mut(), context.app); }

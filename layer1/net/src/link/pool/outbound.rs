@@ -109,7 +109,7 @@ where
         key: pool::Key<'d, ID>,
     ) -> pool::Sending<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
         let (egress, queued) = self.storage.sender_with_recv(key)?;
-        if egress.entry.get().engine.operations.lifecycle.is_closing() {
+        if egress.connection().engine.operations.lifecycle.is_closing() {
             return None;
         }
         Some((egress, queued))

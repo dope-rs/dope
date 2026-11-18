@@ -108,8 +108,8 @@ where
         let target = context.target;
         let liveness = &mut *context.liveness;
         let key = entry.get().key();
-        if let Some(mut sender) = entry.sender() {
-            sender.view().queue.cancel_wait(driver.region_token());
+        if let Some(egress) = entry.egress_mut() {
+            egress.queue.cancel_wait(driver.region_token());
         }
         let mut ctx = (&mut *context.app, &mut *context.controller);
         let outcome = <<A::Input as input::Mode<A::Wire>>::Ingress as Policy<A::Wire>>::close(

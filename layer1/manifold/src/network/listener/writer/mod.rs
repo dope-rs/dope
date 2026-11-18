@@ -213,8 +213,7 @@ where
             }
             return entry.ok();
         }
-        if let Some(mut sender) = admitted.sender() {
-            let egress = sender.view();
+        if let Some(egress) = admitted.egress_mut() {
             let lane = pool::raw::Physical::bind(key);
             memory::Retention::new(writes, lane).cancel_wait(egress.connection.io().wake_target());
             egress.queue.cancel_wait(driver.region_token());

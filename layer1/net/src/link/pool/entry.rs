@@ -48,8 +48,7 @@ pub struct Entry<
 > where
     'd: 'w,
 {
-    pub(super) root: &'a mut Prepared<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
-    pub(super) key: Key<'d, ID>,
+    pub(super) sender: transmit::Sender<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
 }
 
 impl<'a, 'p, 'w, 'd: 'w, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
@@ -62,22 +61,15 @@ where
     D: demand::Mode,
 {
     pub fn get(&self) -> &types::Connection<'w, 'd, ID, W, S> {
-        // SAFETY: admission keeps this original root and initialized slot until consumption.
-        tail::Table::value(unsafe { Proof::new((&self.root.slab, self.key.parts().slot())) })
+        self.sender.connection()
     }
 
     pub fn get_mut(&mut self) -> &mut types::Connection<'w, 'd, ID, W, S> {
-        self.slot().0.into_mut()
+        self.sender.slot().0.into_mut()
     }
 
     pub fn egress_mut(&mut self) -> Option<super::EgressMut<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>> {
-        self.root.pending.handle(self.key)?;
-        Some(self.view())
-    }
-
-    pub(in crate::link) fn view(&mut self) -> super::EgressMut<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D> {
-        let (flights, connection, pending, queue) = self.reborrow().into_transmit();
-        super::EgressMut { flights, connection, pending, queue: queue.reborrow() }
+        Some(self.sender()?.view())
     }
 
     pub(in crate::link::pool) fn receive(&mut self) -> (
@@ -85,72 +77,33 @@ where
         &mut types::Connection<'w, 'd, ID, W, S>,
         recv::Borrow<'_, 'd, ID, M::Ingress, input::Receipt<W, M>>,
     ) {
-        let Prepared { slab, runtime, .. } = &mut *self.root;
+        let key = self.sender.key;
+        let Prepared { slab, runtime, .. } = &mut *self.sender.root;
         // SAFETY: this entry retains the admitted slot in its original paired storage.
         let (slot, storage) =
-            tail::Slot::from_live(unsafe { Proof::new((slab, self.key.parts().slot())) });
+            tail::Slot::from_live(unsafe { Proof::new((slab, key.parts().slot())) });
         // SAFETY: the same entry retains the receive storage paired with this slot.
-        let recv = unsafe { Proof::new((storage, self.key)) }.into();
+        let recv = unsafe { Proof::new((storage, key)) }.into();
         (runtime, slot.into_mut(), recv)
     }
 
     pub fn egress(&self) -> egress::Pending {
-        self.root.egress.pending(self.key)
+        self.sender.root.egress.pending(self.sender.key)
     }
 
     pub fn pending(&self) -> pending::Handle<'p, 'd, ID> {
-        self.root.pending.bound(self.key)
+        self.sender.root.pending.bound(self.sender.key)
     }
 
     pub fn sender(
         &mut self,
-    ) -> Option<transmit::Sender<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>> {
-        self.root.pending.handle(self.key)?;
-        Some(transmit::Sender {
-            entry: self.reborrow(),
-        })
-    }
-
-    pub(in crate::link) fn reborrow(&mut self) -> Entry<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
-        Entry {
-            root: &mut *self.root,
-            key: self.key,
-        }
-    }
-
-    pub(in crate::link) fn into_transmit(
-        self,
-    ) -> (
-        &'a flight::Slots<'d, ID>,
-        &'a mut types::Connection<'w, 'd, ID, W, S>,
-        pending::Handle<'a, 'd, ID>,
-        egress::Output<'a, 'p, 'd, IOV, B, D>,
-    ) {
-        let Prepared {
-            slab,
-            flights,
-            pending,
-            egress,
-            ..
-        } = self.root;
-        // SAFETY: this consumes the original admitted root without changing its slot.
-        let (slot, _) =
-            tail::Slot::from_live(unsafe { Proof::new((slab, self.key.parts().slot())) });
-        (
-            flights,
-            slot.into_mut(),
-            pending.bound(self.key),
-            egress.bind_queue(self.key),
-        )
+    ) -> Option<&mut transmit::Sender<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>> {
+        self.sender.root.pending.handle(self.sender.key)?;
+        Some(&mut self.sender)
     }
 
     pub fn has_queued(&mut self) -> bool {
-        let key = self.key;
-        let (_, storage) = self.slot();
-        // SAFETY: the original paired storage remains borrowed for this admitted key.
-        let recv: recv::Borrow<'_, 'd, ID, M::Ingress, input::Receipt<W, M>> =
-            unsafe { Proof::new((storage, key)) }.into();
-        recv.storage.has_queued()
+        self.sender.has_queued()
     }
 
     pub fn readiness(&mut self) -> recv::Readiness {
@@ -164,23 +117,13 @@ where
         }
     }
 
-    fn slot(
-        &mut self,
-    ) -> (
-        tail::Slot<'_, types::Connection<'w, 'd, ID, W, S>, ID, input::Tail<'w, 'd, W, M>>,
-        &mut recv::State<'d, ID, M::Ingress, input::Receipt<W, M>>,
-    ) {
-        // SAFETY: the short root reborrow retains the original initialized slot and extents.
-        tail::Slot::from_live(unsafe { Proof::new((&mut self.root.slab, self.key.parts().slot())) })
-    }
-
     pub fn defer(&mut self, chunk: wire::receive::Chunk<'w, 'd, W, wire::receive::mode::Disabled>)
         -> recv::Deferral<'w, 'd, W>
     where
         M::Kind: input::Replay<W>,
     {
-        let key = self.key;
-        let (slot, storage) = self.slot();
+        let key = self.sender.key;
+        let (slot, storage) = self.sender.slot();
         // SAFETY: the entry keeps this resident paired with its receive storage.
         let mut recv: recv::Borrow<'_, 'd, ID, M::Ingress, input::Receipt<W, M>> =
             unsafe { Proof::new((storage, key)) }.into();
@@ -204,7 +147,7 @@ where
     where
         M::Kind: input::Replay<W>,
     {
-        let (slot, _) = self.slot();
+        let (slot, _) = self.sender.slot();
         let (entry, tail) = slot.queue::<W, M::Kind>().split();
         let Some(occupied) = tail.occupied() else {
             return ControlFlow::Continue(None);
@@ -242,8 +185,8 @@ where
     }
 
     pub fn suspend(&mut self) {
-        let key = self.key;
-        let (mut entry, storage) = self.slot();
+        let key = self.sender.key;
+        let (mut entry, storage) = self.sender.slot();
         let slot = entry.get_mut();
         // SAFETY: selection retains the resident and its paired receive storage.
         let mut recv: recv::Borrow<'_, 'd, ID, M::Ingress, input::Receipt<W, M>> =
@@ -254,8 +197,8 @@ where
     }
 
     pub fn resume(&mut self) {
-        let key = self.key;
-        let (mut entry, storage) = self.slot();
+        let key = self.sender.key;
+        let (mut entry, storage) = self.sender.slot();
         let tail = tail::Store::pending(&mut entry);
         let slot = entry.get_mut();
         // SAFETY: selection retains the resident and its paired receive storage.
@@ -276,5 +219,59 @@ where
         if let Some(ready) = ready {
             ready.activate();
         }
+    }
+}
+
+impl<'a, 'p, 'w, 'd: 'w, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+    transmit::Sender<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
+where
+    T: crate::Transport,
+    W: wire::Spec + 'w + 'd,
+    M: input::Mode<W>,
+    B: data::raw::Payload<'d>,
+    D: demand::Mode,
+{
+    pub fn into_entry(self) -> Entry<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
+        Entry { sender: self }
+    }
+
+    pub(super) fn connection(&self) -> &types::Connection<'w, 'd, ID, W, S> {
+        // SAFETY: admission keeps this original root and initialized slot until consumption.
+        tail::Table::value(unsafe { Proof::new((&self.root.slab, self.key.parts().slot())) })
+    }
+
+    /// Borrows application state and append access while retaining send ownership.
+    pub fn view(&mut self) -> super::EgressMut<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D> {
+        let (flights, connection, pending, queue) = self.transmit();
+        super::EgressMut { flights, connection, pending, queue: queue.reborrow() }
+    }
+
+    pub fn has_queued(&mut self) -> bool {
+        let key = self.key;
+        let (_, storage) = self.slot();
+        // SAFETY: the original paired storage remains borrowed for this admitted key.
+        let recv: recv::Borrow<'_, 'd, ID, M::Ingress, input::Receipt<W, M>> =
+            unsafe { Proof::new((storage, key)) }.into();
+        recv.storage.has_queued()
+    }
+
+    fn slot(&mut self) -> (
+        tail::Slot<'_, types::Connection<'w, 'd, ID, W, S>, ID, input::Tail<'w, 'd, W, M>>,
+        &mut recv::State<'d, ID, M::Ingress, input::Receipt<W, M>>,
+    ) {
+        // SAFETY: the short root reborrow retains the original initialized slot and extents.
+        tail::Slot::from_live(unsafe { Proof::new((&mut self.root.slab, self.key.parts().slot())) })
+    }
+
+    pub(in crate::link) fn transmit(&mut self) -> (
+        &flight::Slots<'d, ID>,
+        &mut types::Connection<'w, 'd, ID, W, S>,
+        pending::Handle<'_, 'd, ID>,
+        egress::Output<'_, 'p, 'd, IOV, B, D>,
+    ) {
+        let Prepared { slab, flights, pending, egress, .. } = &mut *self.root;
+        // SAFETY: the sender retains its original initialized slot for this borrow.
+        let (slot, _) = tail::Slot::from_live(unsafe { Proof::new((slab, self.key.parts().slot())) });
+        (flights, slot.into_mut(), pending.bound(self.key), egress.bind_queue(self.key))
     }
 }

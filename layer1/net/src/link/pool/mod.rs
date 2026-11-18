@@ -275,8 +275,7 @@ where
             });
         }
         Ok(Entry {
-            root: prepared,
-            key,
+            sender: transmit::Sender { root: prepared, key },
         })
     }
 
@@ -291,12 +290,14 @@ where
         &mut self,
         key: Key<'d, ID>,
     ) -> Option<EgressMut<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>> {
-        let (flights, connection, pending, queue) = self.sender(key)?.entry.into_transmit();
+        let root = &mut self.prepared;
+        let pending = root.pending.handle(key)?;
+        let connection = root.slab.access().get(key.parts())?;
         Some(EgressMut {
-            flights,
+            flights: &root.flights,
             connection,
             pending,
-            queue: queue.reborrow(),
+            queue: root.egress.bind_queue(key).reborrow(),
         })
     }
 
@@ -305,9 +306,7 @@ where
         key: Key<'d, ID>,
     ) -> Option<transmit::Sender<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>> {
         self.prepared.pending.handle(key)?;
-        Some(transmit::Sender {
-            entry: self.entry(key).ok()?,
-        })
+        Some(self.entry(key).ok()?.sender)
     }
 
     pub fn sender_with_recv(
@@ -315,7 +314,7 @@ where
         key: Key<'d, ID>,
     ) -> Sending<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
         let mut sender = self.sender(key)?;
-        let queued = sender.entry.has_queued();
+        let queued = sender.has_queued();
         Some((sender, queued))
     }
 

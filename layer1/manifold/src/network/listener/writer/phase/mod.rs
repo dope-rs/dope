@@ -115,12 +115,8 @@ pub(in crate::network::listener) fn commit_end<'w, 'd: 'w, ID: Identity, A, E>(
     let Ok(mut entry) = pool.entry(key) else {
         return;
     };
-    {
-        let Some(mut source) = entry.sender() else {
-            return;
-        };
-        sender::commit_end::<ID, A, _>(&mut source, deadlines, this.app.as_mut(), driver);
-    }
+    let Some(source) = entry.sender() else { return };
+    sender::commit_end::<ID, A, _>(source, deadlines, this.app.as_mut(), driver);
     if finish(&mut entry, this.app.as_ref()) {
         drop(writer::close(
             Ok(entry), *writes, &mut (this.app, this.accept, deadlines), turn, driver,
@@ -170,19 +166,17 @@ pub(in crate::network::listener) fn advance_entry<
 where
     A: handler::Runtime<'w, 'd, ID>,
 {
-    {
-        let Some(mut source) = entry.sender() else { return Some(entry) };
-        let (app, _, deadlines) = &mut *ctx;
-        if matches!(
-            sender::commit_chunk::<ID, A, _>(
-                &mut source, deadlines, app.as_mut(), wake, driver,
-            ),
-            flow::Flow::Done
-        ) {
-            send::complete(
-                &mut source, deadlines, writes, app.as_mut(), turn.reborrow(), driver,
-            );
-        }
+    let Some(source) = entry.sender() else { return Some(entry) };
+    let (app, _, deadlines) = &mut *ctx;
+    if matches!(
+        sender::commit_chunk::<ID, A, _>(
+            source, deadlines, app.as_mut(), wake, driver,
+        ),
+        flow::Flow::Done
+    ) {
+        send::complete(
+            source, deadlines, writes, app.as_mut(), turn.reborrow(), driver,
+        );
     }
     if finish(&mut entry, ctx.0.as_ref()) {
         writer::close(Ok(entry), writes, ctx, turn, driver)
