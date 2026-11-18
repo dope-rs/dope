@@ -9,16 +9,12 @@ use state::order::{Front, Slot};
 use crate::reply::{
     self,
     arena::state,
+    input::{self, Reject},
     order, recv,
     retain::pool,
     slot::{self, End},
     usage::{self, Footprint, amount::Amount as _},
 };
-
-enum Reject {
-    Front(order::Front),
-    Acquire(pool::Acquire),
-}
 
 impl Reject {
     fn into_error<T>(self, value: T) -> usage::InsertError<T> {
@@ -82,7 +78,8 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
                 // store loan exclude retirement or replacement of this entry.
                 let live = unsafe {
                     depot::raw::Proof::<_, Initialized<state::Ordered<K>>>::new((
-                        (&mut self.slots.0, front), index,
+                        (&mut self.slots.0, front),
+                        index,
                     ))
                 };
                 let (entry, front) = slab::Occupied::from_live(live);
@@ -158,18 +155,19 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         }
     }
 
+    pub fn input(self) -> Result<input::Target<'a, 'arena, 'credits, 'region, D>, order::Front> {
+        let (_, entry) = self.front.ok_or(order::Front::Empty)?;
+        if !matches!(entry.state.end, End::Open) {
+            return Err(order::Front::Detached);
+        }
+        input::Target::new(&mut entry.owners, &mut entry.state.data, &mut entry.signal)
+    }
+
     fn try_data(
         self,
         usage: D::Amount,
     ) -> Result<Option<slot::Push<'a, 'arena, 'credits, 'region, D>>, Reject> {
-        let open = self.attached().map_err(Reject::Front)?;
-        let Some(accept) = open.acceptance() else {
-            return Ok(None);
-        };
-        if let recv::Accepted::Unit = accept {
-            return Err(Reject::Front(order::Front::Denied));
-        }
-        open.try_data(usage, accept).map(Some).map_err(Reject::Acquire)
+        Ok(self.input().map_err(Reject::Front)?.reserve(usage)?)
     }
 
     /// Retains the attached front before constructing its terminal error.
@@ -194,37 +192,7 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
     where
         B: usage::Build<D>,
     {
-        let usage = builder.usage();
-        let held = match self.try_data(usage) {
-            Ok(Some(held)) => held,
-            Ok(None) => return Ok(()),
-            Err(Reject::Acquire(pool::Acquire::Backpressure(cause))) => {
-                return Err(usage::PushError::Backpressure { builder, cause });
-            }
-            Err(Reject::Acquire(pool::Acquire::Capacity(cause))) => {
-                return Err(usage::PushError::Capacity { builder, cause });
-            }
-            Err(Reject::Front(front)) => {
-                return Err(usage::PushError::Front { builder, front });
-            }
-        };
-        let item = match builder.try_build() {
-            Ok(item) => item,
-            Err((builder, error)) => {
-                return Err(usage::PushError::Build { builder, error });
-            }
-        };
-        let declared = held.usage();
-        let actual = item.footprint().usage();
-        if actual != declared {
-            return Err(usage::PushError::Footprint {
-                value: item,
-                declared,
-                actual,
-            });
-        }
-        held.commit(item);
-        Ok(())
+        input::build(builder, |amount| self.try_data(amount), slot::Push::commit)
     }
 
     pub fn try_fail(self, item: E) -> Result<order::Depth, usage::InsertError<E>>

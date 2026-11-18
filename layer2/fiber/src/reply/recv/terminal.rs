@@ -28,7 +28,7 @@ impl<'s, 'arena, 'credits, 'region, D: usage::Footprint, E>
     const ACCEPTANCE: Acceptance = Acceptance::Collected;
 }
 
-impl<'s, 'arena, 'credits, 'region, D: usage::Footprint<Amount = usage::Bytes>, E>
+impl<'s, 'arena, 'credits, 'region, D: usage::Footprint<Amount: usage::ValueAmount>, E>
     Spec<'s, 'arena, 'credits, 'region, D, E> for First
 {
     type Context = ();
@@ -110,7 +110,7 @@ impl<'s, 'arena, 'credits, 'region, D: usage::Footprint, E, K>
     }
 }
 
-impl<'s, 'arena, 'credits, 'region, D: usage::Footprint<Amount = usage::Bytes>, E, K>
+impl<'s, 'arena, 'credits, 'region, D: usage::Footprint<Amount: usage::ValueAmount>, E, K>
     Response<'s, 'arena, 'credits, 'region, D, First, E, K>
 {
     pub fn try_first(

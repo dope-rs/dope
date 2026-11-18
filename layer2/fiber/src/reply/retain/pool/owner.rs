@@ -216,16 +216,22 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
 
     /// # Safety
     /// The original first node is detached, and its sole root owns this member.
-    pub(in crate::reply) unsafe fn take_first(&mut self, amount: payload::Value<usage::Bytes>) {
-        // SAFETY: the root takes this original member. Its one retained Value
-        // continues to back the detached node when the Data credit is returned.
+    pub(in crate::reply) unsafe fn take_first<A: usage::ValueAmount>(
+        &mut self,
+        amount: payload::Value<A>,
+    ) {
+        // SAFETY: the root takes this original member. Its retained Values
+        // continue to back the detached node when the Data credit is returned.
         unsafe { self.sum.take(amount) };
         self.return_data(payload::Data);
     }
 
     /// # Safety
     /// The original first node has been freed; its retained amount returns once.
-    pub(in crate::reply) unsafe fn release_first(&self, amount: payload::Failure<usage::Bytes>) {
+    pub(in crate::reply) unsafe fn release_first<A: usage::ValueAmount>(
+        &self,
+        amount: payload::Failure<A>,
+    ) {
         self.return_data(amount);
     }
 
@@ -345,16 +351,14 @@ impl<'arena, 'credits, 'region> Removal<'_, 'arena, 'credits, 'region, payload::
     }
 }
 
-impl<'arena, 'credits, 'region>
-    Removal<'_, 'arena, 'credits, 'region, payload::Value<usage::Bytes>>
+impl<'arena, 'credits, 'region, A: usage::ValueAmount>
+    Removal<'_, 'arena, 'credits, 'region, payload::Value<A>>
 {
     #[inline]
-    pub(in crate::reply) fn try_value(
+    pub(in crate::reply) fn try_node(
         self,
-    ) -> Result<
-        mem::Lease<LeaseEdge<'arena, 'credits, 'region, payload::Failure<usage::Bytes>>>,
-        rc::Error,
-    > {
+    ) -> Result<mem::Lease<LeaseEdge<'arena, 'credits, 'region, payload::Failure<A>>>, rc::Error>
+    {
         let Self { owner, amount } = self;
         let (data, retained) = amount.split();
         let lease = owner.try_lease(retained)?;

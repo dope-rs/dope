@@ -11,6 +11,65 @@ use crate::common::storage::replies::support::{Counted, Drops, Error};
 
 pub const SCALAR: [u8; 32] = [7; 32];
 
+pub struct Span<'a>(pub &'a [u8]);
+
+pub struct Rows<'a> {
+    pub span: Span<'a>,
+    pub values: std::num::NonZero<u32>,
+}
+
+impl usage::Footprint for Span<'_> {
+    type Amount = usage::Counted;
+
+    fn footprint(&self) -> Self::Amount {
+        usage::Counted::new(
+            u32::try_from(self.0.len()).expect("fixture length"),
+            std::num::NonZero::<u32>::MIN,
+        )
+    }
+}
+
+impl<'a> usage::Grouped for Span<'a> {
+    type Group = Rows<'a>;
+}
+
+impl<'a> From<Rows<'a>> for Span<'a> {
+    fn from(rows: Rows<'a>) -> Self {
+        rows.span
+    }
+}
+
+impl usage::Footprint for Rows<'_> {
+    type Amount = usage::Counted;
+
+    fn footprint(&self) -> Self::Amount {
+        usage::Counted::new(
+            u32::try_from(self.span.0.len()).expect("fixture length"),
+            self.values,
+        )
+    }
+}
+
+pub struct GroupBuild<'a> {
+    pub rows: Rows<'a>,
+    pub materialize: Result<(), u8>,
+}
+
+impl<'a> usage::Build<Rows<'a>> for GroupBuild<'a> {
+    type Error = u8;
+
+    fn usage(&self) -> usage::Counted {
+        usage::Footprint::footprint(&self.rows)
+    }
+
+    fn try_build(self) -> Result<Rows<'a>, (Self, Self::Error)> {
+        match self.materialize {
+            Ok(()) => Ok(self.rows),
+            Err(code) => Err((self, code)),
+        }
+    }
+}
+
 pub struct Scalar<'a> {
     pub(crate) bytes: [u8; 32],
     drops: &'a Drops,

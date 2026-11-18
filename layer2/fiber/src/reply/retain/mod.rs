@@ -19,12 +19,13 @@ pub use lease::{Lease, Node};
 pub use retained::Retained;
 pub use values::Values;
 
-pub struct First<'s, 'arena, 'credits, 'region, D: usage::Footprint<Amount = usage::Bytes>> {
-    pub(in crate::reply) value: ManuallyDrop<slots::Live<Item<D>, slots::Borrow<'arena, Item<D>, false>>>,
+pub struct First<'s, 'arena, 'credits, 'region, D: usage::Footprint<Amount: usage::ValueAmount>> {
+    pub(in crate::reply) value:
+        ManuallyDrop<slots::Live<Item<D>, slots::Borrow<'arena, Item<D>, false>>>,
     pub(in crate::reply) root: crate::reply::raw::Root<'s, 'arena, 'credits, 'region>,
 }
 
-impl<D: usage::Footprint<Amount = usage::Bytes>> First<'_, '_, '_, '_, D> {
+impl<D: usage::Footprint<Amount: usage::ValueAmount>> First<'_, '_, '_, '_, D> {
     pub fn get(&self) -> &D {
         &self.value.get().value
     }

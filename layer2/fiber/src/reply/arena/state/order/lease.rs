@@ -3,12 +3,11 @@ use std::{marker, mem::size_of};
 use o3::mem::{self, lease};
 
 use crate::reply::{
-    recv::{Acceptance, Accepted},
+    recv::Acceptance,
     retain::{
         grant::payload,
         pool::{Acquire, Owner},
     },
-    usage::amount::Amount,
 };
 
 pub(in crate::reply) struct Lease<
@@ -66,15 +65,6 @@ impl<A: mem::raw::Amount<3, usize> + Into<payload::Requested>> mem::Return
         // SAFETY: the receipt retains the original exclusive slot loan and the
         // exact new admission; neither commit nor another removal has consumed it.
         unsafe { self.owner.payload.remove(amount) }.release();
-    }
-}
-
-impl<A: Amount> Lease<'_, '_, '_, '_, payload::Value<A>> {
-    pub(in crate::reply) fn keep(self) {
-        let owner = self.into_owner();
-        if matches!(owner.acceptance, Some(Accepted::First | Accepted::One)) {
-            owner.acceptance = None;
-        }
     }
 }
 

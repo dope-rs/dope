@@ -16,10 +16,67 @@ use common::{
     recover,
     runtime::{self, Setup},
     storage::replies::{
-        builds::{SCALAR, ScalarBuild},
+        builds::{GroupBuild, Rows, SCALAR, ScalarBuild, Span},
         support::{Cause, Counted, Drops, Finish, capacity},
     },
 };
+
+#[test]
+fn collected_run_refunds_failed_materialization() {
+    use dope_fiber::reply::input::Target;
+
+    let bytes = b"sample";
+    region::Token::scope(|mut token| {
+        let layout =
+            layout::Layout::bounded(capacity(1, 1, 1, bytes.len(), 2)).expect("reply layout");
+        Arena::<Span<'_>, ()>::try_with(layout, token.proof(), |arena| {
+            let lane = arena.try_lane(LaneIndex::ZERO).expect("reply lane");
+            let mut reply = recv::Response::<_, recv::Collected, ()>::new();
+            reply
+                .try_attach(&mut token, lane)
+                .expect("reply attachment");
+            let mut build = |builder| {
+                let Ok(Target::Collected(input)) = lane.select(&mut token).input() else {
+                    panic!("expected collected input")
+                };
+                input.try_build(builder)
+            };
+            let Err(usage::PushError::Build { builder, error: 9 }) = build(GroupBuild {
+                rows: Rows {
+                    span: Span(bytes),
+                    values: std::num::NonZero::new(2).unwrap(),
+                },
+                materialize: Err(9),
+            }) else {
+                panic!("expected materialization failure")
+            };
+            assert!(std::ptr::eq(builder.rows.span.0, bytes.as_slice()));
+            assert!(
+                build(GroupBuild {
+                    materialize: Ok(()),
+                    ..builder
+                })
+                .is_ok()
+            );
+            lane.complete(&mut token);
+            let mut batch = reply
+                .try_all(&mut token)
+                .expect("completion")
+                .expect("collected");
+            let usage = usage::Usage::new(usage::Bytes::new(bytes.len()), usage::Values::new(2));
+            assert_eq!(batch.len().get(), 1);
+            assert_eq!(batch.usage(), usage);
+            batch
+                .try_drain(|span| {
+                    assert!(std::ptr::eq(span.0, bytes.as_slice()));
+                    Ok::<(), convert::Infallible>(())
+                })
+                .expect("drain");
+            drop(lane.try_reserve(usage).expect("returned group credit"));
+        })
+        .expect("reply arena");
+    });
+}
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();

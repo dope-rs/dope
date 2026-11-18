@@ -16,13 +16,13 @@ pub struct Lease<'arena, 'credits, 'region, T> {
 }
 
 /// A scalar reply retained in its original pool slot.
-pub struct Node<'arena, 'credits, 'region, D: usage::Footprint<Amount = usage::Bytes>> {
+pub struct Node<'arena, 'credits, 'region, D: usage::Footprint<Amount: usage::ValueAmount>> {
     pub(in crate::reply) value: slots::Live<Item<D>, slots::Borrow<'arena, Item<D>, false>>,
     pub(in crate::reply) _claim:
-        mem::Lease<LeaseEdge<'arena, 'credits, 'region, payload::Failure<usage::Bytes>>>,
+        mem::Lease<LeaseEdge<'arena, 'credits, 'region, payload::Failure<D::Amount>>>,
 }
 
-impl<D: usage::Footprint<Amount = usage::Bytes>> Node<'_, '_, '_, D> {
+impl<D: usage::Footprint<Amount: usage::ValueAmount>> Node<'_, '_, '_, D> {
     pub fn get(&self) -> &D {
         &self.value.get().value
     }

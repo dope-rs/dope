@@ -7,6 +7,7 @@ use o3::{alloc, base::cell::region, depot::arena::linked};
 use crate::reply::{arena::backing::Backing, retain::pool, usage::Footprint};
 
 mod arena;
+pub mod input;
 pub mod layout;
 pub mod order;
 pub(crate) mod raw;

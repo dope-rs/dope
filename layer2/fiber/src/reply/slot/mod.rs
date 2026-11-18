@@ -90,28 +90,6 @@ impl<'a, 'arena, 'credits, 'region, D: Footprint, E, K>
         }
     }
 
-    pub(in crate::reply) const fn acceptance(&self) -> Option<recv::Accepted> {
-        self.order.owner.acceptance
-    }
-
-    pub(in crate::reply) fn try_data(
-        self,
-        added: D::Amount,
-        accepted: recv::Accepted,
-    ) -> Result<Push<'a, 'arena, 'credits, 'region, D>, Acquire> {
-        let signal = accepted.observes_data().then_some(self.signal);
-        let lease = Lease::try_new(
-            self.order.owner,
-            payload::Value::new(added),
-            accepted.acceptance(),
-        )?;
-        Ok(fifo::Fifo::reserve(Reserve {
-            queue: &mut self.state.data,
-            lease,
-            signal,
-        }))
-    }
-
     pub(in crate::reply) fn failure(self) -> Failure<'a, 'arena, 'credits, 'region, E, K> {
         Failure {
             order: self.order,
@@ -238,7 +216,7 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E> Slot<'_, 's, 'arena, 'credi
     }
 }
 
-impl<'arena, 'credits, 'region, D: Footprint<Amount = usage::Bytes>, E>
+impl<'arena, 'credits, 'region, D: Footprint<Amount: usage::ValueAmount>, E>
     Slot<'_, '_, 'arena, 'credits, 'region, D, E>
 {
     pub fn try_node(
@@ -248,7 +226,7 @@ impl<'arena, 'credits, 'region, D: Footprint<Amount = usage::Bytes>, E>
             return Ok(None);
         };
         // SAFETY: this front and owner belong to the same occupied slot.
-        let claim = unsafe { self.owners.payload.remove(front.get().amount) }.try_value()?;
+        let claim = unsafe { self.owners.payload.remove(front.get().amount) }.try_node()?;
         Ok(Some(retain::Node {
             value: front.detach(),
             _claim: claim,
@@ -272,31 +250,38 @@ const _: () = {
 };
 
 #[must_use]
-pub(in crate::reply) struct Push<'a, 'arena, 'credits, 'region, C: Footprint> {
+pub(in crate::reply) struct Push<
+    'a,
+    'arena,
+    'credits,
+    'region,
+    C: Footprint,
+    S = Option<&'a mut state::Signal<'region>>,
+> {
     entry: slots::Vacant<Item<C>, &'a mut fifo::Fifo<'arena, Item<C>, false>>,
     lease: Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>>,
-    signal: Option<&'a mut state::Signal<'region>>,
+    signal: S,
 }
 
-struct Reserve<'a, 'arena, 'credits, 'region, C: Footprint> {
+struct Reserve<'a, 'arena, 'credits, 'region, C: Footprint, S> {
     queue: &'a mut fifo::Fifo<'arena, Item<C>, false>,
     lease: Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>>,
-    signal: Option<&'a mut state::Signal<'region>>,
+    signal: S,
 }
 
-// SAFETY: try_data acquires Data for Usage or one Value for Bytes from this
+// SAFETY: reservation acquires Data or positive Values from this
 // arena's selected physical axis. The affine lease stays paired with its reserved entry
 // until both are committed or returned, including an abandoned Push. The signal
-// remains borrowed from that same reply entry through publication.
-unsafe impl<'a, 'arena: 'a, 'credits, 'region, C: Footprint + 'arena>
-    depot::raw::Reserve<'a, 'arena, false> for Reserve<'a, 'arena, 'credits, 'region, C>
+// when present stays borrowed from that same reply entry through publication.
+unsafe impl<'a, 'arena: 'a, 'credits, 'region, C: Footprint + 'arena, S>
+    depot::raw::Reserve<'a, 'arena, false> for Reserve<'a, 'arena, 'credits, 'region, C, S>
 {
     type Item = Item<C>;
     type Credit = (
         Lease<'a, 'arena, 'credits, 'region, payload::Value<C::Amount>>,
-        Option<&'a mut state::Signal<'region>>,
+        S,
     );
-    type Reserved = Push<'a, 'arena, 'credits, 'region, C>;
+    type Reserved = Push<'a, 'arena, 'credits, 'region, C, S>;
 
     /// # Safety
     /// The caller retains the reservation these exact parts were built from.
@@ -317,16 +302,45 @@ unsafe impl<'a, 'arena: 'a, 'credits, 'region, C: Footprint + 'arena>
     }
 }
 
-impl<'a, 'arena, 'credits, 'region, C: Footprint> Push<'a, 'arena, 'credits, 'region, C> {
-    pub(in crate::reply) fn usage(&self) -> usage::Usage {
-        self.lease.amount().usage()
+impl<'a, 'arena, 'credits, 'region, C: Footprint, S> Push<'a, 'arena, 'credits, 'region, C, S> {
+    pub(in crate::reply) fn reserve(
+        queue: &'a mut fifo::Fifo<'arena, Item<C>, false>,
+        owner: &'a mut Owner<'arena, 'credits, 'region>,
+        amount: C::Amount,
+        policy: recv::Acceptance,
+        signal: S,
+    ) -> Result<Self, Acquire> {
+        let lease = Lease::try_new(owner, payload::Value::new(amount), policy)?;
+        Ok(fifo::Fifo::reserve(Reserve {
+            queue,
+            lease,
+            signal,
+        }))
     }
 
-    pub(in crate::reply) fn commit(self, value: C) {
+    pub(in crate::reply) fn insert(
+        self,
+        value: C,
+        keep: impl FnOnce(&mut Owner<'arena, 'credits, 'region>),
+    ) -> S {
         let amount = self.lease.amount();
-        self.lease.keep();
+        keep(self.lease.into_owner());
         self.entry.push_back(Item { value, amount });
-        if let Some(signal) = self.signal {
+        self.signal
+    }
+}
+
+impl<C: Footprint> Push<'_, '_, '_, '_, C> {
+    pub(in crate::reply) fn commit(self, value: C) {
+        let signal = self.insert(value, |owner| {
+            if matches!(
+                owner.acceptance,
+                Some(recv::Accepted::First | recv::Accepted::One)
+            ) {
+                owner.acceptance = None;
+            }
+        });
+        if let Some(signal) = signal {
             signal.notify();
         }
     }

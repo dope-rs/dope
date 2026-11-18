@@ -1,6 +1,6 @@
 //! Logical reply-resource accounting and construction.
 
-use std::mem;
+use std::{mem, num::NonZero};
 
 use crate::reply::order;
 
@@ -16,6 +16,18 @@ pub struct Usage {
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct Bytes(usize);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Counted {
+    bytes: u32,
+    values: NonZero<u32>,
+}
+
+impl Counted {
+    pub const fn new(bytes: u32, values: NonZero<u32>) -> Self {
+        Self { bytes, values }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(transparent)]
@@ -187,6 +199,17 @@ pub trait Footprint {
     fn footprint(&self) -> Self::Amount;
 }
 
+/// The value owner selects the materialized representation of a collected group.
+pub trait Grouped: Footprint<Amount = Counted> + Sized {
+    type Group: Footprint<Amount = Counted> + Into<Self>;
+}
+
+/// Every amount of this type retains at least one value credit.
+pub trait ValueAmount: amount::Amount {}
+
+impl ValueAmount for Bytes {}
+impl ValueAmount for Counted {}
+
 /// Describes a reply value before constructing its owned representation.
 pub trait Build<C: Footprint> {
     type Error;
@@ -207,7 +230,7 @@ impl Footprint for () {
 }
 
 pub(in crate::reply) mod amount {
-    use super::{Bytes, Usage, Values};
+    use super::{Bytes, Counted, Usage, Values};
 
     pub trait Amount: Copy + Eq + 'static {
         const AXIS: usize;
@@ -228,6 +251,17 @@ pub(in crate::reply) mod amount {
 
         fn usage(self) -> Usage {
             Usage::new(self, Values::new(1))
+        }
+    }
+
+    impl Amount for Counted {
+        const AXIS: usize = 1;
+
+        fn usage(self) -> Usage {
+            Usage::new(
+                Bytes::new(self.bytes as usize),
+                Values::new(self.values.get() as usize),
+            )
         }
     }
 }

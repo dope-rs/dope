@@ -60,7 +60,7 @@ impl<'s, 'arena, 'credits, 'region, D: Footprint, E>
     }
 }
 
-impl<'arena, 'credits, 'region, D: Footprint<Amount = usage::Bytes>, E>
+impl<'arena, 'credits, 'region, D: Footprint<Amount: usage::ValueAmount>, E>
     Completion<'_, '_, 'arena, 'credits, 'region, D, E>
 {
     pub fn try_node(
