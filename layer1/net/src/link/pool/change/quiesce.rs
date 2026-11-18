@@ -38,29 +38,31 @@ where
     ) where
         M::Ingress: Strategy<W>,
     {
-        self.retire(finish, |_, released, token| {
+        self.retire(finish, |_| (), |_, released, token| {
             if let Released::Payload(payload) = released {
                 free(payload, token);
             }
         });
     }
 
-    pub(in crate::link::pool::change) fn keyed(
+    pub(in crate::link::pool::change) fn keyed<R>(
         &mut self,
         finish: &mut finish::Finish<'_, 'd>,
-        mut free: impl FnMut(Key<'d, ID>, Released<'_, S, B>),
+        retire: impl FnMut(&mut S) -> R,
+        mut free: impl FnMut(Key<'d, ID>, Released<R, B>),
     ) where
         M::Ingress: Strategy<W>,
     {
-        self.retire(finish, |key, released, _| free(key, released));
+        self.retire(finish, retire, |key, released, _| free(key, released));
     }
 
-    fn retire(
+    fn retire<R>(
         &mut self,
         finish: &mut finish::Finish<'_, 'd>,
+        mut retire: impl FnMut(&mut S) -> R,
         mut free: impl FnMut(
             Key<'d, ID>,
-            Released<'_, S, B>,
+            Released<R, B>,
             &mut region::Token<region::Identity<'d, 1>>,
         ),
     ) where
@@ -73,7 +75,7 @@ where
             return;
         }
         for index in self.slab.capacity() {
-            let (key, released, mut state) = {
+            let (key, released, state, retired) = {
                 let Some((entry, mut recv)) = Slot::at::<M::Ingress, _>(&mut self.slab, index)
                 else {
                     continue;
@@ -103,11 +105,13 @@ where
                 self.egress.finish(key, finish, |payload, token| {
                     free(key, Released::Payload(payload), token)
                 });
+                let retired = retire(&mut entry.get_mut().state);
                 let conn = entry.remove();
-                (key, conn.control.send.release(), conn.state)
+                (key, conn.control.send.release(), conn.state, retired)
             };
             <M::Ingress as input::Dispatch<W>>::release::<ID>(released, &mut self.runtime);
-            free(key, Released::State(&mut state), finish.state_token());
+            free(key, Released::State(retired), finish.state_token());
+            drop(state);
         }
     }
 }

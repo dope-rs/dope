@@ -67,9 +67,10 @@ pub trait Policy<W: wire::Spec>: Sized {
         D: demand::Mode,
         F: FnMut(B, &mut region::Token<region::Identity<'d, 1>>);
 
-    fn finish_keyed<'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, F>(
+    fn finish_keyed<'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, R, F>(
         pool: &mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         finish: &mut finish::Finish<'_, 'd>,
+        retire: impl FnMut(&mut S) -> R,
         free: F,
     ) where
         'd: 'w,
@@ -78,7 +79,7 @@ pub trait Policy<W: wire::Spec>: Sized {
         M: input::Mode<W, Ingress = Self>,
         B: data::raw::Payload<'d>,
         D: demand::Mode,
-        F: FnMut(pool::Key<'d, ID>, pool::Released<'_, S, B>);
+        F: FnMut(pool::Key<'d, ID>, pool::Released<R, B>);
 }
 
 impl<W, I> Policy<W> for I
@@ -245,9 +246,10 @@ where
         pool.prepared.run(finish, free);
     }
 
-    fn finish_keyed<'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, F>(
+    fn finish_keyed<'p, 'w, 'd, ID: Identity + 'w, T, S, M, B, const IOV: usize, D, R, F>(
         pool: &mut pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
         finish: &mut finish::Finish<'_, 'd>,
+        retire: impl FnMut(&mut S) -> R,
         free: F,
     ) where
         'd: 'w,
@@ -256,9 +258,9 @@ where
         M: input::Mode<W, Ingress = Self>,
         B: data::raw::Payload<'d>,
         D: demand::Mode,
-        F: FnMut(pool::Key<'d, ID>, pool::Released<'_, S, B>),
+        F: FnMut(pool::Key<'d, ID>, pool::Released<R, B>),
     {
-        pool.prepared.keyed(finish, free);
+        pool.prepared.keyed(finish, retire, free);
     }
 }
 

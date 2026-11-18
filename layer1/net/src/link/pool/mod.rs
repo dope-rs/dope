@@ -54,9 +54,9 @@ type Sending<'a, 'p, 'w, 'd, ID, T, W, S, M, B, const IOV: usize, D> = Option<(
     bool,
 )>;
 
-pub enum Released<'a, S, B> {
+pub enum Released<S, B> {
     Payload(B),
-    State(&'a mut S),
+    State(S),
 }
 
 /// Connection storage which exclusively owns the route of every retained target.
@@ -211,14 +211,15 @@ where
         <M::Ingress as drain::Policy<W>>::finish(self, finish, free);
     }
 
-    pub fn finish_keyed(
+    pub fn finish_keyed<R>(
         &mut self,
         finish: &mut finish::Finish<'_, 'd>,
-        free: impl FnMut(Key<'d, ID>, Released<'_, S, B>),
+        retire: impl FnMut(&mut S) -> R,
+        free: impl FnMut(Key<'d, ID>, Released<R, B>),
     ) where
         M::Ingress: drain::Policy<W>,
     {
-        <M::Ingress as drain::Policy<W>>::finish_keyed(self, finish, free);
+        <M::Ingress as drain::Policy<W>>::finish_keyed(self, finish, retire, free);
     }
 
     pub fn recv(&mut self) -> recv::Receiver<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {

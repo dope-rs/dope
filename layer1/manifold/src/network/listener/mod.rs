@@ -162,7 +162,7 @@ where
         let mut app = this.app.as_mut();
         this.owner
             .pool_mut()
-            .finish_keyed(proof, |key, released| match released {
+            .finish_keyed(proof, |state| state.send.retire().0, |key, released| match released {
                 Released::Payload(payload) => {
                     writer::release_payload(
                         app.as_mut(),
@@ -171,8 +171,8 @@ where
                         handler::Disposition::Closed,
                     );
                 }
-                Released::State(state) => {
-                    if let Some(egress) = state.send.retire().0 {
+                Released::State(egress) => {
+                    if let Some(egress) = egress {
                         writer::release_egress(
                             app.as_mut(),
                             key,
