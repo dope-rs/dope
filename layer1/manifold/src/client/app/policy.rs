@@ -1,5 +1,3 @@
-use std::convert;
-
 use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::pool::{
@@ -10,8 +8,8 @@ use dope_net::{
 
 use crate::{
     app::receive::{
-        Borrowed, Mode, Owned,
-        ingress::{self, Dispatch, Progress},
+        Borrowed, Mode, Outcome, Owned,
+        ingress::{self, Dispatch},
     },
     client::app,
 };
@@ -26,7 +24,7 @@ where
         input: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
-    ) -> (R::Remaining, crate::Receiving<'w, 'd, A::Wire, Self>)
+    ) -> (R::Remaining, crate::Receiving<A::Wire, Self>)
     where
         'w: 'input,
         R: app::Receiver<'w, 'd, ID, A>;
@@ -43,7 +41,7 @@ where
         input: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
-    ) -> (R::Remaining, Progress<convert::Infallible>)
+    ) -> (R::Remaining, Outcome)
     where
         'w: 'input,
         R: app::Receiver<'w, 'd, ID, A>,
@@ -63,7 +61,7 @@ where
         input: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
-    ) -> (R::Remaining, Progress<convert::Infallible>)
+    ) -> (R::Remaining, Outcome)
     where
         'w: 'input,
         R: app::Receiver<'w, 'd, ID, A>,

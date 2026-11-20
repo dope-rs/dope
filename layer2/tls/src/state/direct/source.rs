@@ -1,28 +1,6 @@
 use crate::state::direct;
-use dope::{core::io::recv, net::wire::receive::mode};
-use mode::access;
-use o3::buffer::Complete as _;
-use o3::buffer::{
-    self,
-    bytes::bounded,
-    hold, resident,
-    storage::{self, provided, range},
-    write::consume,
-};
-use std::ops;
-
-fn view<'a, 'd>(
-    cursor: &'a Cursor<'d>,
-    left: usize,
-) -> bounded::Value<buffer::View<'a, storage::Shared<provided::Owner<'d>>>> {
-    let end = cursor.end;
-    let start = end - left;
-    let source = buffer::Complete::view(&cursor.bytes).into_inner();
-    // SAFETY: Input::owned copied only into the consumed prefix of this exact
-    // input owner. Head narrows that immutable prefix without changing storage.
-    let proof = unsafe { bounded::raw::Input::new(source).select(start..end) };
-    bounded::Value::from_raw(proof)
-}
+use dope::core::io::recv;
+use o3::buffer::{self, bytes::bounded, write::consume};
 
 /// Retains the authenticated end while the remaining suffix only shrinks.
 pub(crate) struct Cursor<'d> {
@@ -40,127 +18,43 @@ impl<'d> Cursor<'d> {
         }
     }
 
-    pub(crate) fn remaining(&self) -> usize {
+    pub(crate) fn view(&self) -> <recv::Shared<'d> as buffer::Source>::View<'_> {
+        let start = self.end - self.len;
+        let original = buffer::Complete::view(&self.bytes).into_inner();
+        // SAFETY: Input::owned initializes this prefix in this lease. Consumption only narrows it.
+        let proof = unsafe { bounded::raw::Input::new(original).select(start..self.end) };
+        bounded::Value::from_raw(proof)
+    }
+}
+
+impl AsRef<[u8]> for Cursor<'_> {
+    fn as_ref(&self) -> &[u8] {
+        buffer::Read::as_slice(&self.view())
+    }
+}
+
+impl consume::Consume for Cursor<'_> {
+    fn remaining(&self) -> usize {
         self.len
     }
 
-    pub(crate) fn view(&self) -> <recv::Shared<'d> as buffer::Source>::View<'_> {
-        view(self, self.len)
-    }
-
-    pub(crate) fn as_slice(&self) -> &[u8] {
-        buffer::Read::as_slice(&view(self, self.len))
-    }
-
-    pub(crate) fn head(&mut self) -> Option<Head<'_, 'd>> {
-        if self.len == 0 {
-            return None;
-        }
-        let left = self.len;
-        Some(Head {
-            cursor: self,
-            remaining: left,
-        })
-    }
-}
-
-pub(crate) struct Head<'input, 'd: 'input> {
-    cursor: &'input mut Cursor<'d>,
-    remaining: usize,
-}
-
-impl<'d> buffer::Source for Head<'_, 'd> {
-    type View<'input>
-        = bounded::Value<buffer::View<'input, storage::Shared<provided::Owner<'d>>>>
-    where
-        Self: 'input;
-
-    fn remaining(&self) -> usize {
-        self.remaining
-    }
-}
-
-// SAFETY: The selected immutable provided view delegates retention to its original owner.
-unsafe impl<'d> hold::raw::Retain<'d> for Head<'_, 'd> {
-    fn try_copy<'a>(
-        plan: &Self::View<'a>,
-        budget: &resident::Budget<'d>,
-    ) -> Result<storage::Owned<resident::Budget<'d>>, hold::Error>
-    where
-        Self: 'a,
-    {
-        <recv::Shared<'d> as hold::raw::Retain<'d>>::try_copy(plan, budget)
-    }
-
-    fn resident<'a>(plan: &Self::View<'a>) -> usize
-    where
-        Self: 'a,
-    {
-        <recv::Shared<'d> as hold::raw::Retain<'d>>::resident(plan)
-    }
-
-    fn try_retain<'a>(
-        plan: &Self::View<'a>,
-        budget: &resident::Budget<'d>,
-    ) -> Result<hold::Retained<'d>, hold::Error>
-    where
-        Self: 'a,
-    {
-        <recv::Shared<'d> as hold::raw::Retain<'d>>::try_retain(plan, budget)
-    }
-}
-
-impl<'d> buffer::Cursor for Head<'_, 'd> {
-    fn try_get<'input>(
-        &'input self,
-        range: ops::Range<usize>,
-    ) -> Result<Self::View<'input>, range::Error> {
-        self.view().try_get(range)
-    }
-}
-
-impl<'d> buffer::Complete for Head<'_, 'd> {
-    fn view(&self) -> Self::View<'_> {
-        view(self.cursor, self.remaining)
-    }
-}
-
-impl AsRef<[u8]> for Head<'_, '_> {
-    fn as_ref(&self) -> &[u8] {
-        buffer::Read::as_slice(&view(self.cursor, self.remaining))
-    }
-}
-
-impl consume::Consume for Head<'_, '_> {
-    fn remaining(&self) -> usize {
-        self.remaining
-    }
-
     fn try_consume(&mut self, amount: usize) -> Result<(), consume::Error> {
-        consume::Error::check(amount, self.remaining)?;
-        self.remaining -= amount;
+        consume::Error::check(amount, self.len)?;
+        self.len -= amount;
         Ok(())
     }
 
     fn consume_max(&mut self, max: usize) -> usize {
-        let amount = max.min(self.remaining);
-        self.remaining -= amount;
+        let amount = max.min(self.len);
+        self.len -= amount;
         amount
     }
 }
 
-impl<'d> access::Head<'d> for Head<'_, 'd> {
-    fn commit(self) -> usize {
-        let consumed = self.cursor.len - self.remaining;
-        self.cursor.len = self.remaining;
-        consumed
-    }
-}
-
-// SAFETY: the immutable provided owner retains this exact plaintext view.
-unsafe impl buffer::raw::Consume for Head<'_, '_> {
+// SAFETY: the branded end belongs to this cursor's current authenticated prefix.
+unsafe impl buffer::raw::Consume for Cursor<'_> {
     fn consume<const MAX: u32>(prefix: buffer::raw::Consumed<'_, '_, Self, MAX>) {
-        let (head, end) = prefix.into_parts();
-        head.remaining -= end.count().get() as usize;
+        let (cursor, end) = prefix.into_parts();
+        cursor.len -= end.count().get() as usize;
     }
 }

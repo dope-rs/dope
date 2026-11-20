@@ -1,12 +1,9 @@
-use std::{convert, pin};
+use std::pin;
 
-use dope_core::{
-    driver::{
-        self,
-        route::{Identity, table::conn::Capacity},
-        schedule,
-    },
-    io::transfer::Length as _,
+use dope_core::driver::{
+    self,
+    route::{Identity, table::conn::Capacity},
+    schedule,
 };
 use dope_net::{
     link::pool::recv::{delivery, input},
@@ -58,7 +55,7 @@ where
         input: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> crate::Receiving<'w, 'd, A::Wire, Self>
+    ) -> crate::Receiving<A::Wire, Self>
     where
         'w: 'input;
 }
@@ -69,7 +66,7 @@ fn receive_borrowed<'input, 'w, 'd, ID: Identity, A>(
     items: Items<'input, A::Wire>,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
-) -> ingress::Progress<convert::Infallible>
+) -> Outcome
 where
     'd: 'w,
     'w: 'input,
@@ -103,7 +100,7 @@ where
         batch: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> ingress::Progress<convert::Infallible>
+    ) -> Outcome
     where
         'w: 'input,
     {
@@ -125,7 +122,7 @@ where
         batch: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> ingress::Progress<convert::Infallible>
+    ) -> Outcome
     where
         'w: 'input,
     {
@@ -159,7 +156,7 @@ where
         batch: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> ingress::Progress<convert::Infallible>
+    ) -> Outcome
     where
         'w: 'input,
     {
@@ -171,25 +168,20 @@ fn receive_scoped<'w, 'd: 'w, ID: Identity, A>(
     mut app: pin::Pin<&mut A>,
     egress: &mut writer::Egress<'_, '_, '_, '_, 'w, 'd, ID, A>,
     authority: &mut resident::Budget<'d>,
-    mut chunk: Chunk<'w, 'd, A::Wire, Disabled>,
+    chunk: &mut Chunk<'w, 'd, A::Wire, Disabled>,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
-) -> ingress::Progress<Chunk<'w, 'd, A::Wire, Disabled>>
+) -> Option<Outcome>
 where
     A: handler::Scoped<'w, 'd, ID>,
     A::Input: Resources<Authority<'d> = resident::Budget<'d>>,
 {
     egress.connection.progress(driver.driver_ref().clock().now());
-    let done = A::scoped_chunk(
-        app.as_mut(),
-        egress.context(turn.app()),
-        scoped::Input::new(&mut chunk, authority),
-        driver,
-    );
-    match done {
-        Outcome::Continue if chunk.is_empty() => ingress::Progress::Done(Outcome::Continue),
-        Outcome::Continue => ingress::Progress::Pending(chunk),
-        done @ (Outcome::CloseAfter | Outcome::Failed(_)) => ingress::Progress::Done(done),
+    match scoped::with(chunk, authority, |input| {
+        A::scoped_chunk(app.as_mut(), egress.context(turn.app()), input, driver)
+    }) {
+        Ok(done) => done,
+        Err(cause) => Some(Outcome::Failed(crate::app::receive::Failure::Input(cause))),
     }
 }
 
@@ -212,7 +204,7 @@ where
         chunk: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> ingress::Progress<Chunk<'w, 'd, A::Wire, Disabled>>
+    ) -> Option<Outcome>
     where
         'w: 'input,
     {
@@ -250,7 +242,7 @@ where
         chunk: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> ingress::Progress<Chunk<'w, 'd, A::Wire, Disabled>>
+    ) -> Option<Outcome>
     where
         'w: 'input,
     {
@@ -278,12 +270,11 @@ where
         chunk: crate::Incoming<'input, 'w, 'd, A::Wire, Self>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> ingress::Progress<convert::Infallible>
+    ) -> Outcome
     where
         'w: 'input,
     {
         egress.connection.progress(driver.driver_ref().clock().now());
-        let done = A::chunk(app.as_mut(), egress.context(turn.app()), chunk.0, driver);
-        ingress::Progress::Done(done)
+        A::chunk(app.as_mut(), egress.context(turn.app()), chunk.0, driver)
     }
 }

@@ -27,7 +27,8 @@ use dope_test::harness::peer;
 use dope_test::reclaim::Reports;
 use o3::buffer::Source as _;
 
-use crate::common::{Read, state};
+use crate::common::state;
+use o3::buffer::write::consume::Consume as _;
 
 use crate::common::fiber::*;
 
@@ -110,11 +111,10 @@ fn records_share_cursors() {
                                             .expect("peer must supply retained TLS plaintext");
                                         while !lease.is_empty() && data.len() < want {
                                             let take = (data.len() % 3 + 1).min(want - data.len());
-                                            lease.drive(Ok(()), &mut Read(|head: &[u8]| {
-                                                let amount = take.min(head.len());
-                                                data.extend_from_slice(&head[..amount]);
-                                                amount
-                                            })).expect("consume TLS plaintext");
+                                            let head = lease.as_ref();
+                                            let amount = take.min(head.len());
+                                            data.extend_from_slice(&head[..amount]);
+                                            lease.try_consume(amount).expect("consume TLS plaintext");
                                         }
                                     }
                                     let written = stream.write_all(b"!").await;

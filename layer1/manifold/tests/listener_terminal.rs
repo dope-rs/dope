@@ -32,7 +32,7 @@ fn terminal(event: Observation<'_>) {
         Observation::Deadline(armed) => armed.is_ok(),
         Observation::Write(result) => matches!(result, Ok(())),
         Observation::Owned(result) => matches!(result, Admit::Committed),
-        Observation::Replay(result) => matches!(result, Some(Ok(()))),
+        Observation::Replay => true,
         Observation::Failure(cause) => matches!(
             cause,
             Some(Failure::Write(write::body::Failure::Capacity(

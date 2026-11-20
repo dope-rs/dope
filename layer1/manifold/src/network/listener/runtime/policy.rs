@@ -93,7 +93,7 @@ where
         input: crate::Incoming<'input, 'w, 'd, Self::Wire, Self::Input>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> (Option<ingress::Entry<'a, 'n, 'w, 'd, ID, Self>>, crate::Receiving<'w, 'd, Self::Wire, Self::Input>)
+    ) -> (Option<ingress::Entry<'a, 'n, 'w, 'd, ID, Self>>, crate::Receiving<Self::Wire, Self::Input>)
     where
         Self: 'ctx,
     {
@@ -105,7 +105,7 @@ where
                     app.as_mut(), &mut egress, authority, input, turn, driver,
                 )
             }
-            None => ingress::Progress::Done(receive::Outcome::Continue),
+            None => receive::Outcome::Continue.into(),
         };
         (Some(entry), progress)
     }

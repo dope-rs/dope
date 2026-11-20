@@ -34,11 +34,10 @@ pub trait Policy<W: wire::Spec> {
     type Batch<'input>: raw::Batch<'input>
     where
         W: 'input;
-    type Cursor<'w, 'd>: access::Cursor<'d, Self::Access> + transfer::Length + 'w
+    type Cursor<'w, 'd>: access::Cursor<'d> + 'w
     where
         W: 'w,
         'd: 'w;
-    type Access;
     type Eof;
     type Reserve: reserve::Kind<W>;
     type Credit: mode::Credit;
@@ -84,7 +83,6 @@ where
     where
         W: 'w,
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::Clean;
     type Reserve = reserve::Direct;
     type Credit = mode::Disabled;
@@ -154,13 +152,6 @@ where
     }
 }
 
-impl<'w, 'd: 'w, W: wire::Spec + 'w, C: mode::Credit> Chunk<'w, 'd, W, C> {
-    /// Visits the exact cursor while retaining this chunk's receive credit.
-    pub fn drive<T>(&mut self, done: T, use_head: &mut impl access::Use<'d, T>) -> T {
-        access::Cursor::drive(&mut self.inner.0, done, use_head)
-    }
-}
-
 impl<'w, 'd: 'w, W: wire::Spec + 'w, C: mode::Credit> transfer::Length for Chunk<'w, 'd, W, C> {
     fn len(&self) -> transfer::Len {
         self.inner.0.len()
@@ -174,7 +165,7 @@ impl<'w, 'd: 'w, W: wire::Spec + 'w, C: mode::Credit> buffer::Source for Chunk<'
         Self: 'input;
 
     fn remaining(&self) -> usize {
-        self.inner.0.remaining()
+        buffer::Source::remaining(&self.inner.0)
     }
 }
 
@@ -289,20 +280,6 @@ where
 {
     fn view(&self) -> Self::View<'_> {
         self.inner.0.view()
-    }
-}
-
-impl<'w, 'd: 'w, W: wire::Spec + 'w, C: mode::Credit> access::Sequence<'d> for Chunk<'w, 'd, W, C>
-where
-    <W::Receive as receive::Policy<W>>::Cursor<'w, 'd>: access::Sequence<'d>,
-{
-    type Head<'head>
-        = <<W::Receive as receive::Policy<W>>::Cursor<'w, 'd> as access::Sequence<'d>>::Head<'head>
-    where
-        Self: 'head;
-
-    fn next(&mut self) -> Option<Self::Head<'_>> {
-        access::Sequence::next(&mut self.inner.0)
     }
 }
 

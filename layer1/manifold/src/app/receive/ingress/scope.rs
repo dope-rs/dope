@@ -4,15 +4,13 @@ use dope_core::driver::{self, route::{self, Identity}, schedule};
 use dope_net::{
     link::{
         event,
-        pool::recv::{arrival, delivery, input, reserve::Choice},
+        pool::recv::{Deferral, arrival, delivery, input, reserve::Choice},
     },
     wire,
     wire::receive::{Chunk, mode::Disabled},
 };
 
-use crate::app::receive::ingress::{
-    self, Admission as _, Dispatch, Replay, Strategy, dispatch::flow,
-};
+use crate::app::receive::{Outcome, ingress::{self, Admission as _, Dispatch, Replay, Strategy}};
 
 pub(crate) struct Scope;
 
@@ -23,17 +21,13 @@ where
     M::Kind: delivery::ScopedData + input::Replay<W>,
 {
     type Value<'input, 'w, 'd>
-        = Chunk<'w, 'd, W, Disabled>
+        = &'input mut Chunk<'w, 'd, W, Disabled>
     where
         'd: 'w,
         'w: 'input,
         W: 'w + 'd;
 
-    type Pending<'w, 'd>
-        = Chunk<'w, 'd, W, Disabled>
-    where
-        'd: 'w,
-        W: 'w + 'd;
+    type Completion = Option<Outcome>;
 
     type Admission<'a, 'c, 'd>
         = ingress::Single<'a, 'c, 'd>
@@ -63,10 +57,7 @@ where
                     ingress::apply_control::<ID, P>(context, entry, next, turn, driver)
                 }
                 event::DispatchRecv::Chunk(_, chunk) => {
-                    ingress::prepare_terminal::<ID, P>(&entry);
-                    let (entry, done) = P::receive(context, entry, chunk, turn.reborrow(), driver);
-                    let entry = entry?;
-                    match flow::settle::<ID, P>(context, entry, done, turn, driver) {
+                    match deliver::<ID, P>(context, entry, chunk, turn, driver) {
                         ControlFlow::Break(entry) | ControlFlow::Continue(entry) => entry,
                     }
                 }
@@ -103,15 +94,41 @@ where
         };
         let chunk = taken.commit();
         let (driver, step) = work.into();
-        ingress::prepare_terminal::<ID, P>(&entry);
-        let (entry, done) = P::receive(&mut context, entry, chunk, step.reborrow(), driver);
-        let Some(entry) = entry else { return ControlFlow::Break(()) };
-        let entry = match flow::settle::<ID, P>(&mut context, entry, done, step, driver) {
-            ControlFlow::Break(_) => return ControlFlow::Break(()),
-            ControlFlow::Continue(entry) => entry,
+        let ControlFlow::Continue(Some(mut entry)) =
+            deliver::<ID, P>(&mut context, entry, chunk, step, driver)
+        else {
+            return ControlFlow::Break(());
         };
-        let Some(mut entry) = entry else { return ControlFlow::Break(()) };
         entry.finish_tail();
         ControlFlow::Continue(true)
     }
+}
+
+fn deliver<'ctx, 'a, 'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
+    context: &mut P::Context<'ctx>,
+    entry: ingress::Entry<'a, 'p, 'w, 'd, ID, P>,
+    mut chunk: Chunk<'w, 'd, P::Wire, Disabled>,
+    turn: schedule::Turn<'_, 'd>,
+    driver: &mut driver::Context<'_, 'd>,
+) -> ControlFlow<Option<ingress::Entry<'a, 'p, 'w, 'd, ID, P>>, Option<ingress::Entry<'a, 'p, 'w, 'd, ID, P>>>
+where
+    P: ingress::Policy<'p, 'w, 'd, ID> + 'ctx,
+    P::Input: Dispatch<P::Wire, Strategy = Scope>,
+    <P::Input as input::Mode<P::Wire>>::Kind: delivery::ScopedData + input::Replay<P::Wire>,
+{
+    ingress::prepare_terminal::<ID, P>(&entry);
+    let (entry, done) = P::receive(context, entry, &mut chunk, turn.reborrow(), driver);
+    let Some(mut entry) = entry else { return ControlFlow::Break(None) };
+    if let Some(outcome) = done {
+        drop(chunk);
+        return ControlFlow::Continue(ingress::finish_chunk::<ID, P>(context, entry, outcome, turn, driver));
+    }
+    let (pending, cause) = match entry.defer(chunk) {
+        Deferral::Ready => {
+            return ControlFlow::Break(P::finish(context, entry, ingress::Finish::Chunk, turn, driver));
+        }
+        Deferral::Unavailable(pending) => (pending, event::ParkError::Unavailable),
+        Deferral::Occupied(pending) => (pending, event::ParkError::Occupied),
+    };
+    ControlFlow::Continue(ingress::discard_pending::<ID, P>(context, entry, pending, cause, turn, driver))
 }

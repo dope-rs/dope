@@ -3,7 +3,7 @@ use o3::buffer::write::Sink as _;
 pub mod eof;
 pub mod wire;
 
-use std::{cell::Cell, convert, marker::PhantomData, num, pin::Pin, rc::Rc, time::Duration};
+use std::{cell::Cell, convert, marker::PhantomData, pin::Pin, rc::Rc, time::Duration};
 
 use dope_core::{
     driver::{self, route::Identity, schedule::clock},
@@ -34,9 +34,8 @@ use o3::{
     base::Call,
     buffer::{
         bytes::TryRetain,
-        hold::{limits, scope::Input},
+        hold::limits,
         storage::Shared,
-        write::consume::scope,
     },
 };
 use wire::{Event, Wire};
@@ -54,7 +53,7 @@ pub enum Observation<'d> {
     Deadline(Result<(), conn::deadline::Error>),
     Write(Result<(), error::Admission>),
     Owned(Admit<Shared>),
-    Replay(Option<Result<(), scope::Error>>),
+    Replay,
     Failure(Option<&'d conn::Failure>),
 }
 
@@ -63,7 +62,7 @@ pub fn accepted(event: Observation<'_>) {
         Observation::Deadline(armed) => armed.is_ok(),
         Observation::Write(result) => matches!(result, Ok(())),
         Observation::Owned(result) => matches!(result, Admit::Committed),
-        Observation::Replay(result) => matches!(result, Some(Ok(()))),
+        Observation::Replay => true,
         Observation::Failure(_) => false,
     });
 }
@@ -418,32 +417,24 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin> handler::
         Budget::new(limits::Bound::new(0), 4096)
     }
 
-    fn scoped_chunk(
+    fn scoped_chunk<'s, 'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Wire, Scope, Shared>,
-        chunk: scoped::Input<'_, 'w, 'd, Wire>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Wire, Scope, Shared>,
+        chunk: scoped::Input<'s, 'w, 'd, Wire>,
         _: &mut driver::Context<'_, 'd>,
-    ) -> Outcome {
+    ) -> Result<Outcome, scoped::Pending<'s>> {
         let this = self.get_mut();
-        this.events.push(Event::Chunk(chunk.as_ref().to_vec()));
+        let head = chunk.head().expect("scoped data");
+        this.events.push(Event::Chunk(head.input().as_slice().to_vec()));
         match conn.state() {
             Scope::First => {
                 *conn.state_mut() = Scope::Repeat;
-                Outcome::Continue
+                Err(head.defer())
             }
             Scope::Repeat => {
-                let (chunk, budget) = chunk.into_parts();
-                let replay = Input::consume(chunk, budget, |input| {
-                    let Some(len) = num::NonZero::new(input.as_slice().len()) else {
-                        return (None, None);
-                    };
-                    match input.try_prefix::<{ u32::MAX }>(0, len) {
-                        Ok((_, end)) => (Some(end), Some(Ok(()))),
-                        Err(error) => (None, Some(Err(error))),
-                    }
-                });
-                (this.observe)(Observation::Replay(replay));
-                Outcome::Continue
+                head.finish().expect("finish replay").settle()?;
+                (this.observe)(Observation::Replay);
+                Ok(Outcome::Continue)
             }
         }
     }

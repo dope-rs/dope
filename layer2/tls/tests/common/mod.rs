@@ -1,7 +1,5 @@
 pub mod fiber;
 pub mod native;
-mod read;
-pub use read::Read;
 pub mod reply;
 pub mod retry;
 mod signer;

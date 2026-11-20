@@ -12,10 +12,9 @@ use dope::{
     },
 };
 
-use crate::common::{
-    Read,
-    retry::{Error, Held, Key, Mode, Pool, UPDATES, native::next, pending, settle, submit},
-};
+use o3::buffer::write::consume::Consume as _;
+
+use crate::common::retry::{Error, Held, Key, Mode, Pool, UPDATES, native::next, pending, settle, submit};
 
 /// Retains real receive completions until the handshake send completion is held,
 /// then processes authenticated input before settling that original send owner.
@@ -101,17 +100,11 @@ pub(super) fn establish<'p, 'w, 'd: 'w, B: Payload<'d>>(
                             .iter()
                             .position(|other| *other == key)
                             .ok_or(Error::Key)?;
-                        let mut valid = true;
-                        chunk
-                            .drive(
-                                Ok(()),
-                                &mut Read(|bytes: &[u8]| {
-                                    valid &= bytes.iter().all(|byte| *byte == b'A' + index as u8);
-                                    received[index] += bytes.len();
-                                    bytes.len()
-                                }),
-                            )
-                            .map_err(Error::Consume)?;
+                        let bytes = chunk.as_ref();
+                        let valid = bytes.iter().all(|byte| *byte == b'A' + index as u8);
+                        let count = bytes.len();
+                        received[index] += count;
+                        chunk.try_consume(count).map_err(Error::Consume)?;
                         if !valid || received[index] > expected[index] {
                             return Err(Error::Record);
                         }

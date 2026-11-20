@@ -28,11 +28,10 @@ use dope_tls::{
     rustls,
     tls::{Tls, endpoint, roles},
 };
-use o3::buffer::Source as _;
+use o3::buffer::{Source as _, write::consume::Consume as _};
 
 pub mod common;
 use common::{
-    Read,
     fiber::client::{ACK, Client, KEY_SEED, PING, PONG},
     native, state,
 };
@@ -126,10 +125,10 @@ fn reconnects() {
                                                 .expect("read TLS reply")
                                                 .expect("peer reply");
                                             while !lease.is_empty() {
-                                                lease.drive(Ok(()), &mut Read(|head: &[u8]| {
-                                                    bytes.extend_from_slice(head);
-                                                    head.len()
-                                                })).expect("consume reply");
+                                                let head = lease.as_ref();
+                                                let count = head.len();
+                                                bytes.extend_from_slice(head);
+                                                lease.try_consume(count).expect("consume reply");
                                             }
                                         }
                                         assert_eq!(bytes, PONG);

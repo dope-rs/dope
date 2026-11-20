@@ -1,4 +1,4 @@
-use std::{convert, mem, pin};
+use std::pin;
 
 use dope_core::driver::{self, receive::Stale, route::{self, Identity}, schedule};
 use dope_net::{
@@ -6,10 +6,7 @@ use dope_net::{
         event,
         pool::{self, recv::arrival},
     },
-    wire::receive::{
-        Chunk,
-        mode::{Disabled, access},
-    },
+    wire::receive::{Chunk, mode::Disabled},
 };
 
 use crate::app::receive::{End, Failure, Outcome};
@@ -80,19 +77,12 @@ enum Control {
     Empty(Empty),
 }
 
-pub(crate) enum Progress<P> {
-    Done(Outcome),
-    Pending(P),
-}
-
 pub(crate) enum Terminal {
     Idle,
     Pending,
     Ended(End),
     Closed,
 }
-
-const _: () = assert!(mem::size_of::<Progress<convert::Infallible>>() == mem::size_of::<Outcome>());
 
 fn prepare_terminal<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 'w, 'd, ID>>(
     entry: &Entry<'_, 'p, 'w, 'd, ID, P>,
@@ -214,7 +204,7 @@ fn drive_control<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A, K: route::Selectio
 fn discard_pending<'ctx, 'a, 'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
     context: &mut P::Context<'ctx>,
     entry: Entry<'a, 'p, 'w, 'd, ID, P>,
-    mut pending: Chunk<'w, 'd, P::Wire, Disabled>,
+    pending: Chunk<'w, 'd, P::Wire, Disabled>,
     cause: event::ParkError,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
@@ -222,7 +212,6 @@ fn discard_pending<'ctx, 'a, 'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P>(
 where
     P: Policy<'p, 'w, 'd, ID> + 'ctx,
 {
-    pending.drive((), &mut access::Discard);
     drop(pending);
     discard_with_cause::<ID, P>(context, entry, CloseCause::Receive(cause), turn, driver)
 }

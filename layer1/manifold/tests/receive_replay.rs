@@ -68,7 +68,7 @@ fn replays_owner() {
     let seen = seen.values().expect("scoped observations");
     assert!(
         matches!(&*seen, [
-        scoped::Event::Chunk(first), scoped::Event::Chunk(replay), scoped::Event::Consumed(Ok(())),
+        scoped::Event::Chunk(first), scoped::Event::Chunk(replay), scoped::Event::Consumed,
     ] if first == replay && first == b"one receive owner"),
         "scoped receive events: {seen:?}"
     );

@@ -1,5 +1,3 @@
-use std::convert;
-
 use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::pool::{self, recv::input},
@@ -13,10 +11,7 @@ use effect::Effect as _;
 use crate::{
     app::{
         env,
-        receive::{
-            self,
-            ingress::{self, batch},
-        },
+        receive::{self, ingress::batch},
     },
     client::{
         app, attempt,
@@ -53,7 +48,7 @@ where
         items: Items<'input, A::Wire>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'ctx, 'd>,
-    ) -> (Self::Remaining, ingress::Progress<convert::Infallible>)
+    ) -> (Self::Remaining, receive::Outcome)
     where
         'd: 'input,
         A: app::Borrowed<'d, ID>,
@@ -87,14 +82,14 @@ where
         receipt: input::Receipt<A::Wire, receive::Owned<R>>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'ctx, 'd>,
-    ) -> (Self::Remaining, ingress::Progress<convert::Infallible>)
+    ) -> (Self::Remaining, receive::Outcome)
     where
         A: app::Owned<'w, 'd, ID, R>,
     {
         let (mut entry, context) = self;
         let outcome = {
             let Some(pool::EgressMut { connection: slot, queue: egress, .. }) = entry.egress_mut()
-            else { return (Some(entry), ingress::Progress::Done(receive::Outcome::Continue)) };
+            else { return (Some(entry), receive::Outcome::Continue) };
             slot.state.record_recv(driver.driver_ref().clock().now());
             match State::active(slot, |active, _| {
                 let receipt =
@@ -109,12 +104,11 @@ where
             }) {
                 flow::Active::Ready(callback) => callback,
                 flow::Active::Opening | flow::Active::Sealed => {
-                    return (Some(entry), ingress::Progress::Done(receive::Outcome::CloseAfter));
+                    return (Some(entry), receive::Outcome::CloseAfter);
                 }
             }
         };
         let (done, next) = outcome.into_parts();
-        let (entry, outcome) = done.apply(context, entry, next, turn, driver);
-        (entry, ingress::Progress::Done(outcome))
+        done.apply(context, entry, next, turn, driver)
     }
 }

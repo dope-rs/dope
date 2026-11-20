@@ -1,7 +1,7 @@
 pub mod reentry;
 
 use std::{
-    io::{self, Read as _},
+    io::{self, Read as _, Write as _},
     num::NonZero,
     sync::Arc,
 };
@@ -41,7 +41,12 @@ pub fn output(tls: &mut Connection) -> Result<Vec<u8>, Error> {
     Ok(wire)
 }
 
-fn input(tls: &mut Connection, mut input: &[u8]) -> Result<(), Error> {
+pub(super) fn seal(tls: &mut Connection, body: &[u8]) -> Result<Vec<u8>, Error> {
+    tls.writer().write_all(body).map_err(Error::Io)?;
+    output(tls)
+}
+
+pub(super) fn input(tls: &mut Connection, mut input: &[u8]) -> Result<(), Error> {
     while !input.is_empty() {
         if tls.read_tls(&mut input).map_err(Error::Io)? == 0 {
             return Err(Error::ReadZero);

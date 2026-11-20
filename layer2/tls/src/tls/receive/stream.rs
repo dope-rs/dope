@@ -6,52 +6,22 @@ use dope::{
     core::io::{recv, transfer},
     net::wire::receive::mode::access,
 };
-use o3::{
-    base::num::bounded,
-    buffer::{
-        self, bytes, pool,
-        pool::owners,
-        storage::{self, range},
-        write::consume,
-    },
+use o3::buffer::{
+    self, bytes::bounded, pool,
+    pool::owners,
+    storage::{self, range},
+    write::consume,
 };
 
-use crate::{
-    error,
-    state::direct::{self, source::Head},
-};
+use crate::state::direct;
 
-/// Retains each plaintext source with its original wire or driver lifetime.
-///
+pub(super) type Staged<'w> = storage::Shared<owners::Edge<owners::Plain, pool::Borrowed<'w>>>;
+
+/// Authenticated plaintext in its original pooled and provided owners.
 pub struct Retained<'w, 'd> {
-    staged: Option<storage::Shared<owners::Edge<owners::Plain, pool::Borrowed<'w>>>>,
-    plain: Option<Cursor<'d>>,
-    remaining: transfer::Len,
-}
-
-impl<'w, 'd> Retained<'w, 'd> {
-    pub(in crate::tls::receive) fn try_new(
-        staged: Option<storage::Shared<owners::Edge<owners::Plain, pool::Borrowed<'w>>>>,
-        plain: Cursor<'d>,
-    ) -> Result<Option<Self>, error::Error> {
-        let staged = staged.filter(|chunk| !chunk.is_empty());
-        let body = plain.remaining();
-        let plain = (body != 0).then_some(plain);
-        let stage = staged.as_ref().map_or(0, buffer::Source::remaining);
-        let len = bounded::Usize::<{ transfer::MAX_BYTES }>::ZERO
-            .try_add(stage)
-            .map_err(error::Error::Staged)?
-            .try_add(body)
-            .map_err(error::Error::Retained)?;
-        if len.get() == 0 {
-            return Ok(None);
-        }
-        Ok(Some(Self {
-            staged,
-            plain,
-            remaining: transfer::Len::from_count(len),
-        }))
-    }
+    pub(super) staged: Option<bounded::Value<Staged<'w>>>,
+    pub(super) plain: Option<Cursor<'d>>,
+    pub(super) remaining: transfer::Len,
 }
 
 impl<'w, 'd> buffer::Source for Retained<'w, 'd> {
@@ -73,18 +43,18 @@ impl transfer::Length for Retained<'_, '_> {
 
 impl AsRef<[u8]> for Retained<'_, '_> {
     fn as_ref(&self) -> &[u8] {
-        if let Some(staged) = self.staged.as_ref().filter(|head| !head.is_empty()) {
+        if let Some(staged) = &self.staged {
             staged.as_ref()
         } else {
-            self.plain.as_ref().map_or(&[], Cursor::as_slice)
+            self.plain.as_ref().map_or(&[], AsRef::as_ref)
         }
     }
 }
 
 impl<'w, 'd> buffer::Complete for Retained<'w, 'd> {
     fn view(&self) -> Self::View<'_> {
-        let backing = if let Some(staged) = self.staged.as_ref().filter(|head| !head.is_empty()) {
-            Backing::Staged(staged.view())
+        let backing = if let Some(staged) = &self.staged {
+            Backing::Staged(staged.view().into_inner())
         } else if let Some(plain) = &self.plain {
             Backing::Plain(plain.view())
         } else {
@@ -111,47 +81,20 @@ impl<'w, 'd> buffer::Cursor for Retained<'w, 'd> {
     }
 }
 
-impl consume::Consume for Retained<'_, '_> {
-    fn remaining(&self) -> usize {
-        self.as_ref().len()
+impl<'d> access::Cursor<'d> for Retained<'_, 'd> {
+    fn head_len(&self) -> Result<Option<transfer::NonZero>, consume::scope::Error> {
+        Ok(self.staged.as_ref().map_or(self.remaining, transfer::Length::len).nonzero())
     }
 
-    fn try_consume(&mut self, amount: usize) -> Result<(), consume::Error> {
-        let Some(mut head) = access::Sequence::next(self) else {
-            return consume::Error::check(amount, 0);
-        };
-        head.try_consume(amount)?;
-        access::Head::commit(head);
-        Ok(())
-    }
-
-    fn consume_max(&mut self, max: usize) -> usize {
-        let Some(mut head) = access::Sequence::next(self) else {
-            return 0;
-        };
-        let amount = head.consume_max(max);
-        access::Head::commit(head);
-        amount
-    }
-}
-
-impl<'w, 'd> access::Sequence<'d> for Retained<'w, 'd> {
-    type Head<'head>
-        = Current<'head, 'w, 'd>
-    where
-        Self: 'head;
-
-    fn next(&mut self) -> Option<Self::Head<'_>> {
-        let Self {
-            staged,
-            plain,
-            remaining: left,
-        } = self;
-        if let Some(staged) = staged.as_mut().filter(|staged| !staged.is_empty()) {
-            return Some(Current::staged(staged, left));
+    fn successor(&mut self) -> Result<Option<transfer::NonZero>, consume::scope::Error> {
+        if self.staged.is_none() {
+            return Ok(None);
         }
-        let head = plain.as_mut()?.head()?;
-        Some(Current::plain(head, left))
+        self.staged = None;
+        self.remaining = self.plain.as_ref().map_or(transfer::Len::ZERO, |plain| {
+            transfer::Length::len(&plain.view())
+        });
+        Ok(self.remaining.nonzero())
     }
 }
 
@@ -176,36 +119,6 @@ pub(super) enum Backing<'input, 'w: 'input, 'd: 'input> {
         >,
     ),
     Plain(<recv::Shared<'d> as buffer::Source>::View<'input>),
-}
-
-#[doc(hidden)]
-pub struct Current<'input, 'w: 'input, 'd: 'input> {
-    pub(super) backing: HeadBacking<'input, 'w, 'd>,
-    left: &'input mut transfer::Len,
-}
-
-pub(super) enum HeadBacking<'input, 'w: 'input, 'd: 'input> {
-    Staged(bytes::Cursor<'input, 'w>),
-    Plain(Head<'input, 'd>),
-}
-
-impl<'input, 'w: 'input, 'd: 'input> Current<'input, 'w, 'd> {
-    fn staged(
-        staged: &'input mut storage::Shared<owners::Edge<owners::Plain, pool::Borrowed<'w>>>,
-        left: &'input mut transfer::Len,
-    ) -> Self {
-        Self {
-            backing: HeadBacking::Staged(bytes::Cursor::new(staged)),
-            left,
-        }
-    }
-
-    fn plain(head: Head<'input, 'd>, left: &'input mut transfer::Len) -> Self {
-        Self {
-            backing: HeadBacking::Plain(head),
-            left,
-        }
-    }
 }
 
 impl<'input, 'w: 'input, 'd: 'input> buffer::Read<'input> for Retention<'input, 'w, 'd> {
@@ -236,78 +149,4 @@ impl<'input, 'w: 'input, 'd: 'input> buffer::Read<'input> for Retention<'input, 
     }
 }
 
-impl<'w, 'd> buffer::Source for Current<'_, 'w, 'd> {
-    type View<'input>
-        = Retention<'input, 'w, 'd>
-    where
-        Self: 'input;
-
-    fn remaining(&self) -> usize {
-        self.as_ref().len()
-    }
-}
-
-impl<'w, 'd> buffer::Cursor for Current<'_, 'w, 'd> {
-    fn try_get<'input>(
-        &'input self,
-        range: ops::Range<usize>,
-    ) -> Result<Self::View<'input>, range::Error> {
-        let backing = match &self.backing {
-            HeadBacking::Staged(head) => Backing::Staged(head.try_get(range)?),
-            HeadBacking::Plain(head) => Backing::Plain(head.try_get(range)?),
-        };
-        Ok(Retention { backing })
-    }
-}
-
-impl<'w, 'd> buffer::Complete for Current<'_, 'w, 'd> {
-    fn view(&self) -> Self::View<'_> {
-        let backing = match &self.backing {
-            HeadBacking::Staged(head) => Backing::Staged(head.view()),
-            HeadBacking::Plain(head) => Backing::Plain(head.view()),
-        };
-        Retention { backing }
-    }
-}
-
-impl AsRef<[u8]> for Current<'_, '_, '_> {
-    fn as_ref(&self) -> &[u8] {
-        buffer::Read::as_slice(&self.view())
-    }
-}
-
-impl consume::Consume for Current<'_, '_, '_> {
-    fn remaining(&self) -> usize {
-        self.as_ref().len()
-    }
-
-    fn try_consume(&mut self, amount: usize) -> Result<(), consume::Error> {
-        match &mut self.backing {
-            HeadBacking::Staged(head) => head.try_consume(amount),
-            HeadBacking::Plain(head) => head.try_consume(amount),
-        }
-    }
-
-    fn consume_max(&mut self, max: usize) -> usize {
-        match &mut self.backing {
-            HeadBacking::Staged(head) => head.consume_max(max),
-            HeadBacking::Plain(head) => head.consume_max(max),
-        }
-    }
-}
-
-impl<'w, 'd> access::Head<'d> for Current<'_, 'w, 'd> {
-    fn commit(self) -> usize {
-        let consumed = match self.backing {
-            HeadBacking::Staged(head) => head.commit(),
-            HeadBacking::Plain(head) => access::Head::commit(head),
-        };
-        *self.left = transfer::Len::prefix(self.left.into_raw() - consumed, *self.left);
-        consumed
-    }
-}
-
-const _: () = {
-    assert!(mem::size_of::<Current<'_, '_, '_>>() <= 5 * mem::size_of::<usize>());
-    assert!(mem::size_of::<Retention<'_, '_, '_>>() == 4 * mem::size_of::<usize>());
-};
+const _: () = assert!(mem::size_of::<Retention<'_, '_, '_>>() == 4 * mem::size_of::<usize>());

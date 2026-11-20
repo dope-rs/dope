@@ -93,6 +93,8 @@ impl domain::Bootstrap<PooledWire> for Bootstrap {
 #[repr(transparent)]
 pub struct Cursor(pub(crate) storage::Shared);
 
+impl<'d> access::Cursor<'d> for Cursor {}
+
 impl transfer::Length for Cursor {
     fn len(&self) -> transfer::Len {
         Len::prefix(self.0.as_slice().len(), Len::MAX)
@@ -179,7 +181,6 @@ impl receive::Policy<PooledWire> for Ingress {
         = Cursor
     where
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::Clean;
     type Reserve = reserve::Borrowed;
     type Credit = mode::Disabled;

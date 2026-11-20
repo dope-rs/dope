@@ -1,4 +1,4 @@
-use std::{convert, num, pin::Pin, rc::Rc};
+use std::{convert, pin::Pin, rc::Rc};
 
 use dope_core::{
     driver::{self, route, schedule::clock},
@@ -14,11 +14,7 @@ use dope_manifold::{
 use dope_net::wire::{Identity, receive::scoped};
 use dope_test::harness::{observe::Trace, signals::Gate};
 use handler::send;
-use o3::buffer::{
-    hold::{limits, scope},
-    resident,
-    write::consume::scope::Error,
-};
+use o3::buffer::{hold::limits, resident};
 
 pub struct App {
     pub(crate) closed: Gate,
@@ -29,7 +25,7 @@ pub struct App {
 #[derive(Debug)]
 pub enum Event {
     Chunk(Vec<u8>),
-    Consumed(Result<(), Failure>),
+    Consumed,
 }
 
 pub struct Retirement;
@@ -76,35 +72,21 @@ impl<'w, 'd: 'w, ID: route::Identity> handler::Scoped<'w, 'd, ID> for App {
         Budget::new(limits::Bound::new(0), 4096)
     }
 
-    fn scoped_chunk(
+    fn scoped_chunk<'s, 'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Identity, bool>,
-        chunk: scoped::Input<'_, 'w, 'd, Identity>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Identity, bool>,
+        chunk: scoped::Input<'s, 'w, 'd, Identity>,
         _: &mut driver::Context<'_, 'd>,
-    ) -> Outcome {
+    ) -> Result<Outcome, scoped::Pending<'s>> {
         let this = self.get_mut();
-        this.seen.record(Event::Chunk(chunk.as_ref().to_vec()));
+        let head = chunk.head().expect("scoped data");
+        this.seen.record(Event::Chunk(head.input().as_slice().to_vec()));
         if !*conn.state() {
             *conn.state_mut() = true;
-            return Outcome::Continue;
+            return Err(head.defer());
         }
-        let (chunk, budget) = chunk.into_parts();
-        let outcome = scope::Input::consume(chunk, budget, |input| {
-            let Some(len) = num::NonZero::new(input.as_slice().len()) else {
-                return (None, Err(Failure::Empty));
-            };
-            match input.try_prefix::<{ u32::MAX }>(0, len) {
-                Ok((_, end)) => (Some(end), Ok(())),
-                Err(error) => (None, Err(Failure::Prefix(error))),
-            }
-        });
-        this.seen.record(Event::Consumed(outcome));
-        Outcome::CloseAfter
+        head.finish().expect("finish replay").settle()?;
+        this.seen.record(Event::Consumed);
+        Ok(Outcome::CloseAfter)
     }
-}
-
-#[derive(Debug)]
-pub enum Failure {
-    Empty,
-    Prefix(Error),
 }

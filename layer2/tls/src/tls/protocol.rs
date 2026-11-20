@@ -153,7 +153,6 @@ impl<R: roles::Protocol> send::Policy<tls::Tls<R>> for Egress<R> {
 }
 
 const _: () = {
-    use mode::access;
     use receive::stream;
     use wire::receive::{Policy, batch, eof, mode, reserve};
 
@@ -167,7 +166,6 @@ const _: () = {
         where
             tls::Tls<R>: 'w,
             'd: 'w;
-        type Access = access::Segments;
         type Publication = wire::receive::publication::Decoded;
         type Eof = eof::State;
         type Reserve = reserve::Waiting<policy::Policy<R>>;

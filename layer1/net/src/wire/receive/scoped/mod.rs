@@ -1,3 +1,3 @@
 mod input;
 
-pub use input::Input;
+pub use input::{Head, Input, Pending, with};

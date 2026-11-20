@@ -1,4 +1,4 @@
-use std::{convert, pin};
+use std::pin;
 
 use dope_core::driver::route::{self, Identity};
 use dope_net::{
@@ -26,11 +26,7 @@ where
         'w: 'input,
         W: 'w + 'd;
 
-    type Pending<'w, 'd>
-        = convert::Infallible
-    where
-        'd: 'w,
-        W: 'w + 'd;
+    type Completion = crate::app::receive::Outcome;
 
     type Admission<'a, 'c, 'd>
         = ingress::Single<'a, 'c, 'd>
