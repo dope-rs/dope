@@ -95,8 +95,6 @@ where
                     ) {
                         break 'rejected (io::Event::from(done), vacant);
                     }
-                    this.as_mut()
-                        .arm_accept(turn.reborrow().maint(), &mut driver);
                     flush_dirty(this, turn.reborrow(), &mut driver);
                     return ControlFlow::Continue(());
                 }
@@ -120,8 +118,6 @@ where
                 }
                 other => return ControlFlow::Break(other.into_dispatch()),
             }
-            this.as_mut()
-                .arm_accept(turn.reborrow().maint(), &mut driver);
             this.as_mut().flush_recv(turn.reborrow(), &mut driver);
             flush_dirty(this, turn.reborrow(), &mut driver);
             return ControlFlow::Continue(());
@@ -236,8 +232,9 @@ where
     ) {
         let sent = {
             let fields = self.as_mut().project();
-            let avail = fields.owner.pool().inspect().available();
-            fields.accept.arm(driver, avail, work)
+            fields
+                .accept
+                .arm(driver, || fields.owner.pool().inspect().available(), work)
         };
         if let Err(error) = sent {
             self.as_mut()

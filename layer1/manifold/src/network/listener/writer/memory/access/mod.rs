@@ -69,9 +69,13 @@ impl Progress {
         }
     }
 
-    pub(in crate::network::listener::writer) fn settle(&mut self, done: Option<link::Consumed>) {
+    pub(in crate::network::listener::writer) fn advance(
+        &mut self,
+        done: Option<link::Consumed>,
+        motion: Motion,
+    ) -> Option<transfer::Len> {
         let State::Active(active) = &mut self.0 else {
-            return;
+            return None;
         };
         if let Some(done) = done {
             let next = match active.sent.try_extend(done.into_len()) {
@@ -82,16 +86,13 @@ impl Progress {
                         cause.requested(),
                         cause.available(),
                     ));
-                    return;
+                    return None;
                 }
             };
             active.sent = next;
         }
-        active.motion = Motion::Ready;
-    }
-
-    pub(in crate::network::listener::writer) fn has_more(&self) -> bool {
-        matches!(&self.0, State::Active(active) if !active.sent.is_empty())
+        active.motion = motion;
+        Some(active.sent.left())
     }
 
     pub(in crate::network::listener::writer) fn motion(&self) -> Motion {
@@ -103,16 +104,12 @@ impl Progress {
     }
 
     fn record(&mut self, done: link::Consumed, arm: Arm) {
-        let sent = done.into_len();
-        self.settle(Some(done));
-        let State::Active(active) = &mut self.0 else {
-            return;
-        };
-        active.motion = match (arm, sent.nonzero()) {
+        let motion = match (arm, done.into_len().nonzero()) {
             (Arm::Idle, None) => Motion::Waiting,
             (Arm::Idle, Some(_)) | (Arm::Armed, None) => Motion::Ready,
             (Arm::Armed, Some(_)) => Motion::Consumed,
         };
+        let _ = self.advance(Some(done), motion);
     }
 }
 

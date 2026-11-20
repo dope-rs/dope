@@ -1,7 +1,7 @@
 use std::task;
 
 use data::compose;
-use dope_core::{driver::schedule::ready, io::transfer};
+use dope_core::driver::schedule::ready;
 use o3::base::cell::region;
 use vacant::Vacant;
 
@@ -9,7 +9,7 @@ use crate::link::egress::{
     self, data,
     data::position,
     load::credit,
-    metadata::{self, head, lane, pool::store::index::Index},
+    metadata::{self, head, pool::store::index::Index},
     reserve::{demand, exact, guard::Rollback},
 };
 
@@ -20,30 +20,6 @@ mod vacant;
 pub struct Front<'queue, 'token, 'p, 'd, T, D: demand::Mode = demand::Fallible> {
     value: egress::NonEmpty<T>,
     vacant: Vacant<'queue, 'token, 'p, 'd, T, metadata::Local, D>,
-}
-
-pub(in crate::link::egress) enum Consumed<T> {
-    Whole {
-        value: egress::NonEmpty<T>,
-        remaining: transfer::Len,
-    },
-    Partial,
-}
-
-impl<T> Consumed<T> {
-    /// Leaves an unfinished front linked or transfers its fully consumed owner.
-    pub(in crate::link::egress) fn complete(self, release: &mut impl FnMut(T)) -> credit::Prefix {
-        match self {
-            Self::Whole {
-                value,
-                remaining: rest,
-            } => {
-                release(value.into_inner());
-                credit::Prefix::Whole { remaining: rest }
-            }
-            Self::Partial => credit::Prefix::Partial,
-        }
-    }
 }
 
 enum Move<T> {
@@ -135,35 +111,6 @@ pub(in crate::link::egress) fn take<'p, 'd, T, D: demand::Mode, P: position::Sta
     }
     .rollback(token);
     Some(value)
-}
-
-pub(in crate::link::egress) fn advance<'p, 'd, T, D: demand::Mode, P: position::State>(
-    queue: metadata::Queue<'_, 'p, 'd, T, credit::Ready<'p, 'd>, D, P>,
-    prefix: lane::Prefix<'p, 'd>,
-    token: &mut region::Token<region::Identity<'d>>,
-    bytes: transfer::NonZero,
-) -> (Consumed<T>, Option<lane::Prefix<'p, 'd>>) {
-    let credit::Prefix::Whole { remaining: rest } =
-        queue.pool.store.consume(token, prefix.index(), bytes)
-    else {
-        return (Consumed::Partial, None);
-    };
-    let ((value, slot), next) = prefix.advance(|slot| {
-        let (next, value) = queue.pool.store.detach(token, slot);
-        (next, (value, slot))
-    });
-    vacant::Parts {
-        queue,
-        slot,
-    }
-    .rollback(token);
-    (
-        Consumed::Whole {
-            value,
-            remaining: rest,
-        },
-        next,
-    )
 }
 
 impl<'queue, 'token, 'p, 'd, T, D: demand::Mode> Transfer<'d, T>

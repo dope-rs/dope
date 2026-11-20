@@ -11,11 +11,9 @@ pub struct Charge {
 
 impl Charge {
     pub fn of<'d, B: data::raw::Payload<'d>>(value: &B) -> Self {
-        let bytes = value.len();
-        let owner = value.charge();
         Self {
-            wire: WireBytes::new(bytes),
-            resident: ResidentSize::new(owner.resident_bytes),
+            wire: WireBytes::new(value.len()),
+            resident: ResidentSize::new(value.resident_bytes()),
         }
     }
 

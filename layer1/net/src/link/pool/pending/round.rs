@@ -2,11 +2,11 @@ use dope_core::driver::{
     route::{Identity, KeyTag},
     schedule::maint,
 };
-use o3::{depot::arena::slab::external::Generation as _, mem::quota};
+use o3::depot::arena::slab::external::Generation as _;
 
 use crate::link::pool::{
     self,
-    pending::{Busy, Chain, Detached, Disposition, Lock, Next, Queue, State, Status, Topology},
+    pending::{Chain, Detached, Disposition, Lock, Next, Queue, State, Status, Topology},
 };
 
 /// Owns the initial pending chain; later wakes belong to the next round.
@@ -18,23 +18,14 @@ pub struct Round<'p, 'd, ID: Identity = KeyTag<0>> {
 }
 
 impl<'p, 'd, ID: Identity> Round<'p, 'd, ID> {
-    pub(super) fn try_new(
+    pub(super) fn take(
         queue: &'p Queue<'d, ID>,
         keys: pool::Keyspace<'d, ID>,
-        capacity: bool,
-    ) -> Result<Self, Busy> {
-        if matches!(queue.status.get(), Status::Draining) {
-            return Err(Busy);
-        }
-        if capacity {
-            queue.release_send();
-        }
+        topology: Topology<'d, ID>,
+    ) -> Self {
         queue.status.set(Status::Draining);
-        Ok(Self {
-            queue,
-            keys,
-            topology: queue.topology.replace(Topology::Empty),
-        })
+        queue.topology.set(Topology::Empty);
+        Self { queue, keys, topology }
     }
 
     /// Runs only the original pending chain, spending one maintenance permit per head.
@@ -43,15 +34,9 @@ impl<'p, 'd, ID: Identity> Round<'p, 'd, ID> {
         work: maint::Work<'_, 'd>,
         mut run: impl FnMut(pool::Key<'d, ID>) -> Disposition,
     ) {
-        loop {
-            let admitted = work.claim(|| match self.topology {
-                Topology::Empty => None,
-                Topology::Occupied(chain) => Some(chain),
-            });
-            let (Chain { head, tail }, permit) = match admitted {
-                quota::Admission::Item(item) => item,
-                quota::Admission::Empty | quota::Admission::Exhausted => break,
-            };
+        while let Topology::Occupied(Chain { head, tail }) = self.topology
+            && let Some(permit) = work.permit()
+        {
             permit.run(|| {
                 let queue = self.queue;
                 let node = queue.node(head);

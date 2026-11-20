@@ -77,12 +77,12 @@ where
         if !self.pool.prepared.slab.contains(key.parts()) {
             return None;
         }
-        self.pool.prepared.pending.handle(key)
+        self.pool.prepared.pending.bound(key).current()
     }
 
     pub fn close(self, key: pool::Key<'d, ID>) {
         if let Some(conn) = self.pool.prepared.slab.get(key.parts())
-            && let Some(handle) = self.pool.prepared.pending.handle(key)
+            && let Some(handle) = self.pool.prepared.pending.bound(key).current()
         {
             conn.io().close();
             handle.wake();
@@ -90,11 +90,28 @@ where
     }
 
     pub fn try_round(self) -> Result<Round<'p, 'd, ID>, Busy> {
-        Round::try_new(
-            self.pool.prepared.pending,
-            *self.pool.keys,
-            self.has_capacity(),
-        )
+        let queue = self.round_queue()?;
+        Ok(Round::take(queue, *self.pool.keys, queue.topology.get()))
+    }
+
+    pub fn ready_round(self) -> Option<Round<'p, 'd, ID>> {
+        let queue = self.round_queue().ok()?;
+        match queue.topology.get() {
+            Topology::Empty => None,
+            topology => Some(Round::take(queue, *self.pool.keys, topology)),
+        }
+    }
+
+    fn round_queue(&self) -> Result<&'p Queue<'d, ID>, Busy> {
+        let queue = self.pool.prepared.pending;
+        let capacity = self.has_capacity();
+        if matches!(queue.status.get(), Status::Draining) {
+            return Err(Busy);
+        }
+        if capacity {
+            queue.release_send();
+        }
+        Ok(queue)
     }
 
     pub fn is_empty(self) -> bool {
@@ -130,7 +147,7 @@ where
 impl<'a, 'd, ID: Identity, C> Mut<'a, 'd, ID, C> {
     pub fn get(self, key: pool::Key<'d, ID>) -> Option<(&'a mut C, Handle<'a, 'd, ID>)> {
         let conn = self.slab.get(key.parts())?;
-        let handle = self.queue.handle(key)?;
+        let handle = self.queue.bound(key).current()?;
         Some((conn, handle))
     }
 }
@@ -202,8 +219,8 @@ impl<'d, ID: Identity> Queue<'d, ID> {
         &self,
         key: pool::Key<'d, ID>,
     ) -> Option<Handle<'_, 'd, ID>> {
-        let node = self.nodes.get(key.lane().index().get() as usize)?.state();
-        (node.epoch.get() == key.epoch()).then_some(self.bound(key))
+        self.nodes.get(key.index().get() as usize)?;
+        self.bound(key).current()
     }
 
     pub(in crate::link::pool) fn bound(&self, key: pool::Key<'d, ID>) -> Handle<'_, 'd, ID> {
@@ -329,6 +346,11 @@ impl<'d, ID: Identity> Queue<'d, ID> {
 }
 
 impl<'d, ID: Identity> Handle<'_, 'd, ID> {
+    pub(in crate::link::pool) fn current(self) -> Option<Self> {
+        let node = self.queue.node(pool::raw::Physical::bind(self.key));
+        (node.epoch.get() == self.key.epoch()).then_some(self)
+    }
+
     /// Synchronizes this exact generation's shared-send-capacity wait.
     pub fn wait_send(self, waiting: bool) {
         let index = pool::raw::Physical::bind(self.key);

@@ -219,7 +219,7 @@ fn shutdown_cancels_tuning() {
 
 #[test]
 fn resource_exhaustion_recovers() {
-    use common::manifold::listener::defer::script::Until;
+    use common::manifold::root::until_hits;
     use dope_core::{
         driver::{
             life::creation::Attempt,
@@ -289,10 +289,7 @@ fn resource_exhaustion_recovers() {
                                     host.drive_for(
                                         start,
                                         Duration::from_secs(1),
-                                        Until {
-                                            gate: &retained,
-                                            hits: 1,
-                                        },
+                                        until_hits(&retained, 1),
                                     )
                                     .expect("retain accepted slot")
                                     .into_output();
@@ -300,10 +297,7 @@ fn resource_exhaustion_recovers() {
                                     host.drive_for(
                                         start,
                                         Duration::from_secs(1),
-                                        Until {
-                                            gate: &failures,
-                                            hits: 1,
-                                        },
+                                        until_hits(&failures, 1),
                                     )
                                     .expect("native resource failure")
                                     .into_output();
@@ -318,10 +312,7 @@ fn resource_exhaustion_recovers() {
                                     host.drive_for(
                                         before,
                                         Duration::from_secs(1),
-                                        Until {
-                                            gate: &failures,
-                                            hits: 1,
-                                        },
+                                        until_hits(&failures, 1),
                                     )
                                     .expect("cooldown fixed point")
                                     .into_output();
@@ -336,10 +327,7 @@ fn resource_exhaustion_recovers() {
                                     host.drive_for(
                                         due,
                                         Duration::from_secs(1),
-                                        Until {
-                                            gate: &failures,
-                                            hits: 2,
-                                        },
+                                        until_hits(&failures, 2),
                                     )
                                     .expect("bounded resource retry")
                                     .into_output();
@@ -362,10 +350,7 @@ fn resource_exhaustion_recovers() {
                                     host.drive_for(
                                         due,
                                         Duration::from_secs(1),
-                                        Until {
-                                            gate: &accepted,
-                                            hits: 1,
-                                        },
+                                        until_hits(&accepted, 1),
                                     )
                                     .expect("same listener recovers")
                                     .into_output();

@@ -249,22 +249,6 @@ impl<'q, 'h, 'p, 'd, R: sync::Policy> Admission<'q, 'h, 'p, 'd, R> {
     }
 }
 
-pub struct Until<F>(pub(crate) F);
-
-impl<'d, F: Fn() -> bool> root::Root<'d> for Until<F> {
-    type Output = ();
-
-    fn poll(context: root::Context<'_, 'd, Self>) -> Poll<()> {
-        let (this, wake, _, _) = context.into_parts();
-        if this.0() {
-            Poll::Ready(())
-        } else {
-            wake.wake();
-            Poll::Pending
-        }
-    }
-}
-
 pub struct Address {
     pub(crate) addr: SocketAddr,
     pub(crate) chosen: Rc<Trace<SocketAddr, 4>>,

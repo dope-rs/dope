@@ -1,54 +1,11 @@
 use dope_test::harness::scenario::TIMEOUT;
-use engine::{
-    core::driver::{route::KeyTag, storage},
-    manifold::timing::interval,
-};
+use engine::core::driver::storage;
 use fibers::{BlockOn as _, abi};
 
 use crate::common::{
     fibers::{App, Dummy},
     macros::Text,
 };
-
-#[pin_project::pin_project]
-#[derive(engine::Forward)]
-#[forward(crate = ::engine)]
-pub(crate) struct Forwarded<'d> {
-    #[pin]
-    #[forward]
-    inner: interval::Interval<'d, KeyTag<17>>,
-}
-
-#[pin_project::pin_project]
-#[derive(engine::Application)]
-#[dispatcher(crate = ::engine)]
-pub(crate) struct Application<'d> {
-    #[pin]
-    #[manifold]
-    inner: Forwarded<'d>,
-}
-
-#[pin_project::pin_project]
-#[derive(engine::Application)]
-#[dispatcher(crate = ::engine, driver = 'd)]
-pub(crate) struct Selected<'d> {
-    #[pin]
-    #[manifold]
-    inner: Forwarded<'d>,
-}
-
-#[pin_project::pin_project]
-#[derive(engine::Application)]
-#[dispatcher(
-    core = ::engine::core,
-    manifold = ::engine::manifold,
-    runtime = ::engine::runtime,
-)]
-pub(crate) struct Components<'d> {
-    #[pin]
-    #[manifold]
-    inner: Forwarded<'d>,
-}
 
 #[fibers::fiber_fn('d, crate = ::fibers)]
 pub(crate) async fn attributed<'d>() {}

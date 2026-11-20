@@ -15,9 +15,10 @@ use common::{
     manifold::listener::defer::{
         app,
         preamble::{self, FRAMES, HANDSHAKE, PREFIX},
-        script::{self, BODY_LEN, Payload, Until},
+        script::{self, BODY_LEN, Payload},
         wire::{Profile, Wire},
     },
+    manifold::root::until_hits,
     recover,
     scenario::case::listener::Listener,
 };
@@ -369,21 +370,21 @@ fn deadline_resumes_waiter() {
                 let start = session.driver().driver_ref().clock().now().into();
                 let result = session.with_at_for(&mut finish, Host::new(server), start, Duration::from_secs(2), |mut app| {
                     let first = peer::Peer::at(addr).try_connect().expect("first peer connect");
-                    assert!(app.drive(start, Until { gate: &done, hits: 1 }).is_ok());
+                    assert!(app.drive(start, until_hits(&done, 1)).is_ok());
                     let second = peer::Peer::at(addr).try_connect().expect("second peer connect");
                     let wait = start.try_add(time::Duration::from_millis(50));
                     let wait = wait.expect("wait coordinate");
-                    assert!(app.drive(wait, Until { gate: &deferred, hits: 1 }).is_ok());
+                    assert!(app.drive(wait, until_hits(&deferred, 1)).is_ok());
                     assert_eq!(deferred.hits(), 1);
                     assert_eq!(done.hits(), 1);
                     let release = start.try_add(time::Duration::from_millis(101));
                     let release = release.expect("release coordinate");
-                    assert!(app.drive(release, Until { gate: &done, hits: 2 }).is_ok());
+                    assert!(app.drive(release, until_hits(&done, 2)).is_ok());
                     assert_eq!(done.hits(), 2);
                     assert_eq!(closed.hits(), 1);
                     let finish = start.try_add(time::Duration::from_millis(251));
                     let finish = finish.expect("finish coordinate");
-                    assert!(app.drive(finish, Until { gate: &closed, hits: 2 }).is_ok());
+                    assert!(app.drive(finish, until_hits(&closed, 2)).is_ok());
                     assert_eq!(closed.hits(), 2);
                     assert!(matches!(peer::Peer::try_read_all(&first), Ok(bytes) if bytes.is_empty()));
                     assert!(matches!(peer::Peer::try_read_all(&second), Ok(bytes) if bytes.is_empty()));

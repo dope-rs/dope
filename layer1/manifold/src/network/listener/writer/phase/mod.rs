@@ -45,9 +45,9 @@ pub(in crate::network::listener) fn flush_dirty<'w, 'd: 'w, ID: Identity, A, E>(
         Idle,
     }
 
-    let round = match pending::Pending::of(root.as_ref().project_ref().owner.pool()).try_round() {
-        Ok(round) => round,
-        Err(pending::Busy) => return,
+    let Some(round) = pending::Pending::of(root.as_ref().project_ref().owner.pool()).ready_round()
+    else {
+        return;
     };
     round.run(turn.reborrow().maint(), |key| {
         let capacity = pending::Pending::of(root.as_ref().project_ref().owner.pool())

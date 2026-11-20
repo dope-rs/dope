@@ -10,8 +10,7 @@ use crate::{
     link::egress::{
         self, data,
         load::credit,
-        metadata,
-        metadata::{front, lane},
+        metadata::{self, lane},
         queue,
         reserve::demand,
     },
@@ -237,7 +236,7 @@ pub(in crate::link) struct Plan<
 /// Prepared retains this queue's immutable suffixes and exact descriptor sum.
 /// Released checks that sum once; Output and Prepared preserve the original queue.
 /// Each whole front transfers its exact successor; a partial front stays linked.
-struct Released<'a, 'p, 'd, const IOV: usize> {
+pub(in crate::link::egress) struct Released<'a, 'p, 'd, const IOV: usize> {
     prefix: lane::Prefix<'p, 'd>,
     bytes: transfer::Len,
     loan: marker::PhantomData<&'a mut Option<Lease<'p, 'd, IOV>>>,
@@ -263,32 +262,8 @@ impl<'a, 'p, 'd, const IOV: usize> Released<'a, 'p, 'd, IOV> {
         })
     }
 
-    fn consume<'queue, B: data::raw::Payload<'d>, D: demand::Mode>(
-        self,
-        entries: metadata::Queue<'queue, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
-        token: &mut region::Token<region::Identity<'d>>,
-        release: &mut impl FnMut(B),
-    ) {
-        let Some(mut bytes) = self.bytes.nonzero() else {
-            return;
-        };
-        let mut prefix = self.prefix;
-        loop {
-            let (front, next) = front::advance(entries, prefix, token, bytes);
-            match front.complete(release) {
-                credit::Prefix::Whole { remaining: rest } => {
-                    let Some(next) = next else {
-                        return;
-                    };
-                    let Some(left) = rest.nonzero() else {
-                        return;
-                    };
-                    prefix = next;
-                    bytes = left;
-                }
-                credit::Prefix::Partial => return,
-            }
-        }
+    pub(in crate::link::egress) fn into_parts(self) -> (lane::Prefix<'p, 'd>, transfer::Len) {
+        (self.prefix, self.bytes)
     }
 }
 

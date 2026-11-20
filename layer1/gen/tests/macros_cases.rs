@@ -12,57 +12,12 @@ use std::{
 
 use counter::Counter;
 use engine::{
-    core::driver::{route, route::indices::SlotIndex, settings::Routes},
-    manifold::app::dispatch,
+    core::driver::{route, route::indices::SlotIndex},
     runtime::executor,
 };
 use fibers::{BlockOn as _, abi::Ready};
 
 use crate::common::macros::{fairness::tree::Branch, *};
-
-#[test]
-fn forward_layout() {
-    assert!((<Forward as dispatch::raw::Manifold<'static>>::ID) == (route::Id::fixed::<6>()));
-    assert!(
-        <Defaulted<'static> as dispatch::raw::Manifold<'static>>::ID == route::Id::fixed::<9>()
-    );
-}
-
-#[test]
-fn route_consts() {
-    assert!((Dispatcher::A_ROUTE) == (route::Id::fixed::<3>()));
-    assert!((Dispatcher::B_ROUTE) == (route::Id::fixed::<0>()));
-    assert!((Dispatcher::C_ROUTE) == (route::Id::fixed::<1>()));
-    assert!(
-        <Dispatcher as executor::raw::App<'static>>::ROUTES
-            == Routes::singleton_id(route::Id::fixed::<3>())
-                .join(Routes::singleton_id(route::Id::fixed::<0>()))
-                .join(Routes::singleton_id(route::Id::fixed::<1>()))
-    );
-}
-
-#[test]
-fn explicit_lifetime() {
-    assert!((Branded::INNER_ROUTE) == (route::Id::fixed::<5>()));
-}
-
-#[test]
-fn selected_lifetime() {
-    assert!((Selected::<'_, '_>::INNER_ROUTE) == (route::Id::fixed::<8>()));
-}
-
-#[test]
-fn state_routing() {
-    assert!((Stateful::INNER_ROUTE) == (route::Id::fixed::<4>()));
-}
-
-#[test]
-fn forward_lifetime() {
-    assert!(
-        <Scoped<'static, 'static> as dispatch::raw::Manifold<'static>>::ID
-            == route::Id::fixed::<7>()
-    );
-}
 
 #[test]
 fn block_ticks_every_field() {

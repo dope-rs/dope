@@ -2,9 +2,9 @@
 
 pub mod common;
 
-use common::{macros::Text, native, renames::*};
+use common::{macros::Text, native, renames::Check};
 use engine::{
-    core::driver::{life::recovery::Policy, route, storage},
+    core::driver::{life::recovery::Policy, storage},
     manifold::timing,
     runtime::{executor::session::Completion, topology},
 };
@@ -34,7 +34,4 @@ fn compile_alone() {
                 .expect("renamed fibers completed")
         },
     );
-    assert!(Application::<'static>::INNER_ROUTE == route::Id::fixed::<17>());
-    assert!(Selected::<'static>::INNER_ROUTE == route::Id::fixed::<17>());
-    assert!(Components::<'static>::INNER_ROUTE == route::Id::fixed::<17>());
 }

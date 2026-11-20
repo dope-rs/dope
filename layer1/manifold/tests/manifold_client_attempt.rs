@@ -335,7 +335,7 @@ fn timeout_and_shutdown_settle_late_connect() {
     use dope_test::harness::{GUARD, signals::Progress as _};
 
     use crate::common::{
-        manifold::client::finish::close::members::Until,
+        manifold::root::Until,
         observed::{Observed, State},
     };
 

@@ -1,11 +1,11 @@
 use std::mem;
 
 use dope_core::driver::route::{Identity, KeyTag};
-use dope_net::link::egress::data;
+use dope_net::link::{Consumed, egress::data};
 use memory::access;
 use o3::{buffer::resident, mem::slot};
 
-use crate::network::listener::{conn, writer::memory};
+use crate::network::listener::{conn, handler::Disposition, writer::memory};
 
 pub(in crate::network::listener) struct Send<
     'p,
@@ -93,6 +93,24 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B
         (body.map(slot::Occupied::into_inner), error)
     }
 
+    pub(in crate::network::listener::writer) fn settle<'out>(
+        &mut self,
+        consumed: Option<Consumed>,
+        place: slot::Vacant<'out, B>,
+    ) -> Option<(Disposition, Option<slot::Occupied<'out, B>>)> {
+        let State::Direct(direct) = &mut self.state else {
+            return Some((Disposition::Closed, None));
+        };
+        match direct.progress.advance(consumed, access::Motion::Ready) {
+            Some(left) if !left.is_zero() => None,
+            Some(_) => {
+                let next = Self::new(direct.lease.home());
+                Some((Disposition::Sent, mem::replace(self, next).state.retire(place)))
+            }
+            None => Some((Disposition::Closed, self.take(None, place))),
+        }
+    }
+
     pub(in crate::network::listener::writer) fn take<'out>(
         &mut self,
         failure: Option<conn::Transmit>,
@@ -102,13 +120,11 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B
             State::Direct(direct) => direct.lease.home(),
             _ => self.home(),
         };
-        if let Some(error) = self.error().or(failure) {
-            mem::replace(&mut self.state, State::Failed(error, home)).retire(place)
-        } else if let Some(home) = home {
-            mem::replace(&mut self.state, State::Fixed(home)).retire(place)
-        } else {
-            mem::replace(&mut self.state, State::Queued).retire(place)
-        }
+        let next = match self.error().or(failure) {
+            Some(error) => State::Failed(error, home),
+            None => Self::new(home).state,
+        };
+        mem::replace(&mut self.state, next).retire(place)
     }
 
     pub(in crate::network::listener::writer) fn release(

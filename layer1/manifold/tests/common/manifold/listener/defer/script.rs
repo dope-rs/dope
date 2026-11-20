@@ -1,5 +1,5 @@
 use o3::buffer::write::Sink as _;
-use std::{convert, pin::Pin, task};
+use std::{convert, pin::Pin};
 
 use dope_core::{
     driver::{self, route::Identity, schedule::clock},
@@ -16,7 +16,6 @@ use dope_net::link::{
     egress::{self, load::Value},
     slot::types::CloseGate,
 };
-use dope_runtime::executor::root;
 use dope_test::{
     alloc::Tracker,
     harness::signals::{Gate, Progress as _},
@@ -38,25 +37,6 @@ pub enum State {
 pub enum Payload {
     Body,
     Prefix,
-}
-
-pub struct Until<'a> {
-    pub(crate) gate: &'a Gate,
-    pub(crate) hits: u32,
-}
-
-impl<'d> root::Root<'d> for Until<'_> {
-    type Output = ();
-
-    fn poll(context: root::Context<'_, 'd, Self>) -> task::Poll<()> {
-        let (this, wake, _, _) = context.into_parts();
-        if this.gate.hits() >= this.hits {
-            task::Poll::Ready(())
-        } else {
-            wake.wake();
-            task::Poll::Pending
-        }
-    }
 }
 
 type Output<'d> = dope_net::link::egress::data::Bound<

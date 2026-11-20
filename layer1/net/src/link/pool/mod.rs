@@ -291,8 +291,8 @@ where
         key: Key<'d, ID>,
     ) -> Option<EgressMut<'_, 'p, 'w, 'd, ID, W, S, B, IOV, D>> {
         let root = &mut self.prepared;
-        let pending = root.pending.handle(key)?;
         let connection = root.slab.access().get(key.parts())?;
+        let pending = root.pending.bound(key).current()?;
         Some(EgressMut {
             flights: &root.flights,
             connection,
@@ -305,8 +305,9 @@ where
         &mut self,
         key: Key<'d, ID>,
     ) -> Option<transmit::Sender<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>> {
-        self.prepared.pending.handle(key)?;
-        Some(self.entry(key).ok()?.sender)
+        let entry = self.entry(key).ok()?;
+        entry.pending().current()?;
+        Some(entry.sender)
     }
 
     pub fn sender_with_recv(
@@ -354,7 +355,7 @@ where
         {
             return Err(send::Rejected::ConnectionUnavailable(bytes));
         }
-        let Some(wake) = self.prepared.pending.handle(key) else {
+        let Some(wake) = self.prepared.pending.bound(key).current() else {
             return Err(send::Rejected::PendingUnavailable(bytes));
         };
         self.prepared.egress.try_right(token, key, bytes)?;

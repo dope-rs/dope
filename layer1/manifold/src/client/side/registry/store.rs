@@ -141,23 +141,20 @@ impl<'d, I, P, ID: Identity> Store<'d, I, P, ID> {
         })
     }
 
-    /// The removed state is destroyed by this statement, after the table loan
-    /// ends, so no user destructor runs while the table is borrowed.
     pub(super) fn abandon(&self, target: conn::Id<'d, ID>) {
-        self.table(|table| {
-            let mut entry = table.entry(target.key())?;
-            match entry.get_mut() {
-                State::Queued(_) | State::Deferred(_) | State::Settled { .. } => {
-                    return Some(entry.remove());
-                }
-                State::InFlight { .. } => {
-                    *entry.get_mut() = State::Abandoned;
-                    entry.move_to_back(ABANDONED);
-                }
-                State::Abandoned => {}
-            }
-            None
-        });
+        // SAFETY: this store is thread-local. Every branch consumes the entry
+        // before destroying a user owner, which may immediately reuse the slot.
+        let table = unsafe { &mut *self.0.get() };
+        let Some(mut entry) = table.entry(target.key()) else {
+            return;
+        };
+        match mem::replace(entry.get_mut(), State::Abandoned) {
+            State::Queued(Pending { value: _intent, .. }) => entry.discard(),
+            State::Deferred(Pending { value: _payload, .. }) => entry.discard(),
+            State::Settled { .. } => entry.discard(),
+            State::InFlight { .. } => entry.move_to_back(ABANDONED),
+            State::Abandoned => {}
+        }
     }
 
     pub(super) fn pending(&self) -> registry::Pending {

@@ -9,7 +9,11 @@ use o3::{
     depot::arena::linked::{fifo::ends, head},
 };
 
-use crate::link::egress::{self, data, load::credit, metadata::pool::store::index::Index};
+use crate::link::egress::{
+    self, data, load::credit,
+    metadata::{self, pool::store::index::Index},
+    queue::flight, reserve::demand,
+};
 
 pub(in crate::link::egress) mod index;
 mod view;
@@ -282,19 +286,6 @@ impl<'p, 'd, T, P: data::position::State> Slab<'p, 'd, T, P> {
         (next, value)
     }
 
-    pub(in crate::link::egress::metadata) fn consume(
-        &self,
-        token: &mut region::Token<region::Identity<'d>>,
-        slot: Index<'d>,
-        bytes: transfer::NonZero,
-    ) -> credit::Prefix {
-        let cell = token.borrow_mut(&self.node(slot).cell);
-        // SAFETY: the retained lane prefix owns this initialized entry, and the
-        // exclusive token prevents other access while its byte count changes.
-        let stored = unsafe { cell.entry.assume_init_mut() };
-        stored.consume(transfer::Len::from_nonzero(bytes))
-    }
-
     /// Restores the detached front's original owner to its reserved slot,
     /// preserving the checkpoint across partial completions.
     pub(in crate::link::egress::metadata) fn restore(
@@ -331,6 +322,10 @@ impl<'p, 'd, T, P: data::position::State> Slab<'p, 'd, T, P> {
         slot: Index<'d>,
     ) {
         let cell = token.borrow_mut(&self.node(slot).cell);
+        self.release_cell(cell, slot);
+    }
+
+    fn release_cell(&self, cell: &mut Cell<'p, 'd, T, P>, slot: Index<'d>) {
         // SAFETY: the detached front retains this initialized entry in its reserved cell.
         let entry = unsafe { cell.entry.assume_init_read() };
         self.recycle_cell(cell, slot);
@@ -360,6 +355,41 @@ impl<'p, 'd, T, P: data::position::State> Slab<'p, 'd, T, P> {
         next: Option<Index<'d>>,
     ) {
         token.borrow_mut(&self.node(slot).cell).next = next;
+    }
+}
+
+impl<'p, 'd, const IOV: usize> flight::Released<'_, 'p, 'd, IOV> {
+    pub(in crate::link::egress) fn consume<B: data::raw::Payload<'d>, D: demand::Mode>(
+        self,
+        entries: metadata::Queue<'_, 'p, 'd, B, credit::Ready<'p, 'd>, D, B::Position>,
+        token: &mut region::Token<region::Identity<'d>>,
+        release: &mut impl FnMut(B),
+    ) {
+        let (mut prefix, mut bytes) = self.into_parts();
+        let store = &entries.pool.store;
+        while let Some(amount) = bytes.nonzero() {
+            let slot = prefix.index();
+            let cell = token.borrow_mut(&store.node(slot).cell);
+            // SAFETY: this flight retains the initialized front of its original lane.
+            let stored = unsafe { cell.entry.assume_init_mut() };
+            let credit::Prefix::Whole { remaining } =
+                stored.consume(transfer::Len::from_nonzero(amount))
+            else {
+                return;
+            };
+            let ((), next) = prefix.advance(|_| {
+                cell.occupied = false;
+                (cell.next, ())
+            });
+            // SAFETY: the unlinked cell still holds the payload until this unique take.
+            let body = unsafe { cell.value.assume_init_read() }.into_inner();
+            store.release_cell(cell, slot);
+            credit::Lane::new(entries).released(token);
+            release(body);
+            let Some(next) = next else { return };
+            prefix = next;
+            bytes = remaining;
+        }
     }
 }
 

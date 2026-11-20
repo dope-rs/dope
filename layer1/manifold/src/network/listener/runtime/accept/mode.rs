@@ -12,7 +12,7 @@ use o3::{
     alloc,
     alloc::BoxSliceExt as _,
     base::{cell::region, num::bounded},
-    depot::arena::slab::external::Generation as _,
+    depot::{arena::slab::external::Generation as _, capacity},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -41,7 +41,6 @@ impl LaneId {
 
 pub(super) struct Lanes<'d, ID: Identity> {
     pub(super) entries: Slots<'d, <ID as route::Materialize<Accept>>::With>,
-    target: u16,
     pub(super) cursor: LaneId,
     pub(super) accepting: bool,
 }
@@ -53,9 +52,8 @@ pub(super) struct Turn<'a, 'd, ID: Identity> {
 }
 
 impl<'d, ID: Identity> Lanes<'d, ID> {
-    pub(super) fn demand(&mut self, want: usize) -> usize {
-        self.target = want.min(self.entries.len()) as u16;
-        usize::from(self.target).saturating_sub(self.entries.active())
+    pub(super) fn demand(&self, slots: capacity::Count) -> usize {
+        slots.get().min(self.entries.len()).saturating_sub(self.entries.active())
     }
 
     pub(super) fn resolve(&mut self, epoch: route::Epoch) -> Option<Turn<'_, 'd, ID>> {
@@ -88,19 +86,10 @@ impl<'d, ID: Identity> Lanes<'d, ID> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Interest {
-    Ready,
-    Full,
-    Stopped,
-}
-
-const _: () = assert!(std::mem::size_of::<Interest>() == std::mem::size_of::<bool>());
-
 pub(super) enum Mode<'d, ID: Identity> {
     Multishot {
         arm: arm::State<'d, <ID as route::Materialize<Accept>>::With>,
-        interest: Interest,
+        accepting: bool,
     },
     Oneshot(Lanes<'d, ID>),
 }
@@ -112,7 +101,7 @@ impl<'d, ID: Identity> Mode<'d, ID> {
     ) -> Self {
         Self::Multishot {
             arm: arm::State::new(routes.bind(edge.slot(), route::Epoch::INITIAL)),
-            interest: Interest::Ready,
+            accepting: true,
         }
     }
 
@@ -132,7 +121,6 @@ impl<'d, ID: Identity> Mode<'d, ID> {
         })?;
         Ok(Self::Oneshot(Lanes {
             entries: Slots::new(lanes),
-            target: cap,
             cursor: LaneId::FIRST,
             accepting: true,
         }))
@@ -142,13 +130,14 @@ impl<'d, ID: Identity> Mode<'d, ID> {
         &self,
         driver: driver::Reference<'d>,
         region: &region::Token<region::Identity<'a>>,
+        available: impl FnOnce() -> capacity::Count,
     ) -> schedule::Progress<'a> {
         match self {
-            Self::Multishot { arm, interest } => {
+            Self::Multishot { arm, accepting } => {
                 if arm.is_live() {
                     return arm.progress(region);
                 }
-                if *interest != Interest::Ready {
+                if !*accepting || available() == capacity::Count::EMPTY {
                     return schedule::Progress::Quiescent;
                 }
             }
@@ -156,7 +145,7 @@ impl<'d, ID: Identity> Mode<'d, ID> {
                 if !lanes.accepting {
                     return lanes.entries.progress(region);
                 }
-                if lanes.entries.active() >= usize::from(lanes.target) {
+                if lanes.demand(available()) == 0 {
                     return if lanes.entries.active() != 0 {
                         schedule::Progress::waiting(region)
                     } else {
@@ -170,7 +159,7 @@ impl<'d, ID: Identity> Mode<'d, ID> {
 
     pub(super) fn is_stopped(&self) -> bool {
         match self {
-            Self::Multishot { interest, .. } => *interest == Interest::Stopped,
+            Self::Multishot { accepting, .. } => !*accepting,
             Self::Oneshot(lanes) => !lanes.accepting,
         }
     }
@@ -184,8 +173,8 @@ impl<'d, ID: Identity> Mode<'d, ID> {
 
     pub(super) fn stop(&mut self, driver: &mut driver::Context<'_, 'd>) {
         match self {
-            Self::Multishot { arm, interest } => {
-                *interest = Interest::Stopped;
+            Self::Multishot { arm, accepting } => {
+                *accepting = false;
                 arm.stop(driver);
             }
             Self::Oneshot(lanes) => {
@@ -197,9 +186,9 @@ impl<'d, ID: Identity> Mode<'d, ID> {
 
     pub(super) fn finish(&mut self, proof: &mut finish::Finish<'_, 'd>) {
         match self {
-            Self::Multishot { arm, interest } => {
+            Self::Multishot { arm, accepting } => {
                 arm.finish(proof);
-                *interest = Interest::Stopped;
+                *accepting = false;
             }
             Self::Oneshot(lanes) => {
                 lanes.entries.finish(proof);

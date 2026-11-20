@@ -53,7 +53,6 @@ use crate::common::{
     contract::Report,
     manifold::client::{
         Configure as _,
-        finish::close::members::Until,
         switch::{
             barrier::{Barrier, Bytes, Gates, Mode},
             decode::Decode,
@@ -61,6 +60,7 @@ use crate::common::{
             terminal::{clean::Clean, queued},
         },
     },
+    manifold::root::Until,
     recover,
     scenario::Runtime,
 };

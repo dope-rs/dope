@@ -27,6 +27,10 @@ pub unsafe trait Payload<'d> {
     }
     fn start(&self) -> Self::Cursor<'_>;
     fn charge(&self) -> hold::Charge;
+    /// Returns the resident component of `charge()`.
+    fn resident_bytes(&self) -> usize {
+        self.charge().resident_bytes
+    }
     fn cursor(&self, offset: data::Offset) -> Option<Self::Cursor<'_>>;
 
     /// # Safety
@@ -163,6 +167,10 @@ where
         hold::Charge::from(self)
     }
 
+    fn resident_bytes(&self) -> usize {
+        segments::Chain::resident(self)
+    }
+
     fn start(&self) -> Self::Cursor<'_> {
         buffer::raw::Chunks::chunks(self)
     }
@@ -224,6 +232,10 @@ unsafe impl<'d, T: data::raw::Payload<'d>, G: bound::Bound> data::raw::Payload<'
         self.as_inner().charge()
     }
 
+    fn resident_bytes(&self) -> usize {
+        self.as_inner().resident_bytes()
+    }
+
     fn start(&self) -> Self::Cursor<'_> {
         self.as_inner().start()
     }
@@ -264,6 +276,13 @@ unsafe impl<'d, A: data::raw::Payload<'d>, B: data::raw::Payload<'d>> data::raw:
         match self {
             Self::Left(value) => value.charge(),
             Self::Right(value) => value.charge(),
+        }
+    }
+
+    fn resident_bytes(&self) -> usize {
+        match self {
+            Self::Left(value) => value.resident_bytes(),
+            Self::Right(value) => value.resident_bytes(),
         }
     }
 
@@ -313,6 +332,10 @@ unsafe impl<'d, T: data::raw::Payload<'d>, K> data::raw::Payload<'d> for Tagged<
 
     fn charge(&self) -> hold::Charge {
         self.payload.charge()
+    }
+
+    fn resident_bytes(&self) -> usize {
+        self.payload.resident_bytes()
     }
 
     fn start(&self) -> Self::Cursor<'_> {

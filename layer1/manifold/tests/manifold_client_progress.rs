@@ -180,7 +180,7 @@ fn exhausted_activations_preserve_liveness_phase() {
     use o3::{base::time::Positive, depot::capacity};
 
     use crate::common::{
-        manifold::client::{connect::open::First, finish::close::members::Until, probe::Probe},
+        manifold::{client::{connect::open::First, probe::Probe}, root::Until},
         scenario::{Runtime, case::attempt::Attempts},
     };
 

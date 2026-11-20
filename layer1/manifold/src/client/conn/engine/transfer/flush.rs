@@ -66,11 +66,11 @@ where
             Gone,
         }
 
-        let round =
-            match pending::Pending::of(engine.as_ref().project_ref().links.pool()).try_round() {
-                Ok(round) => round,
-                Err(pending::Busy) => return,
-            };
+        let Some(round) =
+            pending::Pending::of(engine.as_ref().project_ref().links.pool()).ready_round()
+        else {
+            return;
+        };
         round.run(turn.reborrow().maint(), |key| {
             let drain = {
                 let this = engine.as_mut().project();

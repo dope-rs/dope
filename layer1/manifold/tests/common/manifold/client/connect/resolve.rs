@@ -391,8 +391,9 @@ pub fn deferred_revision<R: dope_manifold::service::sync::Policy>(previous: Opti
     use crate::common::{
         manifold::client::{
             Configure as _,
-            finish::close::members::{Notice, Source, Until, Watch},
+            finish::close::members::{Notice, Source, Watch},
         },
+        manifold::root::Until,
         recover,
         scenario::Runtime,
     };

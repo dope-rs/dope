@@ -70,7 +70,6 @@ where
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
     ) {
-        let owner_clock = driver.driver_ref();
         let (pool, mut context) = self.parts();
         let _ = pool.settle(
             done, driver, &mut context,
@@ -78,46 +77,42 @@ where
             |context, key, payload, token| {
                 context.app.settled(conn::Id::from_key(key), payload, token);
             },
-            |context, connection, result| {
-                match &result {
-                    SendOutcome::Terminal | SendOutcome::Queued { .. } | SendOutcome::WriteShutdown => {
-                        let key = connection.key();
-                        // SAFETY: completion retains this book's original admitted sender.
-                        let source = unsafe { engine::raw::reunite(context.liveness, connection, key) };
-                        let slot = liveness::Change::new(source, context.target);
-                        if (matches!(result, SendOutcome::Terminal) || slot.state.is_attached())
-                            && matches!(closing::Callback::new(&slot.state.closing), closing::Callback::Ready)
-                        {
-                            if slot.state.work.has_requests() && !matches!(result, SendOutcome::Terminal) {
-                                slot.arm_after(deadline::Fixed::Send, owner_clock.clock().now(),
-                                    <E::Timing as crate::timing::Policy>::SEND_DEADLINE);
-                            } else {
-                                slot.cancel(deadline::Kind::Send);
-                            }
-                        }
-                    }
-                    SendOutcome::Direct { .. } | SendOutcome::DirectClosed => connection.discard(),
-                    _ => {}
-                }
-                result
-            },
-            |context, result, mut sender, driver| {
+            |context, result, mut settlement, space, driver| {
+                let (sender, settled);
                 let reason = match result {
-                    SendOutcome::Queued { .. } | SendOutcome::WriteShutdown => {
-                        let queued = sender.has_queued();
-                        <A::Requests as Policy<'w, 'd, ID, A>>::submit_admitted::<true, true, S, E, X>(
-                            context.app, context.controller, &mut sender, context.liveness,
-                            context.target, queued, turn.reborrow(), driver,
-                        );
-                        close::ready(context.app, sender.view().connection, driver)
-                    }
-                    SendOutcome::Terminal => {
-                        <A::Requests as Policy<'w, 'd, ID, A>>::finish_admitted::<S, E, X>(
-                            context.app, context.controller, &mut sender, context.liveness, context.target, driver,
-                        );
+                    SendOutcome::Terminal | SendOutcome::Queued { .. } | SendOutcome::WriteShutdown => {
+                        let terminal = matches!(result, SendOutcome::Terminal);
+                        (sender, settled) = settlement.finish(space, |connection| {
+                            let key = connection.key();
+                            // SAFETY: completion retains this book's original admitted sender.
+                            let source = unsafe { engine::raw::reunite(context.liveness, connection, key) };
+                            let slot = liveness::Change::new(source, context.target);
+                            if (terminal || slot.state.is_attached())
+                                && matches!(closing::Callback::new(&slot.state.closing), closing::Callback::Ready)
+                            {
+                                if slot.state.work.has_requests() && !terminal {
+                                    slot.arm_after(deadline::Fixed::Send, driver.driver_ref().clock().now(),
+                                        <E::Timing as crate::timing::Policy>::SEND_DEADLINE);
+                                } else {
+                                    slot.cancel(deadline::Kind::Send);
+                                }
+                            }
+                        });
+                        if terminal {
+                            <A::Requests as Policy<'w, 'd, ID, A>>::finish_admitted::<S, E, X>(
+                                context.app, context.controller, sender, context.liveness, context.target, driver,
+                            );
+                        } else {
+                            let queued = sender.has_queued();
+                            <A::Requests as Policy<'w, 'd, ID, A>>::submit_admitted::<true, true, S, E, X>(
+                                context.app, context.controller, sender, context.liveness,
+                                context.target, queued, turn.reborrow(), driver,
+                            );
+                        }
                         close::ready(context.app, sender.view().connection, driver)
                     }
                     SendOutcome::Rejected { failure } => {
+                        (sender, settled) = settlement.finish(space, |_| {});
                         let slot = sender.view().connection;
                         slot.state.fail(conn::Transmit::Rejected(failure));
                         let error = context.controller.rejected(slot.state.owner.attempt(), failure.into_error());
@@ -126,21 +121,29 @@ where
                         Some(rule.reason())
                     }
                     SendOutcome::Failed { failure } => {
+                        (sender, settled) = settlement.finish(space, |_| {});
                         sender.view().connection.state.fail(conn::Transmit::Io(failure));
                         Some(Reason::Transport)
                     }
                     SendOutcome::Invalid { error } => {
+                        (sender, settled) = settlement.finish(space, |_| {});
                         sender.view().connection.state.fail(conn::Transmit::Invalid(error));
                         Some(Reason::Transport)
                     }
-                    SendOutcome::Close | SendOutcome::Direct { .. } | SendOutcome::DirectClosed => {
+                    SendOutcome::Direct { .. } | SendOutcome::DirectClosed => {
+                        (_, settled) = settlement.finish(space, |connection| connection.discard());
                         Some(Reason::Transport)
                     }
-                    SendOutcome::Pending => return,
+                    SendOutcome::Close => {
+                        (_, settled) = settlement.finish(space, |_| {});
+                        Some(Reason::Transport)
+                    }
+                    SendOutcome::Pending => return (settlement.finish(space, |_| {}).1, ()),
                 };
                 if let Some(reason) = reason {
-                    drop(Self::close_entry(context, sender.into_entry(), reason, turn, driver));
+                    drop(Self::close_entry(context, settlement.into_entry(&settled), reason, turn, driver));
                 }
+                (settled, ())
             },
         );
     }

@@ -169,7 +169,7 @@ pub fn deadline(draining: bool, abandon: bool) {
     use dope_test::{harness::signals::Progress as _, reclaim::Reports};
     use std::time::Duration;
 
-    use crate::common::manifold::listener::defer::{script::Until, wire::Profile};
+    use crate::common::manifold::{listener::defer::wire::Profile, root::until_hits};
     use dope_core::{
         driver::{
             route::table::conn::Capacity,
@@ -253,10 +253,7 @@ pub fn deadline(draining: bool, abandon: bool) {
                                 app.drive_for(
                                     start,
                                     Duration::from_secs(1),
-                                    Until {
-                                        gate: if abandon { &entered } else { &received },
-                                        hits: 1,
-                                    },
+                                    until_hits(if abandon { &entered } else { &received }, 1),
                                 )
                                 .expect("initial listener progress")
                                 .into_output();
@@ -272,10 +269,10 @@ pub fn deadline(draining: bool, abandon: bool) {
                                 app.drive_for(
                                     begin,
                                     Duration::from_secs(1),
-                                    Until {
-                                        gate: if abandon { &received } else { &entered },
-                                        hits: if abandon { 2 } else { 1 },
-                                    },
+                                    until_hits(
+                                        if abandon { &received } else { &entered },
+                                        if abandon { 2 } else { 1 },
+                                    ),
                                 )
                                 .expect("close waits for wire storage")
                                 .into_output();
@@ -287,10 +284,7 @@ pub fn deadline(draining: bool, abandon: bool) {
                                     .drive_for(
                                         due,
                                         Duration::from_millis(200),
-                                        Until {
-                                            gate: &closed,
-                                            hits: 1,
-                                        },
+                                        until_hits(&closed, 1),
                                     )
                                     .is_ok();
                                 assert_eq!(release.hits(), 0);

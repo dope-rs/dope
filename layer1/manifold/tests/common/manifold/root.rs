@@ -3,9 +3,29 @@ use std::{cell::Cell, rc::Rc, task::Poll, time};
 use dope_core::driver::route::KeyTag;
 use dope_manifold::timing::interval::{Interval, Tick};
 use dope_runtime::{control, executor::root};
-use dope_test::harness::signals::Gate;
+use dope_test::harness::signals::{Gate, Progress as _};
 
 type ID = KeyTag<41>;
+
+pub struct Until<F>(pub(crate) F);
+
+impl<'d, F: Fn() -> bool> root::Root<'d> for Until<F> {
+    type Output = ();
+
+    fn poll(context: root::Context<'_, 'd, Self>) -> Poll<()> {
+        let (this, wake, _, _) = context.into_parts();
+        if this.0() {
+            Poll::Ready(())
+        } else {
+            wake.wake();
+            Poll::Pending
+        }
+    }
+}
+
+pub fn until_hits(gate: &Gate, count: u32) -> Until<impl Fn() -> bool + '_> {
+    Until(move || gate.hits() >= count)
+}
 
 #[pin_project::pin_project]
 #[derive(dope_gen::Application)]

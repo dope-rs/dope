@@ -183,6 +183,7 @@ impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID> {
     pub(in crate::network::listener) fn progress(
         &self,
         region: &region::Token<region::Identity<'d>>,
+        available: impl FnOnce() -> capacity::Count,
     ) -> schedule::Progress<'d> {
         let Some(fd) = &self.fd else {
             return schedule::Progress::Quiescent;
@@ -197,7 +198,7 @@ impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID> {
                     mode::Mode::Oneshot(_) => waiting,
                 }
             }
-            None => self.mode.progress(fd.driver(), region),
+            None => self.mode.progress(fd.driver(), region, available),
         }
     }
 
@@ -236,8 +237,7 @@ impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID> {
         self: pin::Pin<&mut Self>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
-        if let mode::Mode::Multishot { arm, interest } = self.project().mode {
-            *interest = mode::Interest::Full;
+        if let mode::Mode::Multishot { arm, .. } = self.project().mode {
             arm.stop(driver);
         }
     }
@@ -275,12 +275,12 @@ impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID> {
     pub(in crate::network::listener) fn arm(
         mut self: pin::Pin<&mut Self>,
         driver: &mut driver::Context<'_, 'd>,
-        slots: capacity::Count,
+        available: impl FnOnce() -> capacity::Count,
         work: maint::Work<'_, 'd>,
     ) -> Result<(), result::SubmitError> {
         if self.mode.is_stopped() {
             if matches!(
-                self.mode.progress(driver.driver_ref(), &driver.regions().0),
+                self.mode.progress(driver.driver_ref(), &driver.regions().0, available),
                 schedule::Progress::Runnable
             ) {
                 let _ = work.run(|| {
@@ -290,7 +290,6 @@ impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID> {
             }
             return Ok(());
         }
-        let slots = slots.get();
         let this = self.project();
         let ready = match *this.retry {
             Some(until) if !until.is_due(driver.driver_ref().clock().now()) => false,
@@ -304,24 +303,21 @@ impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID> {
             unreachable!("listener");
         };
         match this.mode {
-            mode::Mode::Multishot { arm, interest } => {
-                if slots == 0 {
-                    *interest = mode::Interest::Full;
-                }
-                if *interest == mode::Interest::Full {
-                    if arm.is_live() {
+            mode::Mode::Multishot { arm, .. } => {
+                if arm.is_live() {
+                    if matches!(arm.progress(&driver.regions().0), schedule::Progress::Runnable) {
                         let _ = work.run(|| {
                             arm.stop(driver);
                             Some(())
                         });
                     }
-                    if slots == 0 || arm.is_live() || !ready {
-                        return Ok(());
-                    }
-                    arm.restart();
-                    *interest = mode::Interest::Ready;
+                    return Ok(());
+                }
+                if !ready || available() == capacity::Count::EMPTY {
+                    return Ok(());
                 }
                 let sent = work.run(|| {
+                    arm.restart();
                     let arming = arm.begin()?;
                     Some(arming.accept(driver, this.flights, fd))
                 });
@@ -333,7 +329,7 @@ impl<'n, 'd, ID: Identity> Accept<'n, 'd, ID> {
                 if !ready {
                     return Ok(());
                 }
-                let mut left = lanes.demand(slots);
+                let mut left = lanes.demand(available());
                 for _ in 0..lanes.entries.len() {
                     if left == 0 || work.remaining() == 0 {
                         break;

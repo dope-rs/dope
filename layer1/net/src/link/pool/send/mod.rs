@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use dope_core::{
     driver::{self, route::Identity},
     io::event::net::send::Completion as Native,
@@ -24,6 +26,62 @@ pub enum Rejected<B> {
     Egress(error::Capacity<B>),
 }
 
+/// An admitted entry, its one-time availability, or its receipt for the same completion.
+pub struct Settlement<'turn, T = ()> {
+    value: T,
+    scope: PhantomData<fn(&'turn ()) -> &'turn ()>,
+}
+
+impl<T> Settlement<'_, T> {
+    fn new(value: T) -> Self {
+        Self { value, scope: PhantomData }
+    }
+}
+
+impl<'turn, 'p, 'w, 'd: 'w, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
+    Settlement<'turn, pool::Entry<'turn, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>>
+where
+    T: crate::Transport,
+    W: wire::Spec + 'w + 'd,
+    M: input::Mode<W>,
+    B: data::raw::Payload<'d>,
+    D: demand::Mode,
+{
+    pub fn connection(&mut self) -> &mut types::Connection<'w, 'd, ID, W, S> {
+        self.value.get_mut()
+    }
+
+    fn retire(&mut self, retire: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>)) {
+        let pending = self.value.pending();
+        let connection = self.value.get_mut();
+        retire(connection);
+        pending.wait_send(connection.send_status().is_waiting());
+    }
+
+    #[inline(always)]
+    pub fn finish(
+        &mut self,
+        space: Settlement<'turn, send::Availability>,
+        retire: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>),
+    ) -> (&mut transmit::Sender<'turn, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>, Settlement<'turn>) {
+        self.retire(retire);
+        let sender = &mut self.value.sender;
+        <M::Ingress as input::Dispatch<W>>::release::<ID>(space.value, &mut sender.root.runtime);
+        if space.value == send::Availability::Released {
+            sender.root.pending.release_send();
+        }
+        (sender, Settlement::new(()))
+    }
+
+    pub fn entry(&mut self, _: &Settlement<'turn>) -> &mut pool::Entry<'turn, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
+        &mut self.value
+    }
+
+    pub fn into_entry(self, _: &Settlement<'turn>) -> pool::Entry<'turn, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D> {
+        self.value
+    }
+}
+
 impl<'p, 'w, 'd: 'w, ID: Identity + 'w, T, W, S, M, B, const IOV: usize, D>
     pool::Connections<'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>
 where
@@ -33,7 +91,7 @@ where
     B: data::raw::Payload<'d>,
     D: demand::Mode,
 {
-    pub fn settle<C, R, O>(
+    pub fn settle<C, O>(
         &mut self,
         done: Native<'d>,
         driver: &mut driver::Context<'_, 'd>,
@@ -42,19 +100,19 @@ where
         mut release: impl FnMut(
             &mut C, pool::Key<'d, ID>, B, &mut region::Token<region::Identity<'d, 1>>,
         ),
-        retire: impl FnOnce(&mut C, &mut types::Connection<'w, 'd, ID, W, S>, SendOutcome) -> R,
-        complete: impl FnOnce(
+        complete: impl for<'turn> FnOnce(
             &mut C,
-            R,
-            transmit::Sender<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>,
+            SendOutcome,
+            Settlement<'turn, pool::Entry<'turn, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>>,
+            Settlement<'turn, send::Availability>,
             &mut driver::Context<'_, 'd>,
-        ) -> O,
+        ) -> (Settlement<'turn>, O),
     ) -> Option<O> {
         let (token, result) = done.into_parts();
         let key = self.keys.parse(token).ok()?;
-        let mut sender = self.sender(key.connection())?;
-        let (retired, space) = {
-            let (flights, connection, pending, mut queue) = sender.transmit();
+        let mut settlement = Settlement::new(self.sender(key.connection())?.into_entry());
+        let (outcome, space) = {
+            let (flights, connection, _, mut queue) = settlement.value.sender.transmit();
             let inflight = connection.observe_send(token, |slot| before(context, slot))?;
             let origin = inflight.source();
             let mut space = send::Availability::Unchanged;
@@ -176,15 +234,10 @@ where
                     (_, failure) => failure,
                 }
             };
-            let retired = retire(context, connection, event);
-            pending.wait_send(connection.send_status().is_waiting());
-            (retired, space)
+            (event, space)
         };
-        <M::Ingress as input::Dispatch<W>>::release::<ID>(space, &mut sender.root.runtime);
-        if space == send::Availability::Released {
-            sender.root.pending.release_send();
-        }
-        Some(complete(context, retired, sender, driver))
+        let (_, output) = complete(context, outcome, settlement, Settlement::new(space), driver);
+        Some(output)
     }
 }
 

@@ -1,11 +1,14 @@
 use dope_core::io::transfer;
-use dope_net::link::egress::data::{
-    Offset,
-    compose::{Either, Tagged},
-    position,
-    raw::Payload as _,
+use dope_net::link::egress::{
+    Charge,
+    data::{
+        Offset,
+        compose::{Either, Tagged},
+        position,
+        raw::Payload as _,
+    },
 };
-use o3::buffer::{raw::Scatter as _, segments, storage};
+use o3::buffer::{raw::Scatter as _, resident, segments, storage};
 
 #[test]
 fn resume_keeps_owner() {
@@ -16,8 +19,11 @@ fn resume_keeps_owner() {
     .expect("pool");
     for left in [true, false] {
         let mut chain = pool.try_chain().expect("chain");
-        for bytes in [b"ab".as_slice(), b"cde", b"fghi"] {
-            let owner = storage::Shared::try_copy(bytes).expect("owner");
+        for owner in [
+            resident::Shared::from(b"ab".as_slice()),
+            resident::Shared::from(storage::Shared::try_copy(b"cde").expect("owner")),
+            resident::Shared::from(b"fghi".as_slice()),
+        ] {
             assert!(chain.try_push(owner).is_ok());
         }
         let payload: Either<_, Either<&[u8], _>> = if left {
@@ -28,6 +34,7 @@ fn resume_keeps_owner() {
         let expected = b"abcdefghi";
         let mut position = position::Saved::default();
         let charge = payload.charge();
+        assert_eq!(Charge::of(&payload).resident().get(), charge.resident_bytes);
         for start in [4, 7] {
             let offset = Offset::from_len(transfer::Len::try_new(start).expect("offset"));
             // SAFETY: each offset lies within the same retained payload.

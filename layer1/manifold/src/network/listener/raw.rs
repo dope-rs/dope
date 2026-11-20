@@ -283,7 +283,10 @@ where
         } else {
             Progress::Quiescent
         };
-        let io = this.accept.progress(call.region()).reduce(pool);
+        let io = this
+            .accept
+            .progress(call.region(), || this.owner.pool().inspect().available())
+            .reduce(pool);
         match until {
             Some(until) => io.reduce(Progress::until(until)),
             None => io,
@@ -306,7 +309,7 @@ where
         {
             let waiting = this
                 .accept
-                .progress(call.region())
+                .progress(call.region(), || this.owner.pool().inspect().available())
                 .reduce(Progress::waiting(call.region()));
             match this.owner.earliest() {
                 Some(until) => waiting.reduce(Progress::until(until)),

@@ -425,14 +425,16 @@ pub fn settle<'p, 'w, 'd: 'w, B: Payload<'d>>(
     let mut driver = scope.context();
     pool.settle(
         done, &mut driver, &mut (), |_, _| {}, |_, _, _, _| {},
-        |_, connection, outcome| match outcome {
-            SendOutcome::Queued { .. } | SendOutcome::Terminal | SendOutcome::Pending => Ok(connection.key()),
-            SendOutcome::Rejected { failure } => Err(Error::Rejected(failure)),
-            SendOutcome::Failed { failure } => Err(Error::Send(failure)),
-            SendOutcome::Invalid { error } => Err(Error::Invalid(error)),
-            _ => Err(Error::Settlement),
+        |_, outcome, mut settlement, space, _| {
+            let result = match outcome {
+                SendOutcome::Queued { .. } | SendOutcome::Terminal | SendOutcome::Pending => Ok(settlement.connection().key()),
+                SendOutcome::Rejected { failure } => Err(Error::Rejected(failure)),
+                SendOutcome::Failed { failure } => Err(Error::Send(failure)),
+                SendOutcome::Invalid { error } => Err(Error::Invalid(error)),
+                _ => Err(Error::Settlement),
+            };
+            (settlement.finish(space, |_| {}).1, result)
         },
-        |_, result, _, _| result,
     ).ok_or(Error::Settlement)?
 }
 

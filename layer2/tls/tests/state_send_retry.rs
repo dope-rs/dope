@@ -76,18 +76,18 @@ fn partial_owner_cancel() {
                         let result = pool.settle(
                             done, &mut scope.context(), &mut returned, |_, _| {},
                             |count, _, _, _| *count += 1,
-                            |_, connection, outcome| {
-                                assert_eq!(connection.key(), first);
-                                match outcome {
+                            |_, outcome, mut settlement, space, _| {
+                                assert_eq!(settlement.connection().key(), first);
+                                let result = match outcome {
                                     SendOutcome::Queued { acknowledged, .. } => Ok(Some(acknowledged.into_raw())),
                                     SendOutcome::Pending => Ok(None),
                                     SendOutcome::Rejected { failure, .. } => Err(Error::Rejected(failure)),
                                     SendOutcome::Failed { failure, .. } => Err(Error::Send(failure)),
                                     SendOutcome::Invalid { error, .. } => Err(Error::Invalid(error)),
                                     _ => Err(Error::Settlement),
-                                }
+                                };
+                                (settlement.finish(space, |_| {}).1, result)
                             },
-                            |_, result, _, _| result,
                         ).ok_or(Error::Settlement)?;
                         if let Some(acknowledged) = result? {
                             break acknowledged;

@@ -98,7 +98,7 @@ where
     pub fn sender(
         &mut self,
     ) -> Option<&mut transmit::Sender<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>> {
-        self.sender.root.pending.handle(self.sender.key)?;
+        self.pending().current()?;
         Some(&mut self.sender)
     }
 

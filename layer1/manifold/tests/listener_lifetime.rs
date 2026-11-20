@@ -383,8 +383,9 @@ fn retained_native_input_observes_actual_deadline() {
     use std::cell::Cell;
 
     use common::{
-        manifold::listener::{
-            defer::script::Until, finish::lifetime::DeadlineAdmission, trace::One,
+        manifold::{
+            listener::{finish::lifetime::DeadlineAdmission, trace::One},
+            root::until_hits,
         },
         observed::{Observed, State},
     };
@@ -449,10 +450,7 @@ fn retained_native_input_observes_actual_deadline() {
                                         let held = app.drive_for(
                                             start,
                                             Duration::from_secs(1),
-                                            Until {
-                                                gate: &observed.intercepted,
-                                                hits: 1,
-                                            },
+                                            until_hits(&observed.intercepted, 1),
                                         )
                                         .map(|done| done.into_output());
                                         assert!(held.is_ok(), "retain native completion: {held:?}; accepted={}, expired={}, completed={}, intercepted={}, parked={}", target.get().is_some(), expired.hits(), completed.hits(), observed.intercepted.hits(), observed.parked.get());
@@ -469,10 +467,7 @@ fn retained_native_input_observes_actual_deadline() {
                                         app.drive_for(
                                             due,
                                             Duration::from_secs(1),
-                                            Until {
-                                                gate: &completed,
-                                                hits: 1,
-                                            },
+                                            until_hits(&completed, 1),
                                         )
                                         .expect("resolve expired admission")
                                         .into_output();
@@ -482,10 +477,7 @@ fn retained_native_input_observes_actual_deadline() {
                                         app.drive_for(
                                             due,
                                             Duration::from_secs(1),
-                                            Until {
-                                                gate: &completed,
-                                                hits: if postpone && activation { 2 } else { 1 },
-                                            },
+                                            until_hits(&completed, if postpone && activation { 2 } else { 1 }),
                                         )
                                         .expect("settle held native input")
                                         .into_output();

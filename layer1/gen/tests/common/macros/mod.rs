@@ -5,7 +5,7 @@ mod text;
 
 pub use budget::Budget;
 use counter::Counter;
-use engine::core::driver::route::{Identity, KeyTag};
+use engine::core::driver::route::KeyTag;
 pub use text::Text;
 
 #[pin_project::pin_project]
@@ -34,35 +34,6 @@ pub struct Dispatcher {
 
 #[pin_project::pin_project]
 #[derive(engine::Application)]
-#[dispatcher(crate = ::engine, driver = 'd)]
-pub struct Branded<'d> {
-    #[pin]
-    #[manifold]
-    pub inner: Counter<KeyTag<5>, &'d ()>,
-}
-
-#[pin_project::pin_project]
-#[derive(engine::Application)]
-#[dispatcher(crate = ::engine, driver = 'd)]
-pub struct Selected<'scope, 'd> {
-    #[pin]
-    #[manifold]
-    pub inner: Counter<KeyTag<8>, (&'scope (), &'d ())>,
-}
-
-#[pin_project::pin_project]
-#[derive(engine::Application)]
-#[dispatcher(crate = ::engine)]
-pub struct Stateful {
-    #[pin]
-    #[manifold]
-    pub inner: Counter<KeyTag<4>>,
-    #[dispatcher(state)]
-    pub state: usize,
-}
-
-#[pin_project::pin_project]
-#[derive(engine::Application)]
 #[dispatcher(crate = ::engine)]
 pub struct Metered {
     #[pin]
@@ -79,28 +50,10 @@ pub struct Metered {
 #[pin_project::pin_project]
 #[derive(engine::Forward)]
 #[forward(crate = ::engine)]
-pub struct Scoped<'scope, 'd> {
-    #[pin]
-    #[forward('d)]
-    pub inner: Counter<KeyTag<7>, (&'scope (), &'d ())>,
-}
-
-#[pin_project::pin_project]
-#[derive(engine::Forward)]
-#[forward(crate = ::engine)]
 pub struct Forward {
     #[pin]
     #[forward]
     pub inner: Counter<KeyTag<6>>,
-}
-
-#[pin_project::pin_project]
-#[derive(engine::Forward)]
-#[forward(crate = ::engine)]
-pub struct Defaulted<'d, M = (), ID: Identity = KeyTag<9>> {
-    #[pin]
-    #[forward('d)]
-    pub inner: Counter<ID, (&'d (), M)>,
 }
 
 #[pin_project::pin_project]

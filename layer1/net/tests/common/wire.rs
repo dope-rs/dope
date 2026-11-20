@@ -560,13 +560,15 @@ pub mod contract {
                                         buffered = pool.settle(
                                             done, &mut driver, &mut (), |_, _| {},
                                             |_, _, body, _| release(body),
-                                            |_, slot, outcome| match outcome {
-                                                SendOutcome::Queued { .. } | SendOutcome::Close => {
-                                                    Ok(matches!(slot.send_status().retention(), Retention::Held))
-                                                }
-                                                _ => Err(Error::Submitted),
+                                            |_, outcome, mut settlement, space, _| {
+                                                let result = match outcome {
+                                                    SendOutcome::Queued { .. } | SendOutcome::Close => {
+                                                        Ok(matches!(settlement.connection().send_status().retention(), Retention::Held))
+                                                    }
+                                                    _ => Err(Error::Submitted),
+                                                };
+                                                (settlement.finish(space, |_| {}).1, result)
                                             },
-                                            |_, result, _, _| result,
                                         ).ok_or(Error::Submitted)??;
                                     }
                                     assert_eq!(
