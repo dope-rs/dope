@@ -238,7 +238,7 @@ impl<'link, 'd, const ROUTE: u8, const FROM: u8, const TO: u8> Vacancy<'link, 'd
         let local = *self.local;
         let retainer = self.retainer;
         let mut transfer = self.try_adopt(flight)?;
-        for prefix in provided::Chunks::new(&mut transfer.owner, transfer.segment) {
+        for prefix in transfer.owner.chunks_mut(transfer.segment) {
             if let Err(error) = receive(local, packet::Packet::from_prefix(prefix), retainer) {
                 return Ok(Err(error));
             }

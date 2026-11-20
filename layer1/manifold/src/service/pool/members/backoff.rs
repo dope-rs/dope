@@ -2,20 +2,18 @@ use o3::depot::{arena::slab::key, capacity};
 
 use crate::service::pool::members::{Idle, Member, Unlinked};
 
-pub(super) enum Unready<'a, 'h, I, A, const ROOT: bool> {
-    Probing(Unlinked<'a, 'h, I, A, ROOT>),
-    Exhausted(Unlinked<'a, 'h, I, A, ROOT>),
+pub(super) enum Unready<'a, 'h, I, A> {
+    Probing(Unlinked<'a, 'h, I, A>),
+    Exhausted(Unlinked<'a, 'h, I, A>),
 }
 
 /// Owns the actual unscheduled resident admitted to its joint owner's retry heap.
-pub(super) struct Backoff<'a, 'h, I, A, const ROOT: bool> {
-    entry: Unlinked<'a, 'h, I, A, ROOT>,
+pub(super) struct Backoff<'a, 'h, I, A> {
+    entry: Unlinked<'a, 'h, I, A>,
 }
 
-impl<'a, 'h, I, A, const ROOT: bool> Backoff<'a, 'h, I, A, ROOT> {
-    pub(super) fn try_new(
-        entry: Unlinked<'a, 'h, I, A, ROOT>,
-    ) -> Result<Self, Unready<'a, 'h, I, A, ROOT>> {
+impl<'a, 'h, I, A> Backoff<'a, 'h, I, A> {
+    pub(super) fn try_new(entry: Unlinked<'a, 'h, I, A>) -> Result<Self, Unready<'a, 'h, I, A>> {
         match entry.get().health.idle {
             Idle::Backoff => Ok(Self { entry }),
             Idle::Probing => Err(Unready::Probing(entry)),
@@ -27,7 +25,7 @@ impl<'a, 'h, I, A, const ROOT: bool> Backoff<'a, 'h, I, A, ROOT> {
         self.entry.key()
     }
 
-    pub(super) fn release(mut self) -> Unlinked<'a, 'h, I, A, ROOT> {
+    pub(super) fn release(mut self) -> Unlinked<'a, 'h, I, A> {
         self.entry.get_mut().health.idle = Idle::Exhausted;
         self.entry
     }

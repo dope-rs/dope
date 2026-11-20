@@ -40,10 +40,10 @@ impl<'h, 'd> Queue<'h, 'd> {
         failure.commit();
     }
 
-    pub(super) fn recover<'a, I, A, const ROOT: bool>(
+    pub(super) fn recover<'a, I, A>(
         &mut self,
-        backoff: backoff::Backoff<'a, 'h, I, A, ROOT>,
-    ) -> Unlinked<'a, 'h, I, A, ROOT> {
+        backoff: backoff::Backoff<'a, 'h, I, A>,
+    ) -> Unlinked<'a, 'h, I, A> {
         let key = backoff.key();
         // SAFETY: admission retains the exact backed-off resident in this joint owner.
         // No retirement or reuse can run while its exclusive guard is retained.
@@ -54,16 +54,16 @@ impl<'h, 'd> Queue<'h, 'd> {
         backoff.release()
     }
 
-    pub(super) fn reorder<I, A, const ROOT: bool>(entry: Occupied<'_, 'h, I, A, ROOT>) {
+    pub(super) fn reorder<I, A>(entry: Occupied<'_, 'h, I, A>) {
         if let set::State::Ready(entry) = entry.state() {
             entry.requeue();
         }
     }
 
-    pub(super) fn remove<'a, I, A, const ROOT: bool>(
+    pub(super) fn remove<'a, I, A>(
         &mut self,
-        entry: Occupied<'a, 'h, I, A, ROOT>,
-    ) -> Unlinked<'a, 'h, I, A, ROOT> {
+        entry: Occupied<'a, 'h, I, A>,
+    ) -> Unlinked<'a, 'h, I, A> {
         match entry.state() {
             set::State::Ready(entry) => entry.remove(),
             set::State::Idle(entry) => match backoff::Backoff::try_new(entry) {

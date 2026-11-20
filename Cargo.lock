@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "dope"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "dope-core",
  "dope-gen",
@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "dope-core"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "dope-kqueue",
  "dope-sys",
@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "dope-dns"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "dope",
  "dope-fiber",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "dope-fiber"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "dope",
  "dope-core",
@@ -195,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "dope-gen"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "dope",
  "dope-fiber",
@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "dope-kqueue"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "dope-sys",
  "libc",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "dope-manifold"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "dope-core",
  "dope-fiber",
@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "dope-net"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "dope-core",
  "dope-test",
@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "dope-quic"
-version = "0.74.0"
+version = "0.75.0"
 dependencies = [
  "aws-lc-rs",
  "dope",
@@ -258,7 +258,7 @@ dependencies = [
 
 [[package]]
 name = "dope-runtime"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "dope-core",
  "dope-gen",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "dope-sys"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "libc",
  "o3",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "dope-test"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "dope-core",
  "dope-fiber",
@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "dope-tls"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "dope",
  "dope-fiber",
@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "dope-uring"
-version = "0.73.0"
+version = "0.74.0"
 dependencies = [
  "dope",
  "dope-fiber",
@@ -435,9 +435,9 @@ dependencies = [
 
 [[package]]
 name = "o3"
-version = "0.57.0"
+version = "0.58.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d95f63e4edd07e3c1b53e268a25946b0beb44cd45b70bb63471e7b35b3e8221a"
+checksum = "f1a99ca1bc9a6f7cc881a61454fc5c7cb7bdf5f36cdf1d0f5f54890235e2b802"
 
 [[package]]
 name = "oid-registry"

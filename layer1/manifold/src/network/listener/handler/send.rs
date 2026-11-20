@@ -1,7 +1,7 @@
 use std::pin;
 
-use crate::network::listener::{conn, handler, writer};
-use dope_core::driver::{self, route::Identity, schedule};
+use crate::network::listener::{conn, handler};
+use dope_core::driver::{self, route::Identity};
 
 /// Static send callback selection for one application type.
 pub trait Policy<'d, ID: Identity, A>
@@ -40,19 +40,6 @@ pub trait Drive<'d, ID: Identity>: handler::Application<'d, ID> {
 pub enum Silent {}
 pub enum Ready {}
 pub enum Run {}
-
-pub(in crate::network::listener) fn settle<'w, 'd: 'w, ID: Identity, A>(
-    app: pin::Pin<&mut A>,
-    egress: &mut writer::Egress<'_, '_, '_, '_, 'w, 'd, ID, A>,
-    turn: schedule::Turn<'_, 'd>,
-    driver: &mut driver::Context<'_, 'd>,
-) where
-    A: handler::Runtime<'w, 'd, ID>,
-{
-    if A::SEND {
-        A::send(app, egress.context(turn.reborrow().app()), driver);
-    }
-}
 
 pub(in crate::network::listener) fn gated<'w, 'd: 'w, ID: Identity, A>(
     mut app: pin::Pin<&mut A>,
