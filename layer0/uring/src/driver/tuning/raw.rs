@@ -4,7 +4,7 @@ use dope_sys::{
     engine::ring::{Backend as _, Context},
     io::{
         reactor::submit::Queue as _,
-        request,
+        socket::addr,
         socket::{
             option,
             option::tuning::{self, device},
@@ -40,7 +40,7 @@ impl<T: Codec, F, const N: usize> Vacant<'_, T, F, N> {
         queue: sq::raw::Queue<'_, T>,
         count: capacity::Limit<N>,
         options: impl option::Cursor,
-        last: Option<request::Borrowed<'_, sq::Fixed>>,
+        last: Option<addr::Addr<'_>>,
         reserve: impl FnOnce() -> Result<(Key<T>, R), E>,
     ) -> Result<(F, R), tuning::Error<F, E>> {
         use tuning::raw::Chain as _;
@@ -54,7 +54,7 @@ impl<T: Codec, F, const N: usize> Vacant<'_, T, F, N> {
         };
         // SAFETY: the host retains the CONNECT address through the same flight;
         // it is submitted only after every option CQE has succeeded.
-        let terminal = last.map(|last| unsafe { sq::raw::Deferred::new(last) });
+        let terminal = last.map(|last| unsafe { sq::raw::Deferred::new(self.slot, last) });
         // SAFETY: construction retains the affine slot proof and pinned table.
         let values = unsafe { self.state.as_mut().begin(key, count.count(), terminal) };
         // SAFETY: admission bound the vacant state, target and token together;
@@ -80,7 +80,11 @@ impl<T: Codec, F, const N: usize> Vacant<'_, T, F, N> {
         };
         // SAFETY: the affine host admits this vacant, pinned slot and retains
         // its output through completion or native quiescence, including on drop.
-        let _ = unsafe { self.state.as_mut().begin(key, num::NonZero::<u32>::MIN, None) };
+        let _ = unsafe {
+            self.state
+                .as_mut()
+                .begin(key, num::NonZero::<u32>::MIN, None)
+        };
         // SAFETY: this projection initializes the query phase without moving its output.
         let state = unsafe { self.state.get_unchecked_mut() };
         state.status.phase = super::Phase::Peer;

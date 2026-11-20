@@ -1,4 +1,3 @@
-mod borrow;
 mod complete;
 mod context;
 mod datagram;
@@ -10,7 +9,6 @@ use std::{mem::MaybeUninit, os::fd};
 
 use o3::buffer::bytes::bounded;
 
-pub use borrow::{Borrowed, Retained};
 pub use complete::Complete;
 pub use context::Context;
 pub use datagram::Datagram;

@@ -1,9 +1,6 @@
 use dope_sys::{
     engine::{admit, ring::Context},
-    io::{
-        request,
-        socket::option::tuning::{self, device},
-    },
+    io::socket::option::tuning::{self, device},
     table::token::{self, Codec, host},
 };
 

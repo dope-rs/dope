@@ -1,7 +1,7 @@
 use std::{mem, ptr};
 
 use dope_sys::io::{reactor::complete, request, socket};
-use o3::base::marker::ThreadBound;
+use o3::{base::marker::ThreadBound, buffer::bytes};
 
 use crate::reactor::{
     op::{self, buffers, messages, sockets},
@@ -36,62 +36,19 @@ impl Entry {
     pub(crate) const NOP: op::Code = op::Code::new(ring::ffi::NOP);
 
     pub(crate) fn new(opcode: op::Code, fd: sq::Descriptor) -> Self {
-        let mut entry = Self(Fields::default(), ThreadBound::NEW);
-        entry.initialize(opcode, fd);
-        entry
+        Self(Fields::new(opcode, fd, 0), ThreadBound::NEW)
     }
 
-    fn initialize(&mut self, opcode: op::Code, fd: sq::Descriptor) {
-        let (raw, fixed) = fd.encode();
-        opcode.write(&mut self.0.opcode);
-        self.0.fd = raw;
-        if fixed {
-            self.0.flags = Flags::FIXED_FILE.raw();
-        }
-    }
-
-    pub(crate) fn retained<'a>(request: request::Borrowed<'a, sq::Fixed>) -> sq::Borrowed<'a> {
-        let mut entry = Self(Fields::default(), ThreadBound::NEW);
-        entry.write(request);
-        sq::Borrowed::new(entry)
-    }
-
-    #[inline]
-    pub(super) fn write(&mut self, request: request::Borrowed<'_, sq::Fixed>) {
-        use request::Retained;
-
-        self.0 = Fields::default();
-        match request.into_inner() {
-            Retained::Send { slot, input } => {
-                self.initialize(buffers::SEND, sq::Descriptor::Fixed(slot));
-                let input = input.as_slice();
-                self.0.address = input.as_ptr() as u64;
-                self.0.length = input.len() as u32;
-                self.0.options = libc::MSG_NOSIGNAL.unsigned_abs();
-            }
-            Retained::SendMsg { slot, msg } => {
-                self.initialize(messages::SEND, sq::Descriptor::Fixed(slot));
-                self.0.address = ptr::from_ref(msg) as u64;
-                self.0.length = 1;
-                self.0.options = libc::MSG_NOSIGNAL.unsigned_abs();
-            }
-            Retained::Accept {
-                listener,
-                addr,
-                len,
-            } => {
-                self.initialize(sockets::ACCEPT, sq::Descriptor::Fixed(listener));
-                self.0.index = ring::ffi::FILE_INDEX_ALLOC;
-                self.0.address = ptr::from_mut(addr).cast::<libc::sockaddr>() as u64;
-                self.0.offset = (ptr::from_mut(len) as u64).to_ne_bytes();
-            }
-            Retained::Connect { slot, addr } => {
-                self.initialize(sockets::CONNECT, sq::Descriptor::Fixed(slot));
-                let (addr, len) = addr.parts();
-                self.0.address = addr as u64;
-                self.0.offset = (len.get() as u64).to_ne_bytes();
-            }
-        }
+    pub(super) fn connect(deferred: sq::raw::Deferred, word: sq::raw::Word) -> Self {
+        let (slot, address, length) = deferred.into_parts();
+        Self(
+            Fields {
+                address: address as u64,
+                offset: (length.get() as u64).to_ne_bytes(),
+                ..Fields::fixed(sockets::CONNECT, slot, word)
+            },
+            ThreadBound::NEW,
+        )
     }
 
     pub(crate) fn fields(&mut self) -> &mut Fields {
@@ -104,14 +61,16 @@ impl Entry {
     }
 
     pub(crate) fn user_data<T: complete::raw::Token>(self, token: T) -> sq::Owned<T> {
-        let mut entry = self;
-        entry.fields().token(token);
-        sq::Owned::new(entry)
+        sq::Owned::new(self.with_token(token))
     }
 
-    pub(crate) fn bind<'a, T: complete::raw::Token>(mut self, token: T) -> sq::Submit<'a, T> {
-        self.fields().token(token);
-        sq::Submit::new(self)
+    pub(crate) fn bind<'a, T: complete::raw::Token>(self, token: T) -> sq::Submit<'a, T> {
+        sq::Submit::new(self.with_token(token))
+    }
+
+    pub(super) fn with_token<T: complete::raw::Token>(mut self, token: T) -> Self {
+        self.0.user_data = sq::raw::Word::encode(token).get();
+        self
     }
 }
 
@@ -166,9 +125,67 @@ impl request::Lower for Entry {
     }
 }
 
+impl<'a> sq::Borrowed<'a> {
+    fn from_fields(fields: Fields) -> Self {
+        Self::new(Entry(fields, ThreadBound::NEW))
+    }
+
+    pub(crate) fn send(
+        slot: sq::Fixed,
+        input: bytes::Prefix<'a, { i32::MAX as usize }>,
+        word: sq::raw::Word,
+    ) -> Self {
+        let input = input.as_slice();
+        Self::from_fields(Fields {
+            address: input.as_ptr() as u64,
+            length: input.len() as u32,
+            options: libc::MSG_NOSIGNAL.unsigned_abs(),
+            ..Fields::fixed(buffers::SEND, slot, word)
+        })
+    }
+
+    pub(crate) fn send_msg(
+        slot: sq::Fixed,
+        message: impl dope_sys::io::raw::Message<'a>,
+        word: sq::raw::Word,
+    ) -> Self {
+        Self::from_fields(Fields {
+            address: ptr::from_ref(message.header()) as u64,
+            length: 1,
+            options: libc::MSG_NOSIGNAL.unsigned_abs(),
+            ..Fields::fixed(messages::SEND, slot, word)
+        })
+    }
+
+    pub(crate) fn accept(
+        listener: sq::Fixed,
+        peer: &'a mut socket::addr::Storage,
+        word: sq::raw::Word,
+    ) -> Self {
+        let (address, length) = peer.prepare_output();
+        Self::from_fields(Fields {
+            address: ptr::from_mut(address).cast::<libc::sockaddr>() as u64,
+            offset: (ptr::from_mut(length) as u64).to_ne_bytes(),
+            index: ring::ffi::FILE_INDEX_ALLOC,
+            ..Fields::fixed(sockets::ACCEPT, listener, word)
+        })
+    }
+}
+
 impl Fields {
-    pub(crate) fn token<T: complete::raw::Token>(&mut self, token: T) {
-        self.user_data = sq::raw::Word::encode(token).get();
+    fn fixed(opcode: op::Code, slot: sq::Fixed, word: sq::raw::Word) -> Self {
+        Self::new(opcode, sq::Descriptor::Fixed(slot), word.get())
+    }
+
+    fn new(opcode: op::Code, descriptor: sq::Descriptor, user_data: u64) -> Self {
+        let (fd, fixed) = descriptor.encode();
+        Self {
+            opcode: opcode.raw(),
+            flags: if fixed { Flags::FIXED_FILE.raw() } else { 0 },
+            fd,
+            user_data,
+            ..Self::default()
+        }
     }
 }
 

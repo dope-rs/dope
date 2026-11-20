@@ -2,26 +2,16 @@
 
 use std::{marker, ops, pin};
 
-use dope_core::{
-    driver::{
-        self, route,
-        route::Identity,
-        schedule,
-        schedule::{clock, ready},
-        settings,
-    },
-    io,
+use dope_core::driver::{
+    self, route,
+    route::Identity,
+    schedule,
+    schedule::{clock, ready},
+    settings,
 };
 use dope_runtime::executor;
 use o3::base::cell::region;
 use route::kind;
-
-/// Whether the exact event supplied to a probe is consumed or deferred.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Decision {
-    Consume,
-    Defer,
-}
 
 /// Direct lifecycle behavior and the retained park mode of one runtime probe.
 pub trait Hooks<'d, R>: Unpin {
@@ -29,8 +19,12 @@ pub trait Hooks<'d, R>: Unpin {
 
     const WAKE: bool = false;
 
-    fn dispatch(&mut self, _: &mut R, _: &io::Event<'d>) -> Decision {
-        Decision::Consume
+    fn dispatch<'event>(
+        &mut self,
+        _: &mut R,
+        _: executor::raw::Dispatch<'event, 'd>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
+        ops::ControlFlow::Continue(())
     }
 
     fn activate(
@@ -234,10 +228,7 @@ where
             return ops::ControlFlow::Continue(());
         }
         let this = app.get_mut();
-        match this.hooks.dispatch(&mut this.ready, &event) {
-            Decision::Consume => ops::ControlFlow::Continue(()),
-            Decision::Defer => ops::ControlFlow::Break(event),
-        }
+        this.hooks.dispatch(&mut this.ready, event)
     }
 
     fn progress(

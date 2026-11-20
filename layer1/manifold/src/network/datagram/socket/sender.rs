@@ -267,10 +267,9 @@ fn try_charge(budget: Option<Budget<'_>>, size: NonZero<usize>) -> Result<Charge
 }
 
 mod raw {
-    use dope_core::driver::retained::raw::Submission;
-
     use super::{
-        Context, Identity, Send, Sender, Vacancy, app, buffer, flights, handles, owners, result, send,
+        Context, Identity, Send, Sender, Vacancy, app, buffer, flights, handles, owners, result,
+        send,
     };
 
     impl<'d, ID: Identity, B: buffer::Residency + buffer::raw::Source, M: send::Mode>
@@ -313,10 +312,9 @@ mod raw {
                         let fd = select(&queued.control);
                         let mut slot = slot.stage(flights::Backing::new(queued));
                         let (message, flight) = slot.get_mut().fill_message();
-                        let op = Submission::send_msg(fd, message, target);
                         // SAFETY: the reserved slab retains the complete message graph
                         // at stable addresses through completion or quiescent finish.
-                        match unsafe { op.try_submit(driver.reborrow(), ops) } {
+                        match unsafe { ops.try_send_msg(driver.reborrow(), fd, message, target) } {
                             Ok(op) => {
                                 // This field was split before submission; writing it
                                 // cannot reborrow the graph now retained by the driver.

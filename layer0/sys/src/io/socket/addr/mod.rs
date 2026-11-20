@@ -155,6 +155,11 @@ impl Storage<Length> {
     pub fn output_mut(&mut self) -> (&mut libc::sockaddr_storage, &mut libc::socklen_t) {
         (&mut self.storage, &mut self.len.0)
     }
+
+    pub fn prepare_output(&mut self) -> (&mut libc::sockaddr_storage, &mut libc::socklen_t) {
+        self.len = Length(CAPACITY as libc::socklen_t);
+        self.output_mut()
+    }
 }
 
 impl Storage<Socklen> {
@@ -303,8 +308,7 @@ impl<'a> Addr<'a> {
         file: BorrowedFd<'_>,
         storage: &'a mut Storage<Length>,
     ) -> Result<Self, Local<E>> {
-        let (address, length) = storage.output_mut();
-        *length = CAPACITY as libc::socklen_t;
+        let (address, length) = storage.prepare_output();
         // SAFETY: the exclusive address and length borrows retain their full
         // capacity through getsockname, which returns zero or minus one.
         let status =

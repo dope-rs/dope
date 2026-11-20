@@ -63,17 +63,14 @@ fn full_queue_retries_once() {
                         let target = targets.bind(SlotIndex::fixed::<8>(), Epoch::INITIAL);
                         let mut admitted = 0;
                         for _ in 0..17 {
-                            let request = retained::raw::Submission::send(
-                                &sockets[0],
-                                transfer::View::prefix(b"retry"),
-                                target,
-                            );
                             // SAFETY: the static payload and exact descriptor remain
                             // retained until dispatch below or driver quiescence.
                             let sent = unsafe {
-                                request.try_submit(
+                                sends.try_send(
                                     driver.reborrow(),
-                                    &sends,
+                                    &sockets[0],
+                                    transfer::View::prefix(b"retry"),
+                                    target,
                                 )
                             };
                             match sent {
@@ -131,17 +128,14 @@ fn full_queue_retries_once() {
                                     retained: None
                                 }
                             ));
-                            let request = retained::raw::Submission::send(
-                                &sockets[0],
-                                transfer::View::prefix(b"retry"),
-                                target,
-                            );
                             // SAFETY: the static payload and exact descriptor remain
                             // retained through driver quiescence.
                             let sent = unsafe {
-                                request.try_submit(
+                                sends.try_send(
                                     driver.reborrow(),
-                                    &sends,
+                                    &sockets[0],
+                                    transfer::View::prefix(b"retry"),
+                                    target,
                                 )
                             };
                             drop(sent.expect("native capacity available after wait"));

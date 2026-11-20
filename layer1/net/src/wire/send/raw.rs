@@ -2,7 +2,7 @@ use std::convert::Infallible;
 
 use dope_core::{
     driver::{
-        self, result, retained,
+        self, result,
         retained::flight,
         route::{self, kind},
     },
@@ -61,10 +61,9 @@ impl<'a> Ready<'a> for Slice<'a> {
         slots: &flight::Slots<'d, Tag>,
         driver: driver::Context<'_, 'd>,
     ) -> Result<Submitted<'d>, result::SubmitError> {
-        let op = retained::raw::Submission::send(fd, self.view, target);
         // SAFETY: the caller retains the exact bytes and descriptor authority
         // through the terminal completion represented by the returned flight.
-        let flight = unsafe { op.try_submit(driver, slots) }?;
+        let flight = unsafe { slots.try_send(driver, fd, self.view, target) }?;
         Ok(Submitted {
             bytes: self.bytes,
             flight,
@@ -80,10 +79,9 @@ impl<'a> Ready<'a> for Vectors<'a> {
         slots: &flight::Slots<'d, Tag>,
         driver: driver::Context<'_, 'd>,
     ) -> Result<Submitted<'d>, result::SubmitError> {
-        let op = retained::raw::Submission::send_msg(fd, self.message, target);
         // SAFETY: the caller retains the exact message graph, payload and
         // descriptor authority through terminal completion or quiescence.
-        let flight = unsafe { op.try_submit(driver, slots) }?;
+        let flight = unsafe { slots.try_send_msg(driver, fd, self.message, target) }?;
         Ok(Submitted {
             bytes: self.bytes,
             flight,

@@ -18,7 +18,7 @@ use crate::{
     },
 };
 
-type Terminal<'a> = request::Borrowed<'a>;
+type Terminal<'a> = dope_sys::io::socket::addr::Addr<'a>;
 
 /// Retains the affine descriptor, captured address and exact typed route until submission.
 pub(crate) struct Connect<'a, 'borrow, 'd: 'borrow, Tag: route::Tag> {

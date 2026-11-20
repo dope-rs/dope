@@ -15,6 +15,11 @@ use crate::network::listener::{
 
 mod raw;
 
+type Queue<'a, 'p, 's, 'e, 'd, ID, B> = egress::Queue<
+    'a, 'e, 'd, { crate::network::listener::IOV_CAP },
+    writer::Payload<'p, 's, 'd, ID, B>, writer::Reserve<'d, B>,
+>;
+
 /// One admitted native output, retained until publication or abandonment.
 #[must_use = "dropping an output releases its unpublished reservation"]
 pub struct Output<
@@ -123,7 +128,7 @@ where
 }
 
 impl<'a, 'c, 'p, 's, 'w, 'e, 'io, 'd: 'w + 'e, ID: Identity, W, C, B, Q: reserve::Geometry, G: bound::Bound>
-    Output<'a, 'c, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, B, Q, G>
+    Owner<'a, 'c, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, B, Q, G>
 where
     W: wire::Spec + 'w + 'd,
     B: data::raw::Payload<'d>,
@@ -133,48 +138,22 @@ where
         open: &'a conn::Open<'c, 'p, 's, 'e, 'd, ID, B>,
         work: app::Lease<'a, 'd>,
         reservation: Reservation<'a, 'p, 's, 'e, 'io, 'd, ID, B, Q, G>,
-        output: &'out mut MaybeUninit<Self>,
-    ) -> slot::Occupied<'out, Self> {
-        slot::Vacant::new(output).insert(Self {
-            lease: Lease::open(
-                Owner {
-                    slot,
-                    open,
-                    work,
-                    scope: marker::PhantomData,
-                },
-                reservation,
-            ),
-            written: 0,
-        })
+        output: &'out mut MaybeUninit<Lease<Self, Open>>,
+    ) -> slot::Occupied<'out, Lease<Self, Open>> {
+        slot::Vacant::new(output).insert(Lease::open(
+            Self { slot, open, work, scope: marker::PhantomData },
+            reservation,
+        ))
     }
 
-    pub(super) fn prepare<'out, P>(
+    fn admit<'out, P>(
         connection: &'a mut conn::Ctx<'e, 'c, 'p, 's, 'w, 'd, ID, W, C, B>,
         driver: &'a mut driver::Context<'io, 'd>,
-        output: &'out mut MaybeUninit<Self>,
-        prepare: impl FnOnce(
-            &egress::Queue<
-                'c,
-                'e,
-                'd,
-                { crate::network::listener::IOV_CAP },
-                writer::Payload<'p, 's, 'd, ID, B>,
-                writer::Reserve<'d, B>,
-            >,
-        ) -> Option<(G::Finite, P)>,
-        plan: impl FnOnce(
-            &egress::Queue<
-                'c,
-                'e,
-                'd,
-                { crate::network::listener::IOV_CAP },
-                writer::Payload<'p, 's, 'd, ID, B>,
-                writer::Reserve<'d, B>,
-            >,
-            P,
-        ) -> Result<memory::Plan<'c, 'p, 's, 'e, 'd, ID, B, Q>, reserve::error::Lane>,
-    ) -> Result<slot::Occupied<'out, Self>, write::error::Admission> {
+        output: &'out mut MaybeUninit<Lease<Self, Open>>,
+        prepare: impl FnOnce(&Queue<'c, 'p, 's, 'e, 'd, ID, B>) -> Option<(G::Finite, P)>,
+        plan: impl FnOnce(&Queue<'c, 'p, 's, 'e, 'd, ID, B>, P)
+            -> Result<memory::Plan<'c, 'p, 's, 'e, 'd, ID, B, Q>, reserve::error::Lane>,
+    ) -> Result<slot::Occupied<'out, Lease<Self, Open>>, write::error::Admission> {
         use memory::Claim;
         use write::error::Admission;
 
@@ -253,7 +232,7 @@ where
             )),
             output,
         );
-        let (_, reservation) = output.get_mut().lease.parts_mut();
+        let (_, reservation) = output.get_mut().parts_mut();
         let Reservation::Queued(queued) = reservation else {
             unreachable!("output");
         };
@@ -267,12 +246,19 @@ where
                 )))
             }
             task::Poll::Pending => {
-                Self::defer(output, now);
+                Output::defer(output, now);
                 Err(Admission::Deferred(write::Deferred::Capacity))
             }
         }
     }
+}
 
+impl<'a, 'c, 'p, 's, 'w, 'e, 'io, 'd: 'w + 'e, ID: Identity, W, C, B, Q: reserve::Geometry, G: bound::Bound>
+    Output<'a, 'c, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, B, Q, G>
+where
+    W: wire::Spec + 'w + 'd,
+    B: data::raw::Payload<'d>,
+{
     /// Lends the connection state and the retained header's initialized prefix.
     pub fn parts(&mut self) -> (&mut C, Slice<'_, &mut usize>) {
         let (owner, reservation) = self.lease.parts_mut();

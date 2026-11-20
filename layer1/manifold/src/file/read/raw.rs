@@ -128,11 +128,11 @@ impl Scratch {
 
 impl Metadata {
     fn complete(
-        self,
+        &mut self,
         native: Result<(), dope_core::Errno>,
         free: &mut Option<Box<Scratch>>,
-    ) -> (fs::File, Result<fs::metadata::Value, MetadataError>) {
-        let MetadataState::Scratch(scratch) = self.state else {
+    ) {
+        let MetadataState::Scratch(scratch) = mem::replace(&mut self.state, MetadataState::Idle) else {
             unreachable!("metadata")
         };
         let result = match native {
@@ -145,7 +145,7 @@ impl Metadata {
             Err(cause) => Err(MetadataError::Operation(Error::System(cause))),
         };
         Scratch::release(free, scratch);
-        (self.file, result)
+        self.state = MetadataState::Done(result);
     }
 }
 
@@ -413,7 +413,7 @@ pub(super) fn submit<'d, ID: Identity, R: Return<Item: Output>>(
                 let operation = fs::Submission::rename(directory.rename(old, new), target);
                 // SAFETY: the fixed request owns the directory and both names
                 // through the original completion or native quiescence.
-                unsafe { driver.reborrow().submit_file(slots, operation) }.map(Active::Sync)
+                unsafe { driver.reborrow().submit_file(slots, operation) }.map(Active::Rename)
             }
             Request::Read(request) => {
                 let (file, output, offset) = request.borrow();
@@ -442,7 +442,7 @@ pub(super) fn submit<'d, ID: Identity, R: Return<Item: Output>>(
                 if result.is_err() {
                     request.release(free);
                 }
-                result.map(Active::Sync)
+                result.map(Active::Metadata)
             }
         };
         result.map_err(Error::Submission)
@@ -601,29 +601,22 @@ impl<'d, ID: Identity, R: Return<Item: Output>> event::Drive<'d> for Reader<'_, 
                     let entry = slot.state();
                     match entry.phase.take() {
                         Some(Phase::Active {
-                            flight: Active::Sync(flight),
+                            flight: Active::Rename(flight),
                             ..
                         }) if flight.matches(done.token()) => {
                             drop(flight);
-                            match entry.take() {
-                                request @ Request::Rename { .. } => {
-                                    entry.insert(request);
-                                    port.settle(
-                                        &slot,
-                                        Outcome::Rename(done.outcome().map_err(Error::System)),
-                                    );
-                                }
-                                Request::Metadata(request) => {
-                                    let (file, result) =
-                                        request.complete(done.outcome(), &mut this.free);
-                                    entry.insert(Request::Metadata(Metadata {
-                                        file,
-                                        state: MetadataState::Done(result),
-                                    }));
-                                    port.settle(&slot, Outcome::Metadata);
-                                }
-                                _ => unreachable!("operation"),
-                            }
+                            port.settle(&slot, Outcome::Rename(done.outcome().map_err(Error::System)));
+                        }
+                        Some(Phase::Active {
+                            flight: Active::Metadata(flight),
+                            ..
+                        }) if flight.matches(done.token()) => {
+                            drop(flight);
+                            entry.with_request(|request| {
+                                let Request::Metadata(request) = request else { unreachable!("operation") };
+                                request.complete(done.outcome(), &mut this.free);
+                            });
+                            port.settle(&slot, Outcome::Metadata);
                         }
                         phase => {
                             entry.restore(phase);

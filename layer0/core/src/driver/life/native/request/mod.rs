@@ -16,9 +16,6 @@ pub(crate) mod permits;
 
 pub(crate) enum Context {}
 
-pub(crate) type Borrowed<'a> =
-    request::Borrowed<'a, <<Backend as Source<Context>>::Raw as request::Lower>::Target>;
-
 impl request::Context for Context {
     type Target = handles::PhysicalSlot;
     type Outbound = handles::OutboundSlot;

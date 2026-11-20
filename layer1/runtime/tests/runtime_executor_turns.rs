@@ -6,15 +6,18 @@ use dope_core::{
     },
 };
 use dope_runtime::executor::session::Completion;
-use dope_test::{harness::scenario::TIMEOUT, reclaim::Reports};
+use dope_test::{
+    harness::{observe::Trace, scenario::TIMEOUT},
+    reclaim::Reports,
+};
 pub mod common;
 
-use std::{cell::Cell, net::UdpSocket, rc::Rc};
+use std::{cell::Cell, net::UdpSocket, ops::ControlFlow, pin, rc::Rc, time::Instant};
 
 use dope_core::{
     driver::{
         retained::flight,
-        route::{self, Epoch, KeyTag, indices::SlotIndex},
+        route::{self, Epoch, KeyTag, Tag, indices::SlotIndex},
         settings::{
             self, Config,
             demands::{Schedule, slots::Slots},
@@ -23,7 +26,7 @@ use dope_core::{
     io::{self},
 };
 use dope_runtime::{
-    executor::{Executor, session},
+    executor::{Executor, raw, session},
     shutdown,
 };
 
@@ -244,7 +247,10 @@ fn retains_deferred_event() {
                 let driven = session.with_quiesce(
                     &mut finish,
                     Fallback {
-                        first: Missing { app: None },
+                        first: Missing {
+                            other_route: &Trace::<_, 0>::new(),
+                            app: None,
+                        },
                         second: dispatch::Builder::new(Deferred {
                             calls: &mut calls,
                             shutdown: Some(trigger),
@@ -283,6 +289,107 @@ fn retains_deferred_event() {
 
         assert_eq!(calls, Some(2));
     });
+}
+
+#[test]
+fn dispatches_the_returned_route_only_in_the_remaining_fields() {
+    let config = Configured::quic::<2, 8>().config();
+    let mut reports = Reports::new::<route::Route>(config, []);
+    dope_test::scope::Driver::new(config).with_scope(
+        |scope| {
+            let (_, mut driver, mut schedule) = scope.split();
+            let udp = UdpSocket::bind(("127.0.0.1", 0)).expect("bind datagram");
+            udp.connect(udp.local_addr().expect("local address"))
+                .expect("connect datagram");
+            let (socket, _) =
+                Install::adopt_udp(driver.reborrow(), udp.into()).expect("adopt datagram");
+            let reference = driver.driver_ref();
+            let zero = reference
+                .targets::<KeyTag<0>>()
+                .bind(SlotIndex::ZERO, Epoch::INITIAL);
+            let one = reference
+                .targets::<KeyTag<1>>()
+                .bind(SlotIndex::ZERO, Epoch::INITIAL);
+            let capacity = flight::Capacity::fixed::<1>();
+            let needs = flight::Need::<KeyTag<0>>::new(capacity)
+                .pair(flight::Need::<KeyTag<1>>::new(capacity));
+            let (first, second) = driver
+                .storage
+                .reborrow()
+                .try_flights(needs)
+                .expect("flight pair")
+                .slots();
+            drop(
+                first
+                    .shutdown(driver.reborrow(), &socket, zero)
+                    .expect("first shutdown"),
+            );
+            drop(
+                second
+                    .shutdown(driver.reborrow(), &socket, one)
+                    .expect("second shutdown"),
+            );
+
+            let deadline = Instant::now() + TIMEOUT;
+            let mut saved = None;
+            let mut observed = false;
+            while !observed {
+                let mut guard = schedule.begin();
+                let remaining = deadline
+                    .checked_duration_since(Instant::now())
+                    .expect("completion deadline");
+                driver
+                    .wait(guard.reactor(), Some(remaining))
+                    .expect("wait for shutdown");
+                let (reactor, turn) = guard.split();
+                let result = driver.dispatch(reactor, |mut slot, driver| {
+                    let Some(mut other) = saved.take() else {
+                        saved = Some(slot.into_inner());
+                        return ControlFlow::Continue(());
+                    };
+                    if slot.route() != KeyTag::<0>::ROUTE {
+                        std::mem::swap(slot.get_mut(), &mut other);
+                    }
+                    assert_eq!(other.route(), KeyTag::<1>::ROUTE);
+                    let swap = Swap {
+                        other: Cell::new(other),
+                        visits: Cell::new(0),
+                    };
+                    let app = pin::pin!(Missing {
+                        other_route: Missing {
+                            other_route: dispatch::Builder::new(&swap).probe::<KeyTag<0>>(),
+                            app: Some(dispatch::Builder::new(&swap).probe::<KeyTag<1>>()),
+                        },
+                        app: Some(dispatch::Builder::new(&swap).probe::<KeyTag<2>>()),
+                    });
+                    let result = raw::App::dispatch(
+                        app,
+                        raw::Dispatch::new(slot),
+                        turn.reborrow(),
+                        driver.reborrow(),
+                    );
+                    let returned = result.break_value().expect("return earlier route");
+                    assert_eq!(returned.route(), KeyTag::<0>::ROUTE);
+                    assert_eq!(swap.visits.get(), 2);
+                    observed = true;
+                    ControlFlow::Continue(())
+                });
+                assert!(matches!(
+                    result,
+                    dope_core::driver::result::poll::Dispatch::Ready { retained: None, .. }
+                ));
+            }
+            Descriptor::from(socket).close(&mut driver);
+        },
+        recovery::Policy::new(|report| reports.push(report), common::recover),
+        |result| {
+            result
+                .as_ref()
+                .map_err(dope_test::scope::Error::cause)
+                .expect("native scope");
+        },
+    );
+    assert!(reports.events().expect("retirement").is_empty());
 }
 
 fn stopped(

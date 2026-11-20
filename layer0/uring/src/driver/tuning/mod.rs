@@ -243,7 +243,7 @@ impl<E: Copy, const N: usize> tuning::Occupied<E> for Occupied<'_, E, N> {
 const _: () = {
     assert!(std::mem::size_of::<Table<u64, 7>>() == 3 * std::mem::size_of::<usize>());
     assert!(mem::size_of::<Status>() == 16);
-    assert!(mem::size_of::<State<num::NonZero<u64>, 7>>() == 120);
+    assert!(mem::size_of::<State<num::NonZero<u64>, 7>>() == 72);
 };
 
 impl<E, const N: usize> State<E, N> {

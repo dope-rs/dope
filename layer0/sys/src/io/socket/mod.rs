@@ -324,8 +324,7 @@ pub trait Socket: errno::Source {
         file: BorrowedFd<'_>,
         address: &mut addr::Storage,
     ) -> Result<(), E> {
-        let (storage, len) = address.output_mut();
-        *len = mem::size_of_val(storage) as socklen_t;
+        let (storage, len) = address.prepare_output();
         // SAFETY: both exclusive output borrows retain their full native extents.
         let raw =
             unsafe { libc::getpeername(file.as_raw_fd(), ptr::from_mut(storage).cast(), len) };
@@ -494,8 +493,7 @@ pub trait Socket: errno::Source {
         output: &'a mut [u8],
         address: &mut addr::Storage,
     ) -> Result<&'a mut [u8], E> {
-        let (storage, len) = address.output_mut();
-        *len = mem::size_of_val(storage) as socklen_t;
+        let (storage, len) = address.prepare_output();
         // SAFETY: the exclusive output and address borrows retain their full extents.
         let raw = unsafe {
             libc::recvfrom(

@@ -128,12 +128,19 @@ impl<'d, ID: route::Identity, F: for<'a, 'b> Fn(Event<'a, 'b, ID>)> handler::Bor
 {
     fn chunk<R: TryRetain>(
         self: Pin<&mut Self>,
-        _: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
+        mut conn: conn::Ctx<'_, '_, '_, '_, '_, 'd, ID, Identity, Self::Conn>,
         _: R,
         _: &mut driver::Context<'_, 'd>,
     ) -> Outcome {
-        self.as_ref().get_ref().trace.received.hit();
-        Outcome::Continue
+        conn.with_state(|state, projection| match state {
+            Connection::Opening => Outcome::CloseAfter,
+            Connection::Accepted(id) => {
+                let child = projection.bind(id);
+                assert!(*child.state() == child.id());
+                self.as_ref().get_ref().trace.received.hit();
+                Outcome::Continue
+            }
+        })
     }
 }
 

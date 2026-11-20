@@ -37,6 +37,8 @@ use write::body;
 
 pub mod deadline;
 
+pub use writer::deadline::Projection;
+
 pub enum Failure {
     Option(dope_core::Errno),
     Submit(result::SubmitError),
@@ -338,18 +340,6 @@ impl<
     B: data::raw::Payload<'d>,
 > Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, W, C, B>
 {
-    /// Reborrows child state.
-    pub fn map_state<'view, T>(
-        &'view mut self,
-        select: impl for<'child> FnOnce(&'child mut C) -> &'child mut T,
-    ) -> Ctx<'e, 'view, 'p, 's, 'w, 'd, ID, W, T, B> {
-        Ctx {
-            slot: self.slot.project(select),
-            output: self.output,
-            work: self.work,
-        }
-    }
-
     pub(super) fn sealed(
         slot: Slot<'a, 'p, 's, 'w, 'd, ID, W, C, B>,
         work: app::Work<'a, 'd>,

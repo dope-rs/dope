@@ -1,19 +1,26 @@
 use std::{mem::MaybeUninit, ptr};
 
-use dope_core::driver::route::Identity;
+use dope_core::driver::{self, route::Identity};
 use dope_net::link::{
     egress::{self, data::compose, load::Value, reserve},
     slot::transmit::outcome::Progress,
 };
-use o3::{base::num::bounded, buffer::write::Slice, mem::slot};
+use o3::{
+    base::num::bounded,
+    buffer::write::Slice,
+    mem::{Lease, lease::Open, slot},
+};
 
 use crate::network::listener::{
     self,
-    conn::write::{self, error},
+    conn::{
+        self,
+        write::{self, error},
+    },
     writer::memory,
 };
 
-use super::{Queued, Reservation, apply_end};
+use super::{Owner, Queue, Queued, Reservation, apply_end};
 
 impl<
     'a,
@@ -32,13 +39,35 @@ impl<
     G: o3::buffer::resident::bound::Bound,
 > super::Output<'a, 'c, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, B, Q, G>
 {
+    #[inline(always)]
+    pub(in crate::network::listener::conn::write) fn prepare<'out, P>(
+        connection: &'a mut conn::Ctx<'e, 'c, 'p, 's, 'w, 'd, ID, W, C, B>,
+        driver: &'a mut driver::Context<'io, 'd>,
+        output: &'out mut MaybeUninit<Self>,
+        prepare: impl FnOnce(&Queue<'c, 'p, 's, 'e, 'd, ID, B>) -> Option<(G::Finite, P)>,
+        plan: impl FnOnce(&Queue<'c, 'p, 's, 'e, 'd, ID, B>, P)
+            -> Result<memory::Plan<'c, 'p, 's, 'e, 'd, ID, B, Q>, reserve::error::Lane>,
+    ) -> Result<slot::Occupied<'out, Self>, error::Admission> {
+        let place = output.as_mut_ptr();
+        // SAFETY: only the lease field is lent for initialization in the exclusive output slot.
+        let lease = unsafe { &mut *uninit(&raw mut (*place).lease) };
+        let admitted = Owner::admit(connection, driver, lease, prepare, plan)?;
+        let _ = admitted.into_uninit();
+        // SAFETY: admission installed that exact lease and transferred its destructor.
+        // Initializing the disjoint count completes the output at its original address.
+        unsafe {
+            (&raw mut (*place).written).write(0);
+            Ok(slot::Vacant::new(output).assume_init())
+        }
+    }
+
     pub(super) fn defer(
-        output: slot::Occupied<'_, Self>,
+        output: slot::Occupied<'_, Lease<Owner<'a, 'c, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, B, Q, G>, Open>>,
         now: dope_core::driver::schedule::clock::Moment<'d>,
     ) {
         let mut output = output.into_uninit();
         // SAFETY: the consumed slot retains the initialized, unpublished lease.
-        let Self { lease, written: _ } = unsafe { output.get_mut().assume_init_mut() };
+        let lease = unsafe { output.get_mut().assume_init_mut() };
         let (owner, reservation) = lease.parts_mut();
         let Reservation::Queued(queued) = reservation else {
             unreachable!("output");
@@ -156,6 +185,10 @@ impl<
         }
         Ok(())
     }
+}
+
+fn uninit<T>(field: *mut T) -> *mut MaybeUninit<T> {
+    field.cast()
 }
 
 pub(super) fn borrow<'a>(

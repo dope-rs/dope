@@ -4,13 +4,15 @@ use dope_sys::{
     engine::admit::{self, Context},
     io::{
         reactor::{Full, complete, submit},
-        request,
-        socket::{option, option::tuning},
+        socket::{addr, option, option::tuning},
     },
     kernel,
     table::token::{Codec, host},
 };
-use o3::{base::num::bounded, depot::capacity};
+use o3::{
+    base::{marker::ThreadBound, num::bounded},
+    depot::capacity,
+};
 
 use crate::{
     Uring, error,
@@ -19,18 +21,34 @@ use crate::{
 
 /// A deferred request whose host retains every encoded address.
 #[derive(Debug)]
-pub(crate) struct Deferred(sq::Entry);
+pub(crate) struct Deferred {
+    slot: sq::Fixed,
+    address: *const libc::sockaddr,
+    length: addr::Socklen,
+    _thread: ThreadBound,
+}
 
 impl Deferred {
     /// # Safety
-    /// Retain every encoded address until a submitted request completes or
-    /// this capability is dropped without submission.
-    pub(crate) unsafe fn new(request: request::Borrowed<'_, sq::Fixed>) -> Self {
-        Self(sq::Entry::retained(request).0)
+    /// Retain the address through completion or until this unsubmitted connect is dropped.
+    pub(crate) unsafe fn new(slot: sq::Fixed, address: addr::Addr<'_>) -> Self {
+        let (address, length) = address.parts();
+        Self {
+            slot,
+            address,
+            length,
+            _thread: ThreadBound::NEW,
+        }
+    }
+
+    pub(super) fn into_parts(self) -> (sq::Fixed, *const libc::sockaddr, addr::Socklen) {
+        (self.slot, self.address, self.length)
     }
 
     pub(crate) fn submit<T: complete::raw::Token>(self, vacancy: Vacancy<'_, T>, token: T) {
-        submit::raw::Vacancy::push_owned(vacancy, self.0, token);
+        vacancy
+            .0
+            .fill(|entry| *entry = sq::Entry::connect(self, Word::encode(token)));
     }
 }
 
@@ -42,10 +60,12 @@ pub struct Vacancy<'queue, T>(&'queue mut State, marker::PhantomData<fn(T) -> T>
 impl<T: complete::raw::Token> Vacancy<'_, T> {
     /// # Safety
     /// Retain every request address through terminal completion or quiescence.
-    pub(crate) unsafe fn push_retained(self, request: request::Borrowed<'_, sq::Fixed>, token: T) {
-        let entry = self.0.next();
-        entry.write(request);
-        entry.fields().token(token);
+    pub(crate) unsafe fn push_retained<'r>(
+        self,
+        token: T,
+        prepare: impl FnOnce(Word) -> sq::Borrowed<'r>,
+    ) {
+        self.0.fill(|entry| *entry = prepare(Word::encode(token)).0);
     }
 }
 
@@ -218,19 +238,13 @@ impl<'queue, T: complete::raw::Token> submit::raw::Vacancy<'queue, T> for Vacanc
     type Prepared<'e, E: 'e> = Prepared<'queue, 'e, E, 1>;
 
     fn push_owned(self, entry: sq::Entry, token: T) {
-        self.0
-            .push_one(ptr::NonNull::from(&entry))
-            .fields()
-            .token(token);
+        self.0.fill(|target| *target = entry.with_token(token));
     }
 
     /// # Safety
     /// Every encoded address must remain live through terminal completion or quiescence.
     unsafe fn push<'resources>(self, entry: sq::Borrowed<'resources>, token: T) {
-        self.0
-            .push_one(ptr::NonNull::from(&entry))
-            .fields()
-            .token(token);
+        self.push_owned(entry.0, token);
     }
 
     /// # Safety
@@ -368,22 +382,21 @@ impl State {
         self.cursor.tail = self.cursor.tail.wrapping_add(count.count().get());
     }
 
-    fn push_one<E>(&mut self, entry: ptr::NonNull<E>) -> &mut sq::Entry {
+    fn push_one<E>(&mut self, entry: ptr::NonNull<E>) {
         const { assert!(mem::size_of::<E>() == mem::size_of::<sq::Entry>()) };
         const { assert!(mem::align_of::<E>() == mem::align_of::<sq::Entry>()) };
-        let target = self.next();
         // SAFETY: the admitted destination cannot overlap the caller-owned SQE.
-        unsafe { ptr::copy_nonoverlapping(entry.as_ptr().cast::<sq::Entry>(), target, 1) };
-        target
+        self.fill(|target| unsafe {
+            ptr::copy_nonoverlapping(entry.as_ptr().cast::<sq::Entry>(), target, 1);
+        });
     }
 
-    fn next(&mut self) -> &mut sq::Entry {
+    fn fill(&mut self, write: impl FnOnce(&mut sq::Entry)) {
         let index = (self.cursor.tail & self.axis.mask()) as usize;
         // SAFETY: the exact one-slot reservation and ring mask prove this slot
         // is free and in bounds. Publication follows complete initialization.
-        let target = unsafe { &mut *self.entries.as_ptr().add(index) };
+        write(unsafe { &mut *self.entries.as_ptr().add(index) });
         self.cursor.tail = self.cursor.tail.wrapping_add(1);
-        target
     }
 
     /// Samples kernel-owned flags for this single-issuer ring.

@@ -2,7 +2,7 @@ use std::{mem, path::Path};
 
 use dope_core::{
     driver,
-    driver::{retained, retained::flight, route, route::kind},
+    driver::{retained::flight, route, route::kind},
     io::{fs, socket::msg},
 };
 use dope_sys::io::socket::msg::{Header, Iovec};
@@ -85,8 +85,7 @@ impl<'d> Submit<'d> for driver::Context<'_, 'd> {
         let slots = flights.slots();
         // SAFETY: the caller retains every submitted resource under this exact
         // owner through quiescence, including returned failures.
-        let flight = unsafe { retained::raw::Submission::try_file(self.reborrow(), &slots, op) }
-            .map_err(Error::Submit)?;
+        let flight = unsafe { slots.try_file(self.reborrow(), op) }.map_err(Error::Submit)?;
         drop(flight);
         Ok(())
     }

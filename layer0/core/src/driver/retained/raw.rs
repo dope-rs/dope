@@ -1,10 +1,14 @@
 use std::mem;
 
 use crate::{
-    Engine, driver,
+    Backend, Engine, driver,
     driver::{
         flight,
-        life::native::{request, request::bound},
+        life::native::{
+            host::Host,
+            request,
+            request::{bound, permits},
+        },
         result, route,
         route::kind,
     },
@@ -15,75 +19,112 @@ use crate::{
         transfer,
     },
 };
-use dope_sys::io::socket::{
-    addr::{Length, Storage},
-    option::tuning,
+use dope_sys::{
+    engine::admit::raw::Retain,
+    io::socket::{addr, option::tuning},
 };
 
-/// A native operation tied to every resource borrowed by its request.
-pub struct Submission<'a, 'd, Tag: route::Tag, C: kind::Class = kind::Any> {
-    submission: request::Borrowed<'a>,
-    target: route::Operation<'d, Tag, C>,
-}
-
-impl<'a, 'd, Tag: route::Tag> Submission<'a, 'd, Tag> {
-    fn bind<C: kind::Class>(
-        raw: request::Borrowed<'a>,
+impl<'d, Tag: route::Tag> flight::Slots<'d, Tag> {
+    fn try_retain<C: kind::Flight>(
+        &self,
+        mut context: driver::Context<'_, 'd>,
         target: route::Operation<'d, Tag, C>,
-    ) -> Submission<'a, 'd, Tag, C> {
-        Submission {
-            submission: raw,
-            target,
-        }
+        submit: impl FnOnce(permits::Guard<'_>, flight::raw::Echo),
+    ) -> Result<flight::Flight<'d, C>, result::SubmitError> {
+        let (permit, space) = self.try_admit(&mut context, target)?;
+        Ok(permit.retain(bound::Bound::new(submit, space)))
     }
 
-    pub fn send(
-        fd: &'a handles::Descriptor<'d>,
-        buffer: transfer::View<'a>,
+    /// # Safety
+    /// Descriptor, target and slots belong to this driver. Keep the descriptor alive and the
+    /// bytes fixed and immutable through terminal completion or quiescence.
+    pub unsafe fn try_send<'r>(
+        &self,
+        context: driver::Context<'_, 'd>,
+        fd: &'r handles::Descriptor<'d>,
+        buffer: transfer::View<'r>,
         target: route::Target<'d, Tag>,
-    ) -> Submission<'a, 'd, Tag, kind::Send>
+    ) -> Result<flight::Flight<'d, kind::Send>, result::SubmitError>
     where
+        'd: 'r,
         Tag: route::Select<kind::Send>,
     {
-        Self::bind(
-            request::Borrowed::send(
-                request::Lowered::target(fd.slot_ref()),
-                buffer.into_prefix(),
-            ),
+        self.try_retain(
+            context,
             target.operation::<kind::Send>(),
+            |native, key| unsafe {
+                Retain::<Host<Backend>>::send(
+                    native,
+                    request::Lowered::target(fd.slot_ref()),
+                    buffer.into_prefix(),
+                    key,
+                );
+            },
         )
     }
 
-    pub fn send_msg(
-        fd: &'a handles::Descriptor<'d>,
-        msg: msg::Message<'a>,
+    /// # Safety
+    /// Descriptor, target and slots belong to this driver. Keep the descriptor alive and the
+    /// message graph fixed and immutable through terminal completion or quiescence.
+    pub unsafe fn try_send_msg<'r>(
+        &self,
+        context: driver::Context<'_, 'd>,
+        fd: &'r handles::Descriptor<'d>,
+        message: msg::Message<'r>,
         target: route::Target<'d, Tag>,
-    ) -> Submission<'a, 'd, Tag, kind::Send>
+    ) -> Result<flight::Flight<'d, kind::Send>, result::SubmitError>
     where
+        'd: 'r,
         Tag: route::Select<kind::Send>,
     {
-        Self::bind(
-            request::Borrowed::send_msg(request::Lowered::target(fd.slot_ref()), msg),
+        self.try_retain(
+            context,
             target.operation::<kind::Send>(),
+            |native, key| unsafe {
+                Retain::<Host<Backend>>::send_msg(
+                    native,
+                    request::Lowered::target(fd.slot_ref()),
+                    message,
+                    key,
+                );
+            },
         )
     }
 
-    pub(in crate::driver::retained) fn accept(
-        fd: &'a handles::Descriptor<'d>,
-        peer: &'a mut Storage<Length>,
+    /// # Safety
+    /// Listener, target and slots belong to this driver. Keep the listener alive and the
+    /// exclusive peer output fixed through terminal completion or quiescence.
+    pub(in crate::driver::retained) unsafe fn try_accept_one(
+        &self,
+        context: driver::Context<'_, 'd>,
+        fd: &handles::Descriptor<'d>,
+        peer: &mut addr::Storage,
         target: route::Operation<'d, Tag, kind::Accept>,
-    ) -> Submission<'a, 'd, Tag, kind::Accept> {
-        let (address, len) = peer.output_mut();
-        Self::bind(
-            request::Borrowed::accept(request::Lowered::target(fd.slot_ref()), address, len),
-            target,
-        )
+    ) -> Result<flight::Flight<'d, kind::Accept>, result::SubmitError> {
+        self.try_retain(context, target, |native, key| unsafe {
+            Retain::<Host<Backend>>::accept(
+                native,
+                request::Lowered::target(fd.slot_ref()),
+                peer,
+                key,
+            );
+        })
     }
-}
 
-impl<'a, 'd, Tag: route::Tag, C: kind::Class> Submission<'a, 'd, Tag, C> {
-    pub(crate) fn into_parts(self) -> (request::Borrowed<'a>, route::Operation<'d, Tag, C>) {
-        (self.submission, self.target)
+    /// # Safety
+    /// Target and slots belong to this driver. Retain every file borrow through completion or quiescence.
+    pub unsafe fn try_file<'r, C: kind::Flight>(
+        &self,
+        context: driver::Context<'_, 'd>,
+        entry: fs::Submission<'r, 'd, Tag, C>,
+    ) -> Result<flight::Flight<'d, C>, result::SubmitError>
+    where
+        'd: 'r,
+    {
+        let (raw, target) = entry.into_parts();
+        self.try_retain(context, target, |native, key| unsafe {
+            Retain::<Host<Backend>>::file(native, raw, key);
+        })
     }
 }
 
@@ -92,61 +133,8 @@ impl<'a, 'd, Tag: route::Tag, C: kind::Class> Submission<'a, 'd, Tag, C> {
 #[must_use = "connect must be submitted or its exact descriptor is closed"]
 pub struct Connect<'addr, 'd, Tag: route::Tag> {
     fd: handles::Descriptor<'d>,
-    submission: request::Borrowed<'addr>,
+    address: addr::Addr<'addr>,
     target: route::Target<'d, Tag>,
-}
-
-impl<'borrow, 'd, Tag, C> Submission<'borrow, 'd, Tag, C>
-where
-    Tag: route::Tag,
-    C: kind::Flight,
-{
-    /// # Safety
-    /// Handles, target and slots belong to `context`'s driver. Retain the exact
-    /// borrowed resources in place through terminal completion or quiescence.
-    #[inline(always)]
-    pub unsafe fn try_submit<'a>(
-        self,
-        mut context: driver::Context<'a, 'd>,
-        slots: &'a flight::Slots<'d, Tag>,
-    ) -> Result<flight::Flight<'d, C>, result::SubmitError>
-    where
-        'd: 'borrow,
-        Tag: route::Tag,
-        C: kind::Flight,
-    {
-        let (raw, target) = self.into_parts();
-        let (permit, space) = slots.try_admit(&mut context, target)?;
-        let entry = bound::Bound::new(raw, space);
-        // SAFETY: the caller retains the exact inputs for this driver's flight.
-        Ok(unsafe { permit.retain(entry) })
-    }
-}
-
-impl<'borrow, 'd, Tag, C> Submission<'borrow, 'd, Tag, C>
-where
-    Tag: route::Tag,
-    C: kind::Flight,
-{
-    /// # Safety
-    /// Target and slots belong to `context`'s driver. Retain every descriptor,
-    /// path and buffer borrow through terminal completion or quiescence.
-    pub unsafe fn try_file<'a>(
-        mut context: driver::Context<'a, 'd>,
-        slots: &'a flight::Slots<'d, Tag>,
-        entry: fs::Submission<'borrow, 'd, Tag, C>,
-    ) -> Result<flight::Flight<'d, C>, result::SubmitError>
-    where
-        'd: 'borrow,
-        Tag: route::Tag,
-        C: kind::Flight,
-    {
-        let (raw, target) = entry.into_parts();
-        let (permit, space) = slots.try_admit(&mut context, target)?;
-        let entry = bound::Bound::new(raw, space);
-        // SAFETY: the caller retains the exact file borrows for this flight.
-        Ok(unsafe { permit.file(entry) })
-    }
 }
 
 impl<'borrow, 'd, Tag> Connect<'borrow, 'd, Tag>
@@ -186,11 +174,9 @@ impl<'addr, 'd, Tag: route::Tag> Connect<'addr, 'd, Tag> {
         addr: &'addr A,
         target: route::Target<'d, Tag>,
     ) -> Self {
-        let raw =
-            request::Borrowed::connect(request::Lowered::target(&fd.slot()), addr.view().native());
         Self {
             fd,
-            submission: raw,
+            address: addr.view().native(),
             target,
         }
     }
@@ -199,35 +185,19 @@ impl<'addr, 'd, Tag: route::Tag> Connect<'addr, 'd, Tag> {
         self,
     ) -> (
         handles::Descriptor<'d>,
-        request::Borrowed<'addr>,
+        addr::Addr<'addr>,
         route::Target<'d, Tag>,
     ) {
-        (self.fd, self.submission, self.target)
+        (self.fd, self.address, self.target)
     }
 }
 
 const _: () = {
     assert!(
-        mem::size_of::<Submission<'_, '_, route::KeyTag<1>>>()
-            == mem::size_of::<(
-                request::Borrowed<'_>,
-                route::Operation<'_, route::KeyTag<1>>,
-            )>()
-    );
-    assert!(
-        mem::align_of::<Submission<'_, '_, route::KeyTag<1>>>()
-            == mem::align_of::<(
-                request::Borrowed<'_>,
-                route::Operation<'_, route::KeyTag<1>>,
-            )>()
-    );
-};
-const _: () = {
-    assert!(
         mem::size_of::<Connect<'static, 'static, route::KeyTag<1>>>()
             == mem::size_of::<(
                 handles::Descriptor<'static>,
-                request::Borrowed<'static>,
+                addr::Addr<'static>,
                 route::Target<'static, route::KeyTag<1>>,
             )>()
     );
@@ -235,7 +205,7 @@ const _: () = {
         mem::align_of::<Connect<'static, 'static, route::KeyTag<1>>>()
             == mem::align_of::<(
                 handles::Descriptor<'static>,
-                request::Borrowed<'static>,
+                addr::Addr<'static>,
                 route::Target<'static, route::KeyTag<1>>,
             )>()
     );

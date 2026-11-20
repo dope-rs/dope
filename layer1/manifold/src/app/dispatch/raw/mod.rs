@@ -4,7 +4,7 @@ use dope_core::{
     driver::{
         self,
         result::SubmitError,
-        retained::{self, flight},
+        retained::flight,
         route::{self, kind},
         schedule,
     },
@@ -79,7 +79,7 @@ impl<'a, 'd> Context<'a, 'd, Retained> {
     {
         // SAFETY: the caller retains every borrowed resource in the exact
         // installed owner through terminal completion or driver quiescence.
-        unsafe { retained::raw::Submission::try_file(self.inner, slots, entry) }
+        unsafe { slots.try_file(self.inner, entry) }
     }
 }
 

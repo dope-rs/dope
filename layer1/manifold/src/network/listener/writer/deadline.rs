@@ -1,17 +1,17 @@
 //! One-allocation exact deadline authority for a listener lane.
 
-use std::{mem, ops};
+use std::{marker, mem, ops};
 
 use dope_core::driver::{
     route::{Identity, KeyTag},
-    schedule::clock,
+    schedule::{app, clock},
 };
 use dope_net::{
     link::{egress, egress::data, pool, slot::types},
     wire,
 };
 use o3::{
-    base::time::Positive,
+    base::{cell::brand, time::Positive},
     depot,
     depot::{
         capacity,
@@ -260,13 +260,105 @@ pub(in crate::network::listener) struct Slot<
     schedule: Option<&'a mut Schedule<'d, ID>>,
 }
 
+/// Retains a connection's controls while the callback selects its child state.
+pub struct Projection<'state, 'e, 'a, 'p, 's, 'w, 'd: 'w, ID, W, B>
+where
+    ID: Identity,
+    W: wire::Spec + 'w + 'd,
+    B: data::raw::Payload<'d>,
+{
+    source: &'a mut types::Control<'w, 'd, ID, W>,
+    control: &'a mut conn::state::Control<'p, 's, 'd, ID, B>,
+    schedule: Option<&'a mut Schedule<'d, ID>>,
+    output: Option<&'a conn::Open<'a, 'p, 's, 'e, 'd, ID, B>>,
+    work: app::Work<'a, 'd>,
+    state: marker::PhantomData<brand::Identity<'state>>,
+}
+
+impl<'state, 'e, 'a, 'p, 's, 'w, 'd: 'w, ID, W, B>
+    Projection<'state, 'e, 'a, 'p, 's, 'w, 'd, ID, W, B>
+where
+    ID: Identity,
+    W: wire::Spec + 'w + 'd,
+    B: data::raw::Payload<'d>,
+{
+    pub fn bind<'view, T>(
+        self,
+        state: &'state mut T,
+    ) -> conn::Ctx<'e, 'view, 'p, 's, 'w, 'd, ID, W, T, B>
+    where
+        'state: 'view,
+        'a: 'view,
+    {
+        conn::Ctx {
+            slot: Slot {
+                source: self.source,
+                state: self.control,
+                conn: state,
+                schedule: self.schedule,
+            },
+            output: self.output,
+            work: self.work,
+        }
+    }
+}
+
+impl<'e, 'a, 'p, 's, 'w, 'd: 'w, ID, W, C, B>
+    conn::Ctx<'e, 'a, 'p, 's, 'w, 'd, ID, W, C, B>
+where
+    ID: Identity,
+    W: wire::Spec + 'w + 'd,
+    B: data::raw::Payload<'d>,
+{
+    /// Reborrows child state.
+    pub fn map_state<'view, T>(
+        &'view mut self,
+        select: impl for<'child> FnOnce(&'child mut C) -> &'child mut T,
+    ) -> conn::Ctx<'e, 'view, 'p, 's, 'w, 'd, ID, W, T, B> {
+        let (state, projection) = self.state_parts();
+        projection.bind(select(state))
+    }
+
+    /// Lends the state and its connection for one callback-scoped projection.
+    pub fn with_state<'view, R>(
+        &'view mut self,
+        run: impl for<'state> FnOnce(
+            &'state mut C,
+            Projection<'state, 'e, 'view, 'p, 's, 'w, 'd, ID, W, B>,
+        ) -> R,
+    ) -> R {
+        let (state, projection) = self.state_parts();
+        run(state, projection)
+    }
+
+    fn state_parts<'state, 'view>(
+        &'view mut self,
+    ) -> (&'view mut C, Projection<'state, 'e, 'view, 'p, 's, 'w, 'd, ID, W, B>) {
+        let slot = self.slot.reborrow();
+        let projection = Projection {
+            source: slot.source,
+            control: slot.state,
+            schedule: slot.schedule,
+            output: self.output,
+            work: self.work,
+            state: marker::PhantomData,
+        };
+        (slot.conn, projection)
+    }
+}
+
 impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw::Payload<'d>>
     Slot<'a, 'p, 's, 'w, 'd, ID, W, C, B>
 {
     pub(in crate::network::listener) fn reborrow(
         &mut self,
     ) -> Slot<'_, 'p, 's, 'w, 'd, ID, W, C, B> {
-        self.project(|state| state)
+        Slot {
+            source: self.source,
+            state: self.state,
+            conn: self.conn,
+            schedule: self.schedule.as_deref_mut(),
+        }
     }
 
     pub(in crate::network::listener) fn sealed(&mut self) -> Slot<'_, 'p, 's, 'w, 'd, ID, W, C, B> {
@@ -277,18 +369,6 @@ impl<'a, 'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::
 
     pub(super) fn is_sealed(&self) -> bool {
         self.schedule.is_none()
-    }
-
-    pub(in crate::network::listener) fn project<'view, T>(
-        &'view mut self,
-        select: impl FnOnce(&'view mut C) -> &'view mut T,
-    ) -> Slot<'view, 'p, 's, 'w, 'd, ID, W, T, B> {
-        Slot {
-            source: self.source,
-            state: self.state,
-            conn: select(self.conn),
-            schedule: self.schedule.as_deref_mut(),
-        }
     }
 
     pub(in crate::network::listener) fn open(&mut self, now: clock::Moment<'d>) {

@@ -13,8 +13,8 @@ impl Code {
         self.0 as usize
     }
 
-    pub(crate) const fn write(self, target: &mut u8) {
-        *target = self.0;
+    pub(crate) const fn raw(self) -> u8 {
+        self.0
     }
 }
 

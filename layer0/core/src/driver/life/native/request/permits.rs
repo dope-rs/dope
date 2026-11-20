@@ -1,4 +1,4 @@
-use dope_sys::{engine::admit, io::file::File};
+use dope_sys::engine::admit;
 
 use crate::{
     Backend, Engine,
@@ -10,7 +10,7 @@ use crate::{
     },
 };
 
-type Guard<'a> = <Engine as admit::Admit<Host<Backend>>>::Admission<'a>;
+pub(in crate::driver) type Guard<'a> = <Engine as admit::Admit<Host<Backend>>>::Admission<'a>;
 
 /// Native reserved capacity bound to the exact driver that owns its operation.
 #[repr(transparent)]
@@ -36,37 +36,12 @@ impl<'a, 'd> Admission<'a, 'd> {
         reserve.commit()
     }
 
-    /// # Safety
-    /// Encoded handles and the reservation belong to this driver. Keep encoded
-    /// addresses valid with their borrowed access through completion or quiescence.
-    pub(crate) unsafe fn retain<'borrow, C: kind::Class>(
+    pub(in crate::driver) fn retain<C: kind::Class, F: FnOnce(Guard<'a>, flight::raw::Echo)>(
         self,
-        bound: bound::Bound<'d, request::Borrowed<'borrow>, C>,
-    ) -> flight::Flight<'d, C>
-    where
-        'd: 'borrow,
-    {
-        let (raw, reserve) = bound.into_parts();
-        // SAFETY: the caller retains these exact native inputs. Submission
-        // precedes commitment of the reserved flight.
-        unsafe { admit::raw::Retain::<Host<Backend>>::retain(self.native, raw, reserve.key()) };
-        reserve.commit()
-    }
-
-    /// # Safety
-    /// The reservation belongs to this driver. Retain every descriptor, path
-    /// and buffer borrow through terminal completion or quiescence.
-    pub(crate) unsafe fn file<'borrow, C: kind::Class>(
-        self,
-        bound: bound::Bound<'d, <Backend as File>::Request<'borrow>, C>,
-    ) -> flight::Flight<'d, C>
-    where
-        'd: 'borrow,
-    {
-        let (raw, reserve) = bound.into_parts();
-        // SAFETY: the caller retains these exact file borrows. Submission
-        // precedes commitment of the reserved flight.
-        unsafe { admit::raw::Retain::<Host<Backend>>::file(self.native, raw, reserve.key()) };
+        bound: bound::Bound<'d, F, C>,
+    ) -> flight::Flight<'d, C> {
+        let (submit, reserve) = bound.into_parts();
+        submit(self.native, reserve.key());
         reserve.commit()
     }
 }

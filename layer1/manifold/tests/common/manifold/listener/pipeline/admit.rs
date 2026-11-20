@@ -97,8 +97,9 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for Admit {
             let mut output_slot = std::mem::MaybeUninit::uninit();
             let result = match conn.try_output(driver, &mut output_slot) {
                 Ok(mut output) => {
-                    let (_, mut prefix) = output.get_mut().parts();
-                    prefix.write_slice(header).unwrap();
+                    let (first, rest) = header.split_at(1);
+                    output.get_mut().parts().1.write_slice(first).unwrap();
+                    output.get_mut().parts().1.write_slice(rest).unwrap();
                     let body = body.map(|body| {
                         Value::Checked(
                             body.try_bound::<o3::buffer::resident::bound::AtMost<6>>()

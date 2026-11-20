@@ -1,6 +1,6 @@
 //! Complete per-entry reply-pool ownership.
 
-use std::mem::size_of;
+use std::{marker::PhantomData, mem::size_of};
 
 use o3::mem::{self, rc};
 
@@ -239,8 +239,12 @@ impl<'arena, 'credits, 'region> Payload<'arena, 'credits, 'region> {
         &self,
         amount: A,
     ) -> Result<mem::Lease<LeaseEdge<'arena, 'credits, 'region, A>>, rc::Error> {
-        let edge = LeaseEdge::try_new(self.activate(), self.source)?;
-        Ok(mem::Lease::new(edge, amount))
+        let active = self.activate();
+        active.state().leases.try_hold()?;
+        Ok(mem::Lease::new(
+            LeaseEdge { active, source: self.source, amount: PhantomData },
+            amount,
+        ))
     }
 
     fn try_hold(

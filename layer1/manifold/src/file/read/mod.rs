@@ -238,7 +238,8 @@ enum Outcome {
 enum Active<'d> {
     Open(flight::Flight<'d, route::kind::Open>),
     Read(flight::Flight<'d, route::kind::Read>),
-    Sync(flight::Flight<'d, route::kind::Sync>),
+    Rename(flight::Flight<'d, route::kind::Sync>),
+    Metadata(flight::Flight<'d, route::kind::Sync>),
 }
 
 enum Phase<'d> {
@@ -495,7 +496,7 @@ impl<'d> Active<'d> {
         match self {
             Self::Open(flight) => flight.try_stop(driver),
             Self::Read(flight) => flight.try_stop(driver),
-            Self::Sync(flight) => flight.try_stop(driver),
+            Self::Rename(flight) | Self::Metadata(flight) => flight.try_stop(driver),
         }
     }
 }

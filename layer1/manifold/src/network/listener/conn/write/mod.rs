@@ -53,6 +53,7 @@ where
     B: data::raw::Payload<'d>,
 {
     /// Admits a header without granting body publication authority.
+    #[inline(always)]
     pub fn try_prefix<'turn, 'out, 'io>(
         &'turn mut self,
         driver: &'turn mut driver::Context<'io, 'd>,
@@ -135,6 +136,7 @@ where
     B: data::raw::Payload<'d>,
     G: bound::Bound,
 {
+    #[inline(always)]
     pub fn try_output<'turn, 'out, 'io>(
         &'turn mut self,
         driver: &'turn mut driver::Context<'io, 'd>,

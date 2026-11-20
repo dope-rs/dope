@@ -3,7 +3,7 @@ use dope_sys::io::socket::addr::{Length, Storage};
 use crate::{
     driver,
     driver::{
-        flight, retained,
+        flight,
         retained::{accept, arm},
         route,
         route::kind,
@@ -50,10 +50,10 @@ where
         let peer = lane.addr.get_mut();
         *peer = Storage::<Length>::empty();
         let closed = driver.driver_ref().descriptors().retirement().completed();
-        let request = retained::raw::Submission::accept(fd, peer, lane.state.operation());
         // SAFETY: the caller retains this exact pinned lane through terminal
         // completion or owner quiescence.
-        let flight = unsafe { request.try_submit(driver.reborrow(), slots) };
+        let flight =
+            unsafe { slots.try_accept_one(driver.reborrow(), fd, peer, lane.state.operation()) };
         self.entry.apply(flight, closed)
     }
 }

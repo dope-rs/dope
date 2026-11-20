@@ -1,4 +1,4 @@
-use std::{cell::Cell, rc::Rc, task::Poll, thread, time::Instant};
+use std::{cell::Cell, ops::ControlFlow, rc::Rc, task::Poll, thread, time::Instant};
 
 use dope_core::{
     driver::{
@@ -90,7 +90,10 @@ pub struct Deferred<'a> {
 #[pin_project::pin_project]
 #[derive(dope_gen::Application)]
 #[dispatcher(core = ::dope_core, manifold = ::dope_manifold, runtime = ::dope_runtime)]
-pub struct Missing<T> {
+pub struct Missing<F, T> {
+    #[pin]
+    #[app]
+    pub other_route: F,
     #[pin]
     #[app(optional)]
     pub app: Option<T>,
@@ -99,10 +102,10 @@ pub struct Missing<T> {
 #[pin_project::pin_project]
 #[derive(dope_gen::Application)]
 #[dispatcher(core = ::dope_core, manifold = ::dope_manifold, runtime = ::dope_runtime)]
-pub struct Fallback<T> {
+pub struct Fallback<F, T> {
     #[pin]
     #[app]
-    pub first: Missing<T>,
+    pub first: Missing<F, T>,
     #[pin]
     #[app]
     pub second: T,
@@ -111,16 +114,42 @@ pub struct Fallback<T> {
 impl<'d> dispatch::Hooks<'d, ()> for Deferred<'_> {
     type Park = dispatch::Off;
 
-    fn dispatch(&mut self, _: &mut (), _: &io::Event<'d>) -> dispatch::Decision {
+    fn dispatch<'event>(
+        &mut self,
+        _: &mut (),
+        event: raw::Dispatch<'event, 'd>,
+    ) -> ControlFlow<raw::Dispatch<'event, 'd>> {
         *self.calls = self.calls.and_then(|calls| calls.checked_add(1));
         if *self.calls == Some(1) {
-            dispatch::Decision::Defer
+            ControlFlow::Break(event)
         } else {
             if let Some(trigger) = self.shutdown.take() {
                 *self.fired = Some(trigger.fire());
             }
-            dispatch::Decision::Consume
+            ControlFlow::Continue(())
         }
+    }
+}
+
+pub struct Swap<'d> {
+    pub other: Cell<io::Event<'d>>,
+    pub visits: Cell<usize>,
+}
+
+impl<'d> dispatch::Hooks<'d, ()> for &Swap<'d> {
+    type Park = dispatch::Off;
+
+    fn dispatch<'event>(
+        &mut self,
+        _: &mut (),
+        event: raw::Dispatch<'event, 'd>,
+    ) -> ControlFlow<raw::Dispatch<'event, 'd>> {
+        let visits = self.visits.get();
+        assert!(visits < 2, "a visited route was selected again");
+        self.visits.set(visits + 1);
+        let mut slot = event.into_event();
+        Cell::from_mut(slot.get_mut()).swap(&self.other);
+        ControlFlow::Break(raw::Dispatch::new(slot))
     }
 }
 

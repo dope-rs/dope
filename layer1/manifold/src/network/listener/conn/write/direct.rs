@@ -12,9 +12,12 @@ use dope_net::{
     },
     wire,
 };
-use o3::{buffer::resident::bound, mem::slot};
+use o3::{
+    buffer::resident::bound,
+    mem::{Lease, lease::Open, slot},
+};
 
-use super::{Output, output::Reservation};
+use super::output::{Owner, Reservation};
 use crate::network::listener::{
     conn,
     writer::{
@@ -96,12 +99,12 @@ impl<
         open: &'a conn::Open<'c, 'p, 's, 'e, 'd, ID, B>,
         work: app::Lease<'a, 'd>,
         driver: &'a mut driver::Context<'io, 'd>,
-        place: &'out mut MaybeUninit<Output<'a, 'c, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, B, Q, G>>,
-    ) -> slot::Occupied<'out, Output<'a, 'c, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, B, Q, G>>
+        place: &'out mut MaybeUninit<Lease<Owner<'a, 'c, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, B, Q, G>, Open>>,
+    ) -> slot::Occupied<'out, Lease<Owner<'a, 'c, 'p, 's, 'w, 'e, 'io, 'd, ID, W, C, B, Q, G>, Open>>
     where
         'd: 'e,
     {
-        Output::insert(
+        Owner::insert(
             self.slot,
             open,
             work,

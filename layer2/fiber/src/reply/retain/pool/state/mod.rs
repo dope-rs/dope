@@ -109,8 +109,7 @@ impl Refs {
     }
 
     pub(in crate::reply::retain::pool) fn release(&self) -> rc::Release {
-        // SAFETY: only the matching Values, Bytes, or LeaseEdge destructor
-        // reaches this private operation, transferring one original live edge.
+        // SAFETY: the matching value, byte, or lease owner returns one live edge.
         unsafe { mem::raw::Edge::release(self) }
     }
 }

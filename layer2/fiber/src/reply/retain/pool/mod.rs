@@ -270,27 +270,6 @@ impl<'arena, 'credits, 'region> Active<'arena, 'credits, 'region> {
         state.life.retire(retained);
     }
 
-    fn drop_lease(self) {
-        if self.state().leases.release() == rc::Release::Last {
-            self.key.parts().finish();
-        }
-    }
-
-}
-
-impl<'arena, 'credits, 'region, A> LeaseEdge<'arena, 'credits, 'region, A> {
-    fn try_new(
-        active: Active<'arena, 'credits, 'region>,
-        source: &'credits retain::raw::State,
-    ) -> Result<Self, rc::Error> {
-        active.state().leases.try_hold()?;
-        Ok(Self {
-            active,
-            source,
-            amount: PhantomData,
-        })
-    }
-
 }
 
 impl Released<'_, '_> {
@@ -310,12 +289,9 @@ impl<'credits, A: mem::raw::Amount<3, usize>> Return for LeaseEdge<'_, 'credits,
         let parts = self.active.key.parts();
         // SAFETY: the sealed Lease returns its unchanged original amount once.
         unsafe { parts.core.lanes.release_data(self.source, amount) };
-    }
-}
-
-impl<A> Drop for LeaseEdge<'_, '_, '_, A> {
-    fn drop(&mut self) {
-        self.active.drop_lease();
+        if self.active.state().leases.release() == rc::Release::Last {
+            parts.finish();
+        }
     }
 }
 
