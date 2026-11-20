@@ -1,6 +1,6 @@
 use o3::mem::slot;
 
-use crate::io;
+use crate::{driver::route, io};
 
 use super::Member;
 
@@ -10,7 +10,7 @@ struct Payload<T> {
     value: T,
 }
 
-impl<'event, 'd, T> Member<'event, 'd, T> {
+impl<'event, 'd, T, S: route::Selection> Member<'event, 'd, T, S> {
     pub fn take(self) -> (T, slot::Vacant<'event, io::Event<'d>>) {
         let mut vacant = self.dispatch.event.into_uninit();
         let payload = vacant.get_mut().as_mut_ptr().cast::<Payload<T>>();

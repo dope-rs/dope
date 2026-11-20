@@ -2,7 +2,7 @@ mod cell;
 
 pub(in crate::link::oneshot) use cell::Cell;
 use dope_core::{
-    driver::{self, result, route::Identity},
+    driver::{self, result, route::{self, Identity}},
     io::{
         event::net::{connect, send, socket::Completion},
         socket,
@@ -42,61 +42,31 @@ where
     }
 
     pub fn socket(&mut self, done: Completion<'d>) -> Progress<A> {
-        let local = match self.pool.routes.parse(done.token()) {
-            Ok(local) => local,
-            Err(_) => {
-                done.reclaim();
-                return Progress::Idle;
-            }
+        let Some(entry) = Entry::for_completion(self.pool, done.token()) else {
+            done.reclaim();
+            return Progress::Idle;
         };
-        // SAFETY: this Pool just admitted the completion's own physical segment.
-        let access =
-            Access::new(unsafe { depot::raw::Proof::new((&mut *self.pool, local.index())) });
-        match Entry::try_new(access, local.parts().epoch()) {
-            Ok(entry) => entry.socket(done, self.driver),
-            Err(errors::Lookup::Physical { .. } | errors::Lookup::Generation { .. }) => {
-                done.reclaim();
-                Progress::Idle
-            }
-        }
+        entry.socket(done, self.driver)
     }
 
     pub fn connect(
         &mut self,
         done: connect::Completion<'d>,
     ) -> Result<Progress<A>, connect::Completion<'d>> {
-        let local = match self.pool.routes.parse(done.token()) {
-            Ok(local) => local,
-            Err(_) => {
-                return Err(done);
-            }
+        let Some(entry) = Entry::for_completion(self.pool, done.token()) else {
+            return Err(done);
         };
-        // SAFETY: this Pool just admitted the completion's own physical segment.
-        let access =
-            Access::new(unsafe { depot::raw::Proof::new((&mut *self.pool, local.index())) });
-        match Entry::try_new(access, local.parts().epoch()) {
-            Ok(entry) => entry.connect(done, self.driver),
-            Err(errors::Lookup::Physical { .. } | errors::Lookup::Generation { .. }) => Err(done),
-        }
+        entry.connect(done, self.driver)
     }
 
-    pub fn send(
+    pub fn send<K: route::Selection>(
         &mut self,
-        done: send::Completion<'d>,
-    ) -> Result<Progress<A>, send::Completion<'d>> {
-        let local = match self.pool.routes.parse(done.token()) {
-            Ok(local) => local,
-            Err(_) => {
-                return Err(done);
-            }
+        done: send::Completion<'d, K>,
+    ) -> Result<Progress<A>, send::Completion<'d, K>> {
+        let Some(entry) = Entry::for_completion(self.pool, done.token()) else {
+            return Err(done);
         };
-        // SAFETY: this Pool just admitted the completion's own physical segment.
-        let access =
-            Access::new(unsafe { depot::raw::Proof::new((&mut *self.pool, local.index())) });
-        match Entry::try_new(access, local.parts().epoch()) {
-            Ok(entry) => entry.send(done, self.driver),
-            Err(errors::Lookup::Physical { .. } | errors::Lookup::Generation { .. }) => Err(done),
-        }
+        entry.send(done, self.driver)
     }
 
     /// Retries one operation; a full submission queue retains it for a later turn.

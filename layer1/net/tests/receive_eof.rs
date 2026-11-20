@@ -310,10 +310,10 @@ fn close_after_keeps_pending_reply() {
             let mut driver = scope.context();
             pool.settle(
                 output, &mut driver, &mut (), |_, _| {}, |_, _, _, _| {},
-                |_, outcome, mut settlement, space, _| {
+                |_, outcome, settlement, _| {
                     assert!(matches!(outcome, SendOutcome::Queued { acknowledged } if acknowledged.into_raw() == 5));
-                    let (_, settled) = settlement.finish(space, |_| {});
-                    assert_eq!(settlement.into_entry(&settled).get().key(), key);
+                    let (sender, settled) = settlement.finish();
+                    assert_eq!(sender.into_entry().get().key(), key);
                     (settled, ())
                 },
             ).expect("same native send owner");
@@ -393,10 +393,10 @@ fn shutdown_wakes_terminal() {
             let mut driver = scope.context();
             pool.settle(
                 output, &mut driver, &mut (), |_, _| {}, |_, _, _, _| {},
-                |_, outcome, mut settlement, space, _| {
+                |_, outcome, settlement, _| {
                     assert!(matches!(outcome, SendOutcome::WriteShutdown));
-                    let (_, settled) = settlement.finish(space, |_| {});
-                    assert_eq!(settlement.into_entry(&settled).get().key(), key);
+                    let (sender, settled) = settlement.finish();
+                    assert_eq!(sender.into_entry().get().key(), key);
                     (settled, ())
                 },
             ).expect("same native send owner");

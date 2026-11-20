@@ -357,30 +357,16 @@ where
         )
     }
 
-    fn sent() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        conn::Id<'d, ID>,
-        egress::Pending,
-        &'t mut Token<'d, 1>,
-    )> {
-        |(owner, conn, pending, token): (
-            &mut Self,
-            conn::Id<'d, ID>,
-            egress::Pending,
-            &mut Token<'d, 1>,
-        )| {
-            L::sent().call((&mut owner.endpoint, conn, pending, token));
-        }
+    fn sent(&mut self, conn: conn::Id<'d, ID>, pending: egress::Pending, token: &mut Token<'d, 1>) {
+        L::sent(&mut self.endpoint, conn, pending, token);
     }
 
     fn settled(&mut self, conn: conn::Id<'d, ID>, payload: Self::Send, token: &mut Token<'d, 1>) {
         L::settled(&mut self.endpoint, conn, payload, token);
     }
 
-    fn cancel() -> impl for<'a, 't> Call<(&'a mut Self, Self::Send, &'t mut Token<'d, 1>)> {
-        |(owner, payload, token): (&mut Self, Self::Send, &mut Token<'d, 1>)| {
-            L::cancel().call((&owner.endpoint, payload, token));
-        }
+    fn cancel(&mut self, payload: Self::Send, token: &mut Token<'d, 1>) {
+        L::cancel(&self.endpoint, payload, token);
     }
 }
 

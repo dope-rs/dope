@@ -4,7 +4,6 @@ use o3::buffer::storage::Shared;
 
 mod flight;
 pub mod lane;
-mod payload;
 pub mod policy;
 pub mod profile;
 pub mod reject;
@@ -13,7 +12,6 @@ pub mod wait;
 pub mod wire;
 
 pub use flight::Flight;
-pub use payload::Payload;
 
 #[derive(Debug)]
 pub enum Error {

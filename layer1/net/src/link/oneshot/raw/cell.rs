@@ -164,13 +164,13 @@ where
         progress
     }
 
-    pub(in crate::link::oneshot) fn send<ID: Identity>(
+    pub(in crate::link::oneshot) fn send<ID: Identity, K: route::Selection>(
         &mut self,
-        done: Completion<'d>,
+        done: Completion<'d, K>,
         target: route::Target<'d, ID>,
         slots: &flight::Slots<'d, ID>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Result<phase::SendProgress<'d>, Completion<'d>> {
+    ) -> Result<phase::SendProgress<'d>, Completion<'d, K>> {
         let phase = mem::replace(&mut self.phase, Phase::Retired);
         let tx = match phase {
             Phase::Sending(tx) if tx.flight.matches(done.token()) => tx,

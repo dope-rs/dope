@@ -2,7 +2,7 @@
 
 use std::{ops, pin};
 
-use dope_core::driver::schedule;
+use dope_core::driver::{route, schedule};
 use dope_runtime::executor;
 
 use crate::app::dispatch;
@@ -43,7 +43,7 @@ pub trait Turn<'d>: Sized {
 
     fn dispatch<'event>(
         owner: pin::Pin<&mut Self>,
-        event: executor::raw::Dispatch<'event, 'd>,
+        event: executor::raw::Dispatch<'event, 'd, impl route::Selection>,
         turn: schedule::Turn<'_, 'd>,
         driver: dispatch::raw::Context<'_, 'd, Self::Access>,
     ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>>;

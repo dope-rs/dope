@@ -346,7 +346,7 @@ where
         pending: egress::Pending,
         token: &mut region::Token<region::Identity<'d, 1>>,
     ) {
-        N::sent().call((&mut self.session, conn, pending, token));
+        self.session.sent(conn, pending, token);
     }
 
     fn settled(
@@ -359,7 +359,7 @@ where
     }
 
     fn cancel(&mut self, payload: Self::Send, token: &mut region::Token<region::Identity<'d, 1>>) {
-        N::cancel().call((&mut self.session, payload, token));
+        self.session.cancel(payload, token);
     }
 
     fn close<'e, O>(

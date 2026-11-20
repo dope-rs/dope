@@ -1,7 +1,7 @@
 use std::{ops, pin};
 
 use dope::{
-    core::driver::route::{Identity, KeyTag},
+    core::driver::route::{self, Identity, KeyTag},
     net,
     net::{
         link::pool::{
@@ -159,7 +159,7 @@ where
     /// Retains successful completions until their waiter wake has application credit.
     fn dispatch<'event>(
         mut owner: pin::Pin<&mut Self>,
-        done: executor::raw::Dispatch<'event, 'd>,
+        done: executor::raw::Dispatch<'event, 'd, impl route::Selection>,
         turn: schedule::Turn<'_, 'd>,
         driver: dispatch::raw::Context<'_, 'd, Self::Access>,
     ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
@@ -174,7 +174,7 @@ where
                 _ => false,
             }
         {
-            return ops::ControlFlow::Break(done);
+            return ops::ControlFlow::Break(done.into_dispatch());
         }
         event::Turn::dispatch(owner.as_mut().project().inner, done, turn, driver)
     }

@@ -138,12 +138,12 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
         }
     }
 
-    fn dispatch(
+    fn dispatch<K: route::Selection>(
         mut self: pin::Pin<&mut Self>,
-        item: recv::Completion<'d>,
+        item: recv::Completion<'d, K>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> ops::ControlFlow<recv::Completion<'d>>
+    ) -> ops::ControlFlow<recv::Completion<'d, K>>
     where
         <Self::Input as input::Mode<Self::Wire>>::Reserve:
             Choice<Self::Wire, <Self::Input as input::Mode<Self::Wire>>::Ingress>,

@@ -36,12 +36,12 @@ pub trait Runtime<'w, 'd: 'w, ID: Identity>:
     fn retained(&self, count: table::Capacity) -> Result<domain::Retained, crate::ConfigError>;
     fn resident(&self, count: table::Capacity) -> Result<domain::Resident, crate::ConfigError>;
 
-    fn dispatch<E>(
+    fn dispatch<E, K: route::Selection>(
         listener: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, Self, E>>,
-        item: recv::Completion<'d>,
+        item: recv::Completion<'d, K>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> ops::ControlFlow<recv::Completion<'d>>
+    ) -> ops::ControlFlow<recv::Completion<'d, K>>
     where
         E: env::Spec<Wire = Self::Wire>;
 
@@ -80,12 +80,12 @@ where
         <A::Input as policy::Policy<'w, 'd, ID, A>>::resident(self, count)
     }
 
-    fn dispatch<E>(
+    fn dispatch<E, K: route::Selection>(
         listener: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, Self, E>>,
-        item: recv::Completion<'d>,
+        item: recv::Completion<'d, K>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> ops::ControlFlow<recv::Completion<'d>>
+    ) -> ops::ControlFlow<recv::Completion<'d, K>>
     where
         E: env::Spec<Wire = Self::Wire>,
     {

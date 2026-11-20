@@ -12,7 +12,7 @@ use dope_manifold::client::{
         self, Output, Parser, Plain, Retirement, Scheduling, Session, Target,
         app::drain::Ready,
         codec::mode,
-        policy::{self, end, output},
+        policy::{self, end},
         response, turns,
     },
 };
@@ -254,28 +254,22 @@ impl<'d> Output<'d> for Failure {
         })
     }
 
-    fn sent() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        conn::Id<'d, KeyTag<0>>,
-        egress::Pending,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Sent::<_>::Ready(|owner: &mut Self| {
-            owner.events.record(Event::Sent);
-        })
+    fn sent(
+        &mut self,
+        _: conn::Id<'d, KeyTag<0>>,
+        _: egress::Pending,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        self.events.record(Event::Sent);
     }
 
-    fn cancel() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        Self::Send,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Cancel::<Infallible, Infallible, Infallible, _, _>::Ready(
-            drop::<Self::Send>,
-            |owner: &mut Self| {
-                owner.events.record(Event::Cancelled);
-            },
-        )
+    fn cancel(
+        &mut self,
+        payload: Self::Send,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        drop(payload);
+        self.events.record(Event::Cancelled);
     }
 }
 

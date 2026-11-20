@@ -15,7 +15,6 @@ use crate::{
         duplex::{sending, state},
         egress::{self, data, reserve::demand},
         event,
-        pool,
         slot::{
             transmit::{Finalize, Invalid, graceful, outcome},
             types,
@@ -111,9 +110,8 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
         &mut self,
         queue: &mut egress::Output<'queue, 'p, 'd, IOV, B, D>,
         token: &mut region::Token<region::Identity<'d>>,
-        key: pool::Key<'d, ID>,
         sent: send::Sent,
-        mut release: impl FnMut(pool::Key<'d, ID>, B),
+        release: impl FnMut(B),
     ) -> Result<transfer::Len, Invalid>
     where
         B: data::raw::Payload<'d>,
@@ -132,7 +130,7 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
                 (bytes, Some(bytes))
             }
         };
-        match queue.complete(token, bytes, |body| release(key, body)) {
+        match queue.complete(token, bytes, release) {
             egress::Change::Applied => Ok(acknowledged),
             egress::Change::Stale => Err(Invalid::SettleStale),
             egress::Change::Invalid(error) => Err(Invalid::Egress(error)),
@@ -214,7 +212,7 @@ impl<'a, 'w, 'd, ID: Identity + 'w, W: wire::Spec + 'w> Sending<'a, 'w, 'd, ID, 
                 target,
                 end,
             );
-            slot.engine.captured(captured);
+            slot.engine.operations.captured(&slot.engine.establish, captured);
             handoff.progress()
         };
         if let outcome::Progress::Rejected(error) = progress {

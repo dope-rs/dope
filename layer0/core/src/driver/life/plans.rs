@@ -105,46 +105,6 @@ impl<Q: ?Sized, S: storage::Build, O: Operation<S, Q>>
     }
 }
 
-pub(super) struct Create<S, O> {
-    pub(super) plan: S,
-    pub(super) operation: O,
-}
-
-impl<Q: ?Sized, S: storage::Create, O: Operation<S, Q>>
-    fixed::Operation<Root<'_, Q>, driver::Buffer, driver::Shared> for Create<S, O>
-{
-    type Output = Result<O::Output, domain::Rejected<S::Error, O>>;
-    type Terminal = Engine;
-    type Proof = Closed;
-
-    fn run<'d>(
-        self,
-        token: brand::Token<brand::Identity<'d>>,
-        regions: (
-            region::Token<region::Identity<'d>>,
-            region::Token<region::Identity<'d, 1>>,
-        ),
-        shared: provided::Root<'d, driver::Buffer, driver::Shared, ()>,
-        root: pin::Pin<&'d mut Root<'_, Q>>,
-        backend: fixed::Loan<'d, Engine>,
-    ) -> (Self::Output, fixed::End<'d, Self::Terminal, Self::Proof>)
-    where
-        Self: 'd,
-    {
-        let (mut state, source) = root.get_mut().enter(shared, token, regions, backend);
-        let built = self.plan.try_build(storage::Context::new(&mut state.local));
-        match built {
-            Ok(value) => {
-                let store = pin::pin!(value);
-                let (output, end) =
-                    Closed::run::<S, _, _>(state, store.as_ref(), source, self.operation);
-                (Ok(output), end)
-            }
-            Err(cause) => Closed::reject::<S, _, _, _>(state, source, cause, self.operation),
-        }
-    }
-}
-
 pub(super) struct Direct<S, O> {
     pub(super) plan: S,
     pub(super) operation: O,

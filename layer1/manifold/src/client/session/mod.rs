@@ -341,7 +341,7 @@ pub trait Parser<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
     type Response: response::Mode<'d, ID, Self, Flow: Begin<'d, ID, Self, Self::Response>>;
 }
 
-/// Owns connection-scoped egress callbacks.
+/// Owns connection-scoped egress.
 pub trait Output<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
     /// Prepares output and publishes input progress before send submission.
     /// An earlier send may still be in flight; its retained owners stay borrowed.
@@ -351,14 +351,12 @@ pub trait Output<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
         None::<Infallible>
     }
 
-    fn sent() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        Id<'d, ID>,
-        egress::Pending,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Sent::<Infallible>::None
-    }
+    fn sent(
+        &mut self,
+        _: Id<'d, ID>,
+        _: egress::Pending,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {}
 
     /// Returns a complete queued payload after native send completion.
     fn settled(
@@ -370,13 +368,7 @@ pub trait Output<'d, ID: Identity = KeyTag<0>>: Session<'d, ID> {
         drop(payload);
     }
 
-    fn cancel() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        Self::Send,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Cancel::<_>::Release(mem::drop::<Self::Send>)
-    }
+    fn cancel(&mut self, _: Self::Send, _: &mut region::Token<region::Identity<'d, 1>>) {}
 }
 
 /// Owns the ordered retirement of one exact connection generation.

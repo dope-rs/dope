@@ -1,7 +1,7 @@
 use std::{mem::MaybeUninit, pin};
 
 use dope_core::{
-    driver::{self, route::Identity, schedule},
+    driver::{self, route::{self, Identity}, schedule},
     io::event::net::send::Completion,
 };
 use handler::{Runtime, send};
@@ -28,9 +28,7 @@ pub(super) fn complete<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Tra
     let (_, mut connection, _, _) = super::sender::view::<ID, A, T>(source, deadlines);
     let key = connection.key();
     connection.cancel_send();
-    connection.state.send.release(None, |body| {
-        writer::release_egress(app.as_mut(), key, body, handler::Disposition::Sent);
-    });
+    connection.state.send.release(app.as_mut(), conn::Id::from_key(key), None, handler::Disposition::Sent);
     notify(source, deadlines, writes, app, turn, driver);
 }
 
@@ -50,7 +48,7 @@ fn notify<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
 
 pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
     mut listener: pin::Pin<&mut listener::Listener<'_, '_, '_, 'w, 'd, ID, A, E>>,
-    done: Completion<'d>,
+    done: Completion<'d, impl route::Selection>,
     turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
 ) where
@@ -58,7 +56,7 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
     E: env::Spec<Wire = A::Wire>,
 {
     use super::sender;
-    use dope_net::link::{event::SendOutcome, slot::types};
+    use dope_net::link::event::SendOutcome;
     use o3::depot::raw::Proof;
     use writer::deadline::Slot;
 
@@ -71,36 +69,38 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
         |(app, _, _), key, body, _| {
             writer::release_payload(app.as_mut(), key, body, handler::Disposition::Sent);
         },
-        |ctx, outcome, mut settlement, space, driver| {
-            let cancel = |connection: &mut types::Connection<'w, 'd, ID, A::Wire, _>| {
-                let key = connection.key();
-                // SAFETY: settlement retains this connection and its original deadline lane.
-                Slot::from(unsafe { Proof::new(((connection, &mut *ctx.2), key)) }).cancel_send();
-            };
+        |ctx, outcome, mut settlement, driver| {
+            let connection = settlement.connection();
+            let key = connection.key();
+            // SAFETY: settlement retains this connection and its original deadline lane.
+            let mut slot = Slot::from(unsafe { Proof::new(((connection, &mut *ctx.2), key)) });
             let mut body = MaybeUninit::uninit();
             let place = slot::Vacant::new(&mut body);
-            let (source, settled);
+            let (mut source, settled);
             let close = 'complete: {
                 let (disposition, body) = 'retire: {
                     let failure = match outcome {
-                        SendOutcome::Pending => return (settlement.finish(space, |_| {}).1, ()),
+                        SendOutcome::Pending => return (settlement.finish().1, ()),
                         SendOutcome::Direct { consumed } => {
-                            if let Some(ended) = settlement.connection().state.send.settle(consumed, place) {
+                            if let Some(ended) = slot.state.send.settle(consumed, place) {
                                 break 'retire ended;
                             }
-                            (source, settled) = settlement.finish(space, cancel);
-                            advance::<ID, A, _>(source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
+                            slot.cancel_send();
+                            (source, settled) = settlement.finish();
+                            advance::<ID, A, _>(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
                             break 'complete false;
                         }
                         SendOutcome::Queued { .. } | SendOutcome::WriteShutdown => {
-                            (source, settled) = settlement.finish(space, cancel);
-                            notify(source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
-                            advance::<ID, A, _>(source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
+                            slot.cancel_send();
+                            (source, settled) = settlement.finish();
+                            notify(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
+                            advance::<ID, A, _>(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
                             break 'complete false;
                         }
                         SendOutcome::Terminal => {
-                            (source, settled) = settlement.finish(space, cancel);
-                            sender::commit_end::<ID, A, _>(source, ctx.2, ctx.0.as_mut(), driver);
+                            slot.cancel_send();
+                            (source, settled) = settlement.finish();
+                            sender::commit_end::<ID, A, _>(&mut source, ctx.2, ctx.0.as_mut(), driver);
                             break 'complete false;
                         }
                         SendOutcome::DirectClosed => None,
@@ -109,22 +109,23 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
                         SendOutcome::Invalid { error } => Some(conn::Transmit::Invalid(error)),
                         SendOutcome::Close => break 'retire (handler::Disposition::Closed, None),
                     };
-                    (handler::Disposition::Closed, settlement.connection().state.send.take(failure, place))
+                    (handler::Disposition::Closed, slot.state.send.take(failure, place))
                 };
-                (source, settled) = settlement.finish(space, cancel);
+                slot.cancel_send();
+                (source, settled) = settlement.finish();
                 if let Some(body) = body {
-                    let key = source.view().connection.key();
-                    writer::release_egress(ctx.0.as_mut(), key, body.into_inner(), disposition);
+                    ctx.0.as_mut().released(conn::Id::from_key(key), body.into_inner(), disposition);
                 }
                 if disposition == handler::Disposition::Closed {
                     true
                 } else {
-                    notify(source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
+                    notify(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
                     false
                 }
             };
-            if close || phase::finish(settlement.entry(&settled), ctx.0.as_ref()) {
-                drop(writer::close(Ok(settlement.into_entry(&settled)), *writes, ctx, turn, driver));
+            let mut entry = source.into_entry();
+            if close || phase::finish(&mut entry, ctx.0.as_ref()) {
+                drop(writer::close(Ok(entry), *writes, ctx, turn, driver));
             }
             (settled, ())
         },

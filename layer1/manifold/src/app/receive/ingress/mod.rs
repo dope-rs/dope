@@ -1,6 +1,6 @@
 use std::{convert, mem, pin};
 
-use dope_core::driver::{self, receive::Stale, route::Identity, schedule};
+use dope_core::driver::{self, receive::Stale, route::{self, Identity}, schedule};
 use dope_net::{
     link::{
         event,
@@ -166,7 +166,7 @@ fn finish_chunk<'ctx, 'a, 'p, 'w, 'd: 'w + 'p, ID: Identity + 'd, P: Policy<'p, 
     }
 }
 
-fn drive_control<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A>(
+fn drive_control<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A, K: route::Selection>(
     policy: pin::Pin<&mut P>,
     ctrl: A,
     turn: schedule::Turn<'a, 'd>,
@@ -174,7 +174,7 @@ fn drive_control<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A>(
 ) where
     'd: 'w + 'p,
     P: Policy<'p, 'w, 'd, ID>,
-    A: arrival::Arrival<'d, Observed = event::Control<'d>>,
+    A: arrival::Arrival<'d, Observed = event::Control<'d, K>>,
 {
     let (pool, mut context) = P::parts(policy);
     let (entry, next) = pool.recv().dispatch(ctrl);

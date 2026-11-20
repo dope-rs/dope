@@ -1,4 +1,3 @@
-use core::convert::Infallible;
 use std::cell;
 
 use bindings::endpoint;
@@ -25,7 +24,6 @@ use o3::{
     buffer,
     buffer::hold::scope::Deferred,
 };
-use policy::output;
 use stream::cursor::Cursor;
 
 use crate::{
@@ -197,28 +195,18 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
     policy::Output<'life, 'd, storage::State<'s, 'd, LANES, N>, ID, CONNECTIONS>
     for Logic<'life, 's, 'd, ID, LANES, N>
 {
-    fn sent() -> impl for<'a, 'x> Call<(
-        &'a mut Owner<'life, 's, 'd, Self, ID, LANES, N>,
-        conn::Id<'d, ID>,
-        egress::Pending,
-        &'x mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Sent::<Infallible, Infallible, _>::Pending(
-            |(owner, conn, pending, token): (
-                &mut Owner<'life, 's, 'd, Self, ID, LANES, N>,
-                conn::Id<'d, ID>,
-                egress::Pending,
-                &mut region::Token<region::Identity<'d, 1>>,
-            )| {
-                let logic = owner.logic();
-                if pending == egress::Pending::Absent
-                    && let Some(bind) = logic.bind(conn)
-                    && bind.peer.status(token).pending_for_server
-                {
-                    bind.wake.wake();
-                }
-            },
-        )
+    fn sent(
+        owner: &mut Owner<'life, 's, 'd, Self, ID, LANES, N>,
+        conn: conn::Id<'d, ID>,
+        pending: egress::Pending,
+        token: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        if pending == egress::Pending::Absent
+            && let Some(bind) = owner.logic().bind(conn)
+            && bind.peer.status(token).pending_for_server
+        {
+            bind.wake.wake();
+        }
     }
 
     fn flush<'w, W: wire::Spec + 'w>(_: &W::Connection<'w, ID>) -> Option<
@@ -245,21 +233,13 @@ impl<'life, 's, 'd: 'life, ID: Identity, const LANES: usize, const N: usize>
         )
     }
 
-    fn cancel() -> impl for<'a, 'x> Call<(
-        &'a Owner<'life, 's, 'd, Self, ID, LANES, N>,
-        Self::Send,
-        &'x mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Cancel::<Infallible, Infallible, _>::Context(
-            |(owner, payload, token): (
-                &Owner<'life, 's, 'd, Self, ID, LANES, N>,
-                Self::Send,
-                &mut region::Token<region::Identity<'d, 1>>,
-            )| {
-                let id = payload.cancel();
-                owner.root().queries.undo_stream(token, id);
-            },
-        )
+    fn cancel(
+        owner: &Owner<'life, 's, 'd, Self, ID, LANES, N>,
+        payload: Self::Send,
+        token: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        let id = payload.cancel();
+        owner.root().queries.undo_stream(token, id);
     }
 }
 

@@ -251,6 +251,33 @@ pub trait Create: Plan {
         'd: 'p;
 }
 
+impl<T: Create> Build for T {
+    type Error = <T as Create>::Error;
+    type Store<'d>
+        = ()
+    where
+        Self: 'd;
+
+    fn try_store<'d>(&self) -> Result<Self::Store<'d>, Self::Error>
+    where
+        Self: 'd,
+    {
+        Ok(())
+    }
+
+    fn try_build<'p, 'd>(
+        self,
+        _: &'p mut Self::Store<'d>,
+        ctx: Context<'_, 'd>,
+    ) -> Result<Self::Output<'p, 'd>, Self::Error>
+    where
+        Self: 'd,
+        'd: 'p,
+    {
+        Create::try_build(self, ctx)
+    }
+}
+
 /// Builds storage without contributing driver-resource claims.
 pub trait Claimless: Plan {}
 

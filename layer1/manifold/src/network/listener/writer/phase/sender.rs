@@ -91,7 +91,7 @@ pub(super) fn commit_end<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::T
             );
             slot.cancel_send();
             if let Some(body) = closed {
-                writer::release_egress(app, key, body.into_inner(), handler::Disposition::Closed);
+                app.released(conn::Id::from_key(key), body.into_inner(), handler::Disposition::Closed);
             }
         }
         transmit::Finalize::Settled | transmit::Finalize::Abandoned => slot.cancel_send(),
@@ -197,9 +197,7 @@ where
     let result = match result {
         Ok(result) => result,
         Err(failure) => {
-            slot.state.send.release(Some(failure), |egress| {
-                writer::release_egress(app.as_mut(), key, egress, handler::Disposition::Closed);
-            });
+            slot.state.send.release(app.as_mut(), conn::Id::from_key(key), Some(failure), handler::Disposition::Closed);
             flow::Flow::Clear
         }
     };

@@ -476,7 +476,18 @@ impl<'d, ID: route::Identity> Application<'d, ID> for BorrowedApp {
     type Retirement = retire::Close;
     type Egress = resident::Shared<'d>;
     type Input = receive::Borrowed;
-    type Send = send::Reported<send::Silent>;
+    type Send = send::Silent;
+
+    fn released(
+        self: Pin<&mut Self>,
+        _: conn::Id<'d, ID>,
+        body: Self::Egress,
+        cause: handler::Disposition,
+    ) {
+        drop(body);
+        self.released.record(cause == handler::Disposition::Sent);
+        self.sent.hit();
+    }
 
     fn build_failed(self: Pin<&mut Self>, cause: Self::Build) {
         match cause {}
@@ -517,15 +528,5 @@ impl<'d, ID: route::Identity> handler::Borrowed<'d, ID> for BorrowedApp {
             _ => return Outcome::CloseAfter,
         }
         Outcome::Continue
-    }
-}
-
-impl<'d, ID: route::Identity> send::Report<'d, ID> for BorrowedApp {
-    const ENABLED: bool = true;
-
-    fn released(self: Pin<&mut Self>, release: handler::Release<'d, ID, Self::Egress>) {
-        let (_, _, cause) = release.into_parts();
-        self.released.record(cause == handler::Disposition::Sent);
-        self.sent.hit();
     }
 }

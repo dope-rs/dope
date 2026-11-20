@@ -6,7 +6,7 @@ pub use demands::Schedule;
 use o3::{base::num::bounded, depot, depot::capacity};
 pub use receive::Receive;
 pub use resource::Resource;
-pub use routes::Routes;
+pub use routes::{RouteSpan, Routes};
 
 use crate::{
     driver::route::{SLOT_MASK, indices::SlotIndex, table},

@@ -55,7 +55,7 @@ pub(crate) trait Strategy<W: wire::Spec, M: Mode<W>> {
         'd: 'a + 'c,
         W: 'd;
 
-    fn drive_data<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A>(
+    fn drive_data<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A, K: route::Selection>(
         policy: pin::Pin<&mut P>,
         data: A,
         work: Self::Admission<'a, 'c, 'd>,
@@ -65,7 +65,7 @@ pub(crate) trait Strategy<W: wire::Spec, M: Mode<W>> {
         W: 'w + 'd,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         M::Reserve: Choice<W, M::Ingress>,
-        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>;
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d, (), K>>;
 
     fn resume_tail<'p, 'w, 'd, ID: Identity + 'd, P>(
         _: pin::Pin<&mut P>,

@@ -130,34 +130,3 @@ where
         exec.run(|run| finish(run.try_enter(op, report).map_err(EnterError::from)))
     }
 }
-
-impl<S> Domain<S>
-where
-    S: storage::Create,
-{
-    pub(super) fn try_create<C, O, Done>(
-        self,
-        ctx: C,
-        op: O,
-        report: impl recovery::Observe,
-        finish: impl for<'owner> FnOnce(
-            Result<O::Output, EnterError<'owner, S::Error, O, O::Output, C::Shutdown>>,
-        ) -> Done,
-    ) -> Done
-    where
-        C: executor::Build,
-        O: executor::Op<S, C::Shutdown>,
-    {
-        let mut attempt = creation::Attempt::new();
-        let exec = match ctx.try_build(&mut attempt, self.layout) {
-            Ok(exec) => exec.with_plan(self.storage),
-            Err(cause) => {
-                return finish(Err(EnterError::Runtime(domain::Rejected {
-                    cause,
-                    operation: op,
-                })));
-            }
-        };
-        exec.run(|run| finish(run.try_scope(op, report).map_err(EnterError::from)))
-    }
-}

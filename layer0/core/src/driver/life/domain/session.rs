@@ -6,7 +6,7 @@ use crate::driver::{
     self, life,
     life::{
         domain::{Closing, Error, Rejected, Source, Teardown},
-        plans::{Build, Create, Direct},
+        plans::{Build, Direct},
         recovery,
     },
     storage,
@@ -111,30 +111,6 @@ impl<'a, Q> Session<'a, Q> {
             driver.scope(
                 source,
                 Build {
-                    plan,
-                    operation: op,
-                },
-                &mut report,
-            )
-        })
-    }
-}
-
-impl<'a, Q> Session<'a, Q> {
-    pub fn try_create<S, O>(
-        self,
-        plan: S,
-        op: O,
-        mut report: impl recovery::Observe,
-    ) -> Admission<'a, S::Error, O, O::Output, Q>
-    where
-        S: storage::Create,
-        O: life::Operation<S, Q>,
-    {
-        self.run(|driver, source| {
-            driver.scope(
-                source,
-                Create {
                     plan,
                     operation: op,
                 },

@@ -1,14 +1,17 @@
 use dope_core::{
-    driver::{self, result, retained::flight, route, route::kind, schedule::ready},
+    driver::{
+        self, receive::Registration, result, retained::flight, route, route::kind, schedule::ready,
+    },
     io::{event::batch::Flow, fd::handles, transfer},
 };
 
 use crate::{
     link::{
+        Setup,
         duplex::{receive, sending, state},
         event::SendSource,
     },
-    wire::send::reclaim,
+    wire::{send::reclaim, terminal},
 };
 
 pub(in crate::link) enum Cancel<'a, 'd, C: kind::Class> {
@@ -71,6 +74,22 @@ impl<'d, P: reclaim::Policy> State<'d, P> {
 
     pub(in crate::link) fn cancel_recv(&mut self) -> Cancel<'_, 'd, kind::Recv> {
         self.recv.cancel()
+    }
+
+    pub(in crate::link) fn captured(
+        &mut self,
+        setup: &Setup<'d, impl route::Identity>,
+        captured: terminal::Captured,
+    ) {
+        if matches!(captured, terminal::Captured::None) {
+            return;
+        }
+        let handle = setup.ready_handle();
+        if matches!(captured, terminal::Captured::Eof) {
+            Registration::clear(handle.target());
+            self.recv.exhaustion().cancel();
+        }
+        self.capture(handle);
     }
 
     pub(in crate::link) fn capture(&mut self, handle: ready::Handle<'d>) {

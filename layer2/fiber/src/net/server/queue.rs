@@ -55,7 +55,20 @@ where
     type Retirement = ();
     type Egress = resident::Shared<'d>;
     type Input = receive::Owned;
-    type Send = send::Reported<send::Run>;
+    type Send = send::Run;
+
+    fn released(
+        self: pin::Pin<&mut Self>,
+        id: conn::Id<'d, ID>,
+        egress: Self::Egress,
+        cause: handler::Disposition,
+    ) {
+        let channel = self.get_mut().port.connections.channel();
+        match cause {
+            handler::Disposition::Sent => channel.sync_send(id, egress::Pending::Absent),
+            handler::Disposition::Closed => channel.close_send(id, egress),
+        }
+    }
 
     fn connection(self: pin::Pin<&Self>, _: &Seed) -> Result<Self::Conn, Self::Build> {
         Ok(())
@@ -189,24 +202,6 @@ where
             .connections
             .channel()
             .fail_edge(conn.id(), read::Edge::Wire(cause));
-    }
-}
-
-impl<'scope, 'w, 'd: 'w, W, F, ID: Identity> send::Report<'d, ID>
-    for Queue<'scope, 'w, 'd, W, F, ID>
-where
-    W: input::Execution + 'd,
-    F: FnMut(open::Error<'w, W>),
-{
-    const ENABLED: bool = true;
-
-    fn released(self: pin::Pin<&mut Self>, release: handler::Release<'d, ID, Self::Egress>) {
-        let (id, egress, cause) = release.into_parts();
-        let channel = self.get_mut().port.connections.channel();
-        match cause {
-            handler::Disposition::Sent => channel.sync_send(id, egress::Pending::Absent),
-            handler::Disposition::Closed => channel.close_send(id, egress),
-        }
     }
 }
 

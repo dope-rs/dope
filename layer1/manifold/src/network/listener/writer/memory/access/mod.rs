@@ -11,19 +11,13 @@ use dope_net::link::{self, egress, egress::data, event};
 use o3::buffer::resident;
 
 use crate::network::listener::{
-    conn,
+    conn, handler::Disposition,
     writer::{memory, state::Send},
 };
 
 mod raw;
 
 pub(in crate::network::listener::writer) struct Progress(State);
-
-#[repr(u8)]
-enum Arm {
-    Idle,
-    Armed,
-}
 
 enum State {
     Active(Active),
@@ -69,30 +63,22 @@ impl Progress {
         }
     }
 
-    pub(in crate::network::listener::writer) fn advance(
+    pub(in crate::network::listener::writer) fn complete(
         &mut self,
         done: Option<link::Consumed>,
-        motion: Motion,
-    ) -> Option<transfer::Len> {
+    ) -> Option<Disposition> {
         let State::Active(active) = &mut self.0 else {
-            return None;
+            return Some(Disposition::Closed);
         };
-        if let Some(done) = done {
-            let next = match active.sent.try_extend(done.into_len()) {
-                Ok(next) => next,
-                Err(cause) => {
-                    self.0 = State::Failed(Fault::new(
-                        active.sent.len(),
-                        cause.requested(),
-                        cause.available(),
-                    ));
-                    return None;
-                }
-            };
-            active.sent = next;
+        let amount = done.map_or(transfer::Len::ZERO, link::Consumed::into_len);
+        if amount == active.sent.left() {
+            return Some(Disposition::Sent);
         }
-        active.motion = motion;
-        Some(active.sent.left())
+        if let Err(fault) = active.extend(amount.nonzero()?) {
+            self.0 = State::Failed(fault);
+            return Some(Disposition::Closed);
+        }
+        None
     }
 
     pub(in crate::network::listener::writer) fn motion(&self) -> Motion {
@@ -102,14 +88,14 @@ impl Progress {
             State::Failed(_) | State::Rejected(_) => Motion::Empty,
         }
     }
+}
 
-    fn record(&mut self, done: link::Consumed, arm: Arm) {
-        let motion = match (arm, done.into_len().nonzero()) {
-            (Arm::Idle, None) => Motion::Waiting,
-            (Arm::Idle, Some(_)) | (Arm::Armed, None) => Motion::Ready,
-            (Arm::Armed, Some(_)) => Motion::Consumed,
-        };
-        let _ = self.advance(Some(done), motion);
+impl Active {
+    fn extend(&mut self, amount: transfer::NonZero) -> Result<(), Fault> {
+        self.sent = self.sent.try_extend(transfer::Len::from_nonzero(amount)).map_err(|cause| {
+            Fault::new(self.sent.len(), cause.requested(), cause.available())
+        })?;
+        Ok(())
     }
 }
 
@@ -133,8 +119,6 @@ impl Fault {
 
 const _: () = {
     assert!(mem::size_of::<Fault>() == 3 * mem::size_of::<transfer::Len>());
-    assert!(mem::size_of::<Arm>() == mem::size_of::<bool>());
-    assert!(mem::align_of::<Arm>() == mem::align_of::<bool>());
     assert!(mem::size_of::<Motion>() == mem::size_of::<u8>());
 };
 

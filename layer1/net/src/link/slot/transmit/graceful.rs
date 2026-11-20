@@ -76,6 +76,6 @@ where
         }
     };
     let result = outcome::Handoff::from_attempt(attempt);
-    slot.engine.captured(captured);
+    slot.engine.operations.captured(&slot.engine.establish, captured);
     result.progress()
 }

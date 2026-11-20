@@ -1,7 +1,7 @@
 use std::pin;
 
 use dope_core::{
-    driver::{self, route::Identity, schedule},
+    driver::{self, route::{self, Identity}, schedule},
     io::event::net::{connect, send, socket},
 };
 use dope_net::link::oneshot::{self, Busy, Dispatch, Unsent};
@@ -196,11 +196,11 @@ where
         Ok(())
     }
 
-    pub(in crate::client) fn send(
+    pub(in crate::client) fn send<K: route::Selection>(
         &mut self,
-        done: send::Completion<'d>,
+        done: send::Completion<'d, K>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Result<(), send::Completion<'d>> {
+    ) -> Result<(), send::Completion<'d, K>> {
         let step = self.edit_io(driver, |io| io.send(done))?;
         self.settle(step);
         Ok(())

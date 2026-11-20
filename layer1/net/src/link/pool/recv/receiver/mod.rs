@@ -57,14 +57,14 @@ where
 
     /// Reserves the statically selected ingress policy for one observed data
     /// completion.
-    pub fn data<A, O>(
+    pub fn data<A, O, K: route::Selection>(
         self,
         done: A,
         capture: impl FnOnce(pool::Key<'d, ID>, &S) -> M::Receipt,
         consume: impl for<'loan> FnOnce(reserve::Reservation<'loan, 'w, 'd, ID, W, M>) -> O,
     ) -> (Option<pool::Entry<'a, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>>, O)
     where
-        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d, (), K>>,
         M::Reserve: reserve::Choice<W, M::Ingress>,
         input::Receipt<W, M>: 'a,
     {
@@ -83,7 +83,7 @@ where
                 return (None, consume(event::Reservation::Drop));
             }
         };
-        let next = match reserve::Plan::observe(&mut entry, event, timing, capture) {
+        let next = match reserve::Plan::observe(&mut entry, event.erase_route(), timing, capture) {
             Ok(plan) => <M::Reserve as reserve::Choice<W, M::Ingress>>::reserve(plan),
             Err(next) => next,
         };
@@ -180,7 +180,7 @@ where
         Ok(())
     }
 
-    pub fn dispatch<A>(
+    pub fn dispatch<A, K: route::Selection>(
         self,
         item: A,
     ) -> (
@@ -188,14 +188,15 @@ where
         event::Dispatch<'d, ID>,
     )
     where
-        A: arrival::Arrival<'d, Observed = event::Control<'d>>,
+        A: arrival::Arrival<'d, Observed = event::Control<'d, K>>,
         M::Ingress: Dispatch<W>,
     {
         let (item, timing) = item.observe().into_parts();
         let key = match self.pool.keys.parse(item.token()) {
             Ok(key) => key.connection(),
-            Err(_) => return (None, event::Dispatch::Retired(item.retire())),
+            Err(_) => return (None, event::Dispatch::Retired(item.erase_route().retire())),
         };
+        let item = item.erase_route();
         let mut entry = match self.pool.entry(key) {
             Ok(entry) => entry,
             Err(_) => return (None, event::Dispatch::Retired(item.retire())),

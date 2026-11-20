@@ -3,7 +3,7 @@ use std::{mem, pin};
 use dope_core::driver::{
     self,
     receive::Stale,
-    route::Identity,
+    route::{self, Identity},
     schedule::{self, ready},
 };
 use dope_net::{
@@ -47,7 +47,7 @@ impl<'a, 'c: 'a, 'd: 'a + 'c> Admission<'a, 'c, 'd> for Single<'a, 'c, 'd> {
 }
 
 impl<'a, 'c, 'd> Single<'a, 'c, 'd> {
-    pub(in crate::app::receive::ingress) fn drive<'policy, 'p, 'w, ID: Identity + 'd, W, M, P, A, C>(
+    pub(in crate::app::receive::ingress) fn drive<'policy, 'p, 'w, ID: Identity + 'd, W, M, P, A, C, K: route::Selection>(
         self,
         policy: pin::Pin<&'policy mut P>,
         data: A,
@@ -69,7 +69,7 @@ impl<'a, 'c, 'd> Single<'a, 'c, 'd> {
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         crate::Inbound<'p, 'w, 'd, ID, P>: 'policy,
         M::Reserve: Choice<W, M::Ingress>,
-        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d, (), K>>,
     {
         let (pool, mut context) = P::parts(policy);
         let (entry, plan) = pool.recv().data(

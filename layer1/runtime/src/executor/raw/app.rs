@@ -4,6 +4,14 @@ use dope_core::driver::{self, schedule, settings};
 
 use crate::executor;
 
+/// Composes a deferred parent loan with its pinned field projection.
+pub fn project_field<'a, P: 'a, T: 'a>(
+    parent: impl FnOnce() -> pin::Pin<&'a mut P>,
+    field: impl FnOnce(pin::Pin<&'a mut P>) -> pin::Pin<&'a mut T>,
+) -> impl FnOnce() -> pin::Pin<&'a mut T> {
+    move || field(parent())
+}
+
 /// Application storage metadata independent of lifecycle eligibility.
 pub trait Layout<'d> {
     /// Pre-park state selected once and retained with this pinned application.
@@ -16,6 +24,9 @@ pub trait Layout<'d> {
 /// Keep the root pinned; shutdown preserves client storage and finish destroys dependents before providers.
 pub unsafe trait App<'d>: Sized + Layout<'d> {
     const ROUTES: settings::Routes;
+
+    /// Routes on which a nested application may observe a completion.
+    const DISPATCH_ROUTES: settings::Routes = Self::ROUTES;
 
     /// Routes whose installed owners may receive activation.
     const WAKE_ROUTES: settings::Routes = settings::Routes::EMPTY;
@@ -86,6 +97,27 @@ pub unsafe trait App<'d>: Sized + Layout<'d> {
         _: driver::Context<'_, 'd>,
     ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
         ops::ControlFlow::Break(event)
+    }
+
+    /// A nested miss preserves the event without borrowing its owner.
+    fn dispatch_from<'app, 'event, const NESTED: bool>(
+        project: impl FnOnce() -> pin::Pin<&'app mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+        turn: schedule::Turn<'_, 'd>,
+        driver: driver::Context<'_, 'd>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>>
+    where
+        Self: 'app,
+    {
+        if !NESTED
+            || Self::ROUTES
+                .intersection(Self::DISPATCH_ROUTES)
+                .has_route(event.route())
+        {
+            Self::dispatch(project(), event, turn, driver)
+        } else {
+            ops::ControlFlow::Break(event)
+        }
     }
 
     fn progress(

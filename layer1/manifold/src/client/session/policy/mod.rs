@@ -57,14 +57,12 @@ pub trait Output<'life, 'd: 'life, P: ?Sized + 'life, ID: Identity, const MAX: u
         None::<Infallible>
     }
 
-    fn sent() -> impl for<'a, 't> Call<(
-        &'a mut State<'life, 'd, P, Self, ID, MAX>,
-        conn::Id<'d, ID>,
-        egress::Pending,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Sent::<Infallible>::None
-    }
+    fn sent(
+        _: &mut State<'life, 'd, P, Self, ID, MAX>,
+        _: conn::Id<'d, ID>,
+        _: egress::Pending,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {}
 
     fn settled(
         _: &mut State<'life, 'd, P, Self, ID, MAX>,
@@ -75,14 +73,11 @@ pub trait Output<'life, 'd: 'life, P: ?Sized + 'life, ID: Identity, const MAX: u
         drop(payload);
     }
 
-    fn cancel() -> impl for<'a, 't> Call<(
-        &'a State<'life, 'd, P, Self, ID, MAX>,
-        Self::Send,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        use std::mem;
-        output::Cancel::<_>::Release(mem::drop::<Self::Send>)
-    }
+    fn cancel(
+        _: &State<'life, 'd, P, Self, ID, MAX>,
+        _: Self::Send,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {}
 }
 
 pub trait Requests<'life, 'd: 'life, P: ?Sized, ID: Identity, const MAX: usize>:

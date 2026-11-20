@@ -14,31 +14,31 @@ mod raw;
 
 /// Owns a completion and its immutable route through dispatch.
 #[must_use]
-pub struct Dispatch<'event, 'd> {
+pub struct Dispatch<'event, 'd, S: route::Selection = route::Route> {
     event: slot::Occupied<'event, io::Event<'d>>,
-    route: route::Route,
+    route: S,
 }
 
 #[repr(transparent)]
-pub struct Member<'event, 'd, T> {
-    dispatch: Dispatch<'event, 'd>,
+pub struct Member<'event, 'd, T, S: route::Selection = route::Route> {
+    dispatch: Dispatch<'event, 'd, S>,
     value: PhantomData<fn() -> T>,
 }
 
 #[repr(u8)]
-pub enum Selected<'event, 'd> {
-    Accept(Member<'event, 'd, accept::Completion<'d>>),
-    Recv(Member<'event, 'd, recv::Completion<'d>>),
-    RetiredRecv(Member<'event, 'd, recv::Completion<'d>>),
-    Send(Member<'event, 'd, send::Completion<'d>>),
-    Socket(Member<'event, 'd, socket::Completion<'d>>),
-    Tuning(Member<'event, 'd, tuning::Completion<'d>>),
-    Connect(Member<'event, 'd, connect::Completion<'d>>),
-    Open(Member<'event, 'd, open::Completion<'d>>),
-    Write(Member<'event, 'd, write::Completion<'d>>),
-    Read(Member<'event, 'd, read::Completion<'d>>),
-    Sync(Member<'event, 'd, sync::Completion<'d>>),
-    Shutdown(Dispatch<'event, 'd>),
+pub enum Selected<'event, 'd, S: route::Selection = route::Route> {
+    Accept(Member<'event, 'd, accept::Completion<'d>, S>),
+    Recv(Member<'event, 'd, recv::Completion<'d>, S>),
+    RetiredRecv(Member<'event, 'd, recv::Completion<'d>, S>),
+    Send(Member<'event, 'd, send::Completion<'d>, S>),
+    Socket(Member<'event, 'd, socket::Completion<'d>, S>),
+    Tuning(Member<'event, 'd, tuning::Completion<'d>, S>),
+    Connect(Member<'event, 'd, connect::Completion<'d>, S>),
+    Open(Member<'event, 'd, open::Completion<'d>, S>),
+    Write(Member<'event, 'd, write::Completion<'d>, S>),
+    Read(Member<'event, 'd, read::Completion<'d>, S>),
+    Sync(Member<'event, 'd, sync::Completion<'d>, S>),
+    Shutdown(Dispatch<'event, 'd, S>),
 }
 
 impl<'event, 'd> Dispatch<'event, 'd> {
@@ -53,11 +53,31 @@ impl<'event, 'd> Dispatch<'event, 'd> {
         self.route
     }
 
+    #[inline]
+    pub fn within<S: route::Selection>(
+        self,
+        accepts: impl FnOnce(route::Route) -> bool,
+    ) -> Result<Dispatch<'event, 'd, S>, Self> {
+        if let Some(route) = S::select(self.route)
+            && accepts(route.into_route())
+        {
+            Ok(Dispatch { event: self.event, route })
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl<'event, 'd, S: route::Selection> Dispatch<'event, 'd, S> {
+    pub fn into_dispatch(self) -> Dispatch<'event, 'd> {
+        Dispatch { event: self.event, route: self.route.into_route() }
+    }
+
     pub fn into_event(self) -> slot::Occupied<'event, io::Event<'d>> {
         self.event
     }
 
-    pub fn select(self) -> Selected<'event, 'd> {
+    pub fn select(self) -> Selected<'event, 'd, S> {
         match self.event.as_ref() {
             Kind::Accept(_) => Selected::Accept(Member::new(self)),
             Kind::Recv(_) => Selected::Recv(Member::new(self)),
@@ -75,7 +95,7 @@ impl<'event, 'd> Dispatch<'event, 'd> {
     }
 }
 
-impl<'d> ops::Deref for Dispatch<'_, 'd> {
+impl<'d, S: route::Selection> ops::Deref for Dispatch<'_, 'd, S> {
     type Target = io::Event<'d>;
 
     fn deref(&self) -> &Self::Target {
@@ -83,8 +103,8 @@ impl<'d> ops::Deref for Dispatch<'_, 'd> {
     }
 }
 
-impl<'event, 'd, T> Member<'event, 'd, T> {
-    fn new(dispatch: Dispatch<'event, 'd>) -> Self {
+impl<'event, 'd, T, S: route::Selection> Member<'event, 'd, T, S> {
+    fn new(dispatch: Dispatch<'event, 'd, S>) -> Self {
         Self {
             dispatch,
             value: PhantomData,
@@ -92,11 +112,27 @@ impl<'event, 'd, T> Member<'event, 'd, T> {
     }
 
     pub fn into_dispatch(self) -> Dispatch<'event, 'd> {
-        self.dispatch
+        self.dispatch.into_dispatch()
     }
 }
 
-impl<'event, 'd> Selected<'event, 'd> {
+impl<'event, 'd, S: route::Selection> Member<'event, 'd, recv::Completion<'d>, S> {
+    pub fn take_routed(self) -> (recv::Completion<'d, S>, slot::Vacant<'event, io::Event<'d>>) {
+        let scope = self.dispatch.route;
+        let (done, vacant) = self.take();
+        (done.in_scope(scope), vacant)
+    }
+}
+
+impl<'event, 'd, S: route::Selection> Member<'event, 'd, send::Completion<'d>, S> {
+    pub fn take_routed(self) -> (send::Completion<'d, S>, slot::Vacant<'event, io::Event<'d>>) {
+        let scope = self.dispatch.route;
+        let (done, vacant) = self.take();
+        (done.in_scope(scope), vacant)
+    }
+}
+
+impl<'event, 'd, S: route::Selection> Selected<'event, 'd, S> {
     pub fn into_dispatch(self) -> Dispatch<'event, 'd> {
         match self {
             Self::Accept(member) => member.into_dispatch(),
@@ -109,7 +145,7 @@ impl<'event, 'd> Selected<'event, 'd> {
             Self::Write(member) => member.into_dispatch(),
             Self::Read(member) => member.into_dispatch(),
             Self::Sync(member) => member.into_dispatch(),
-            Self::Shutdown(dispatch) => dispatch,
+            Self::Shutdown(dispatch) => dispatch.into_dispatch(),
         }
     }
 }

@@ -1,11 +1,11 @@
-use std::mem;
+use std::{mem, pin::Pin};
 
 use dope_core::driver::route::{Identity, KeyTag};
 use dope_net::link::{Consumed, egress::data};
 use memory::access;
 use o3::{buffer::resident, mem::slot};
 
-use crate::network::listener::{conn, handler::Disposition, writer::memory};
+use crate::network::listener::{conn, handler::{Application, Disposition}, writer::memory};
 
 pub(in crate::network::listener) struct Send<
     'p,
@@ -101,13 +101,12 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B
         let State::Direct(direct) = &mut self.state else {
             return Some((Disposition::Closed, None));
         };
-        match direct.progress.advance(consumed, access::Motion::Ready) {
-            Some(left) if !left.is_zero() => None,
-            Some(_) => {
+        match direct.progress.complete(consumed)? {
+            Disposition::Sent => {
                 let next = Self::new(direct.lease.home());
                 Some((Disposition::Sent, mem::replace(self, next).state.retire(place)))
             }
-            None => Some((Disposition::Closed, self.take(None, place))),
+            Disposition::Closed => Some((Disposition::Closed, self.take(None, place))),
         }
     }
 
@@ -127,14 +126,16 @@ impl<'p, 's, 'd, ID: Identity, B: data::raw::Payload<'d>> Send<'p, 's, 'd, ID, B
         mem::replace(&mut self.state, next).retire(place)
     }
 
-    pub(in crate::network::listener::writer) fn release(
+    pub(in crate::network::listener::writer) fn release<A: Application<'d, ID, Egress = B>>(
         &mut self,
+        app: Pin<&mut A>,
+        id: conn::Id<'d, ID>,
         failure: Option<conn::Transmit>,
-        release: impl FnOnce(B),
+        disposition: Disposition,
     ) {
         let mut place = mem::MaybeUninit::uninit();
         if let Some(body) = self.take(failure, slot::Vacant::new(&mut place)) {
-            release(body.into_inner());
+            app.released(id, body.into_inner(), disposition);
         }
     }
 

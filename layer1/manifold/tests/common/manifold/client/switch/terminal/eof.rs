@@ -1,4 +1,4 @@
-use std::{cell::Cell, convert::Infallible, rc::Rc};
+use std::{cell::Cell, rc::Rc};
 
 use dope_core::{driver, driver::route::KeyTag, io::socket};
 use dope_manifold::client::{
@@ -12,7 +12,7 @@ use dope_manifold::client::{
             staging::{Buffered, Limit},
             storage,
         },
-        policy::{self, output},
+        policy,
         response,
         response::work,
         turns,
@@ -337,30 +337,22 @@ impl<'d> Output<'d> for Eof {
         })
     }
 
-    fn sent() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        conn::Id<'d, KeyTag<0>>,
-        egress::Pending,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Sent::<_>::Ready(|owner: &mut Self| {
-            owner.audit.record_sent();
-        })
+    fn sent(
+        &mut self,
+        _: conn::Id<'d, KeyTag<0>>,
+        _: egress::Pending,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        self.audit.record_sent();
     }
 
-    fn cancel() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        Self::Send,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        use Infallible;
-
-        output::Cancel::<Infallible, Infallible, Infallible, _, _>::Ready(
-            drop::<Self::Send>,
-            |owner: &mut Self| {
-                owner.audit.cancelled();
-            },
-        )
+    fn cancel(
+        &mut self,
+        payload: Self::Send,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        drop(payload);
+        self.audit.cancelled();
     }
 }
 

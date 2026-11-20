@@ -52,6 +52,6 @@ where
         };
         let done = <W::Receive as eof::Eof<W>>::eof::<ID>(&mut conn.wire, end);
         let ((), captured) = done.into_parts();
-        conn.engine.captured(captured);
+        conn.engine.operations.captured(&conn.engine.establish, captured);
     }
 }

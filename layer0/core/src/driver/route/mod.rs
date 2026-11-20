@@ -1,5 +1,5 @@
 pub mod indices;
-use core::{hash, marker, mem, num};
+use core::{convert::Infallible, hash, marker, mem, num};
 
 use indices::SlotIndex;
 pub use o3::base::num::Epoch;
@@ -36,6 +36,54 @@ pub struct Id(u8);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(transparent)]
 pub struct Route(u8);
+
+pub trait Selection: kind::Sealed + Copy {
+    const FIXED: Option<Route>;
+    fn select(route: Route) -> Option<Self>;
+    fn into_route(self) -> Route;
+}
+
+impl kind::Sealed for Route {}
+
+impl Selection for Route {
+    const FIXED: Option<Route> = None;
+
+    fn select(route: Route) -> Option<Self> {
+        Some(route)
+    }
+
+    fn into_route(self) -> Route {
+        self
+    }
+}
+
+impl kind::Sealed for Infallible {}
+
+impl Selection for Infallible {
+    const FIXED: Option<Route> = None;
+
+    fn select(_: Route) -> Option<Self> {
+        None
+    }
+
+    fn into_route(self) -> Route {
+        match self {}
+    }
+}
+
+impl<R: App> kind::Sealed for marker::PhantomData<R> {}
+
+impl<R: App> Selection for marker::PhantomData<R> {
+    const FIXED: Option<Route> = Some(R::ROUTE);
+
+    fn select(route: Route) -> Option<Self> {
+        (route == R::ROUTE).then_some(marker::PhantomData)
+    }
+
+    fn into_route(self) -> Route {
+        R::ROUTE
+    }
+}
 
 impl Id {
     pub(crate) const fn for_tag<Tag: route::Tag>() -> Self {
@@ -246,13 +294,13 @@ impl<T: Tag, C: kind::Class> hash::Hash for Operation<'_, T, C> {
 /// Logical operation target with its native flight identity when submitted.
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct Erased<'d, C: kind::Class> {
+pub struct Erased<'d, C: kind::Class, S: Selection = Route> {
     pub(in crate::driver) token: Token,
     // Completion delivery preserves the already-admitted native identity even
     // after its arena slot is released. Logical routing remains independent.
     pub(in crate::driver) flight: Option<super::retained::flight::raw::Echo>,
     pub(in crate::driver) driver: super::Invariant<'d>,
-    pub(in crate::driver) class: marker::PhantomData<C>,
+    pub(in crate::driver) class: marker::PhantomData<(C, S)>,
 }
 
 impl<'d> Erased<'d, kind::Any> {
@@ -265,30 +313,49 @@ impl<'d> Erased<'d, kind::Any> {
         }
     }
 
-    pub(crate) const fn bind<C: kind::Class>(self, proof: kind::Witness<C>) -> Erased<'d, C> {
-        let kind::Witness(class) = proof;
+    pub(crate) const fn bind<C: kind::Class>(self, _: kind::Witness<C>) -> Erased<'d, C> {
         Erased {
             token: self.token,
             flight: self.flight,
             driver: self.driver,
-            class,
+            class: marker::PhantomData,
         }
     }
 }
 
-impl<'d, C: kind::Class> Erased<'d, C> {
+impl<'d, C: kind::Class, S: Selection> Erased<'d, C, S> {
     pub fn matches(self, target: Self) -> bool {
         self.token == target.token
     }
 
-    pub(crate) fn matches_flight(self, target: Self) -> bool {
+    pub(crate) fn matches_flight(self, target: Erased<'d, C, impl Selection>) -> bool {
         // The shared driver brand fixes the arena; an echo is never reused and
         // identifies one immutable target.
         self.flight.is_some() && self.flight == target.flight
     }
 
     pub const fn route(self) -> Route {
-        self.token.route()
+        match S::FIXED {
+            Some(route) => route,
+            None => self.token.route(),
+        }
+    }
+
+    pub const fn erase_route(self) -> Erased<'d, C> {
+        self.with_marker()
+    }
+
+    pub(crate) const fn in_scope<N: Selection>(self, _: N) -> Erased<'d, C, N> {
+        self.with_marker()
+    }
+
+    const fn with_marker<N: Selection>(self) -> Erased<'d, C, N> {
+        Erased {
+            token: self.token,
+            flight: self.flight,
+            driver: self.driver,
+            class: marker::PhantomData,
+        }
     }
 
     pub const fn slot(self) -> SlotIndex {
@@ -406,13 +473,13 @@ impl<'d, Tag: route::Tag> Space<'d, Tag> {
 
     pub fn parse<C: kind::Class>(
         self,
-        target: route::Erased<'d, C>,
+        target: route::Erased<'d, C, impl Selection>,
     ) -> Result<route::Operation<'d, Tag, C>, route::Mismatch<'d, Tag, C>>
     where
         Tag: route::Select<C>,
     {
         if target.route() != Tag::ROUTE {
-            return Err(route::Mismatch::new(target));
+            return Err(route::Mismatch::new(target.erase_route()));
         }
         Ok(route::Operation::new(target.into_token(), self.driver))
     }

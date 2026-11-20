@@ -126,35 +126,29 @@ impl<'d> Output<'d> for Lane {
         )
     }
 
-    fn sent() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        conn::Id<'d, KeyTag<0>>,
-        egress::Pending,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Sent::<Infallible, Infallible, Infallible, _>::Queue(
-            |(owner, _, pending): (&mut Self, conn::Id<'d, KeyTag<0>>, egress::Pending)| {
-                match pending {
-                    egress::Pending::Absent => owner.signals.sent.hit(),
-                    egress::Pending::Present => {}
-                }
-            },
-        )
+    fn sent(
+        &mut self,
+        _: conn::Id<'d, KeyTag<0>>,
+        pending: egress::Pending,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        match pending {
+            egress::Pending::Absent => self.signals.sent.hit(),
+            egress::Pending::Present => {}
+        }
     }
 
-    fn cancel() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        Self::Send,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Cancel::<Infallible, _>::Owner(|(owner, payload): (&mut Self, Self::Send)| {
-            if payload.as_ref() != b"x" {
-                owner
-                    .audit
-                    .faults
-                    .record(Send(Error::Bytes(payload.as_ref().to_vec())));
-            }
-        })
+    fn cancel(
+        &mut self,
+        payload: Self::Send,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        if payload.as_ref() != b"x" {
+            self
+                .audit
+                .faults
+                .record(Send(Error::Bytes(payload.as_ref().to_vec())));
+        }
     }
 }
 

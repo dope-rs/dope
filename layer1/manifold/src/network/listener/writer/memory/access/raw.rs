@@ -13,7 +13,7 @@ use o3::{depot::array, mem::slot};
 
 use crate::network::listener::{self, writer::deadline::Slot};
 
-use super::{Arm, Direct, Fault, Source, State};
+use super::{Direct, Fault, Motion, Source, State};
 
 impl<'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw::Payload<'d>>
     Slot<'_, 'p, 's, 'w, 'd, ID, W, C, B>
@@ -27,7 +27,7 @@ impl<'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw:
         let Some(direct) = self.state.send.direct() else {
             return outcome::Progress::Idle;
         };
-        let State::Active(active) = &direct.progress.0 else {
+        let State::Active(active) = &mut direct.progress.0 else {
             return outcome::Progress::Idle;
         };
         let flight = direct.lease.get_mut().project();
@@ -103,13 +103,23 @@ impl<'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw:
             }
         };
         let progress = handoff.progress();
-        match progress {
-            outcome::Progress::Submitted => direct.progress.record(handoff.consumed(), Arm::Armed),
-            outcome::Progress::Idle => direct.progress.record(handoff.consumed(), Arm::Idle),
-            outcome::Progress::Rejected(error) => {
+        match (progress, handoff.consumed().into_len().nonzero()) {
+            (outcome::Progress::Rejected(error), _) => {
                 direct.progress.0 = State::Rejected(event::SendFailure::Direct(error));
                 self.source.discard();
             }
+            (outcome::Progress::Submitted, None) => active.motion = Motion::Ready,
+            (outcome::Progress::Idle, None) => active.motion = Motion::Waiting,
+            (state, Some(amount)) => match active.extend(amount) {
+                Ok(()) => {
+                    active.motion = if matches!(state, outcome::Progress::Submitted) {
+                        Motion::Consumed
+                    } else {
+                        Motion::Ready
+                    };
+                }
+                Err(fault) => direct.progress.0 = State::Failed(fault),
+            },
         }
         pending.wait_send(self.source.send_status().is_waiting());
         progress

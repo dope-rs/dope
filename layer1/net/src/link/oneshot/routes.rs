@@ -6,7 +6,7 @@ use dope_core::driver::{
         self, Identity, KeyTag, indices, kind,
         table::{
             self,
-            bounds::{self, Offset, Segment},
+            bounds::{self, Segment},
         },
     },
     schedule::clock,
@@ -146,20 +146,12 @@ impl<'d, ID: Identity> Routes<'d, ID> {
         }
     }
 
-    pub(super) fn parse<C: kind::Class>(
+    pub(super) fn index_of<C: kind::Class>(
         &self,
-        target: route::Erased<'d, C>,
-    ) -> Result<Local<'d, ID>, route::Erased<'d, C>> {
-        let op = match self.space.parse(target) {
-            Ok(op) => op,
-            Err(mismatch) => return Err(mismatch.into_target()),
-        };
-        let parts = op.parts();
-        let index = match self.segment.offset(parts.slot()) {
-            Ok(index) => Index::new(index),
-            Err(Offset::Before { .. } | Offset::Capacity(_)) => return Err(target),
-        };
-        Ok(self.bind(index, parts.epoch()))
+        target: route::Erased<'d, C, impl route::Selection>,
+    ) -> Option<Index> {
+        let parts = self.space.parse(target).ok()?.parts();
+        self.segment.offset(parts.slot()).ok().map(Index::new)
     }
 }
 

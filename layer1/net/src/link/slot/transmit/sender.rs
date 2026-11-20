@@ -133,7 +133,7 @@ where
         let submit = submit.submit(fd, slots, driver, target, ready);
         (submit, captured)
     };
-    slot.engine.captured(captured);
+    slot.engine.operations.captured(&slot.engine.establish, captured);
     let (credit, submit) = submit.into_parts();
     let advance =
         <<<W as wire::Spec>::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::advance(credit);

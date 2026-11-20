@@ -43,24 +43,11 @@ impl storage::Plan for Storage {
         'd: 'p;
 }
 
-impl storage::Build for Storage {
+impl storage::Create for Storage {
     type Error = (bool, bool);
-
-    type Store<'d>
-        = ()
-    where
-        Self: 'd;
-
-    fn try_store<'d>(&self) -> Result<Self::Store<'d>, Self::Error>
-    where
-        Self: 'd,
-    {
-        Ok(())
-    }
 
     fn try_build<'p, 'd>(
         self,
-        _: &'p mut Self::Store<'d>,
         context: storage::Context<'_, 'd>,
     ) -> Result<(), Self::Error>
     where
@@ -72,21 +59,6 @@ impl storage::Build for Storage {
             (true, true) => Ok(()),
             observed => Err(observed),
         }
-    }
-}
-
-impl storage::Create for Storage {
-    type Error = <Self as storage::Build>::Error;
-
-    fn try_build<'p, 'd>(
-        self,
-        context: storage::Context<'_, 'd>,
-    ) -> Result<Self::Output<'p, 'd>, Self::Error>
-    where
-        Self: 'd,
-        'd: 'p,
-    {
-        storage::Build::try_build(self, &mut (), context)
     }
 }
 

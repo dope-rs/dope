@@ -3,7 +3,7 @@ pub mod common;
 
 use crate::common::manifold::{client::assert_reclaimed, native};
 
-use std::{cell::Cell, convert::Infallible, mem, net, rc::Rc, time::Duration};
+use std::{cell::Cell, net, rc::Rc, time::Duration};
 
 use dope_core::{
     Errno,
@@ -14,7 +14,7 @@ use dope_core::{
 };
 use dope_manifold::{
     app::env::Bundle,
-    client::{close::Reason, deadline, session::policy::output::Cancel},
+    client::{close::Reason, deadline},
 };
 use dope_net::{link::egress, tcp::Tcp, wire::Identity};
 use dope_runtime::executor::session::Completion;
@@ -28,15 +28,12 @@ use dope_test::{
     },
     reclaim::Reports,
 };
-use o3::{
-    base::Call as _,
-    buffer::storage::{self, Shared},
-};
+use o3::buffer::storage::{self, Shared};
 
 use crate::common::{
     contract::Report,
     manifold::client::send::{
-        Flight, Payload, policy, profile,
+        Flight, policy, profile,
         reject::{self, Reject},
         wait::{self, PAYLOAD_BYTES, Wait},
         wire::Wire,
@@ -44,20 +41,6 @@ use crate::common::{
     recover,
     scenario::case::{Connector, Value},
 };
-
-#[test]
-fn release_before_wake() {
-    let phase = Cell::new(0);
-    let cancel = Cancel::<Infallible, Infallible, Infallible, _, _>::Ready(
-        drop::<Payload<'_>>,
-        |phase: &Cell<u8>| {
-            assert_eq!(phase.replace(2), 1, "notification follows payload release");
-        },
-    );
-    assert_eq!(mem::size_of_val(&cancel), 0);
-    cancel.call((&phase, Payload(&phase), ()));
-    assert_eq!(phase.get(), 2);
-}
 
 #[test]
 fn impossible_send() {

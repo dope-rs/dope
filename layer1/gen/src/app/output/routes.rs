@@ -25,25 +25,3 @@ pub(crate) fn generate(app: &Spec) -> proc_macro2::TokenStream {
         }
     }
 }
-
-pub(crate) fn sets(app: &Spec) -> proc_macro2::TokenStream {
-    let core = app.paths.core();
-    let manifold = app.paths.manifold();
-    let runtime = app.paths.runtime();
-    let lifetime = app.brand.lifetime();
-    let routes = app.owners.iter().map(|owner| {
-        let inner = owner.inner();
-        if owner.is_app() {
-            quote::quote! {
-                <#inner as #runtime::executor::raw::App<#lifetime>>::ROUTES
-            }
-        } else {
-            quote::quote! {
-                #core::driver::settings::Routes::singleton_id(
-                    <#inner as #manifold::app::dispatch::raw::Manifold<#lifetime>>::ID,
-                )
-            }
-        }
-    });
-    quote::quote! { #core::driver::settings::Routes::EMPTY #(.join(#routes))* }
-}

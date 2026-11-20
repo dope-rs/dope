@@ -15,7 +15,7 @@ use dope_core::{
     driver,
     driver::{
         result,
-        route::Identity,
+        route::{self, Identity},
         schedule::{self, maint},
     },
     io::{self, event::net::accept},
@@ -77,7 +77,7 @@ where
 
     fn dispatch<'event>(
         mut this: pin::Pin<&mut Self>,
-        event: executor::raw::Dispatch<'event, 'd>,
+        event: executor::raw::Dispatch<'event, 'd, impl route::Selection>,
         turn: schedule::Turn<'_, 'd>,
         mut driver: dispatch::raw::Context<'_, 'd, Self::Access>,
     ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
@@ -86,7 +86,7 @@ where
         let (ev, vacant) = 'rejected: {
             match event.select() {
                 Selected::Recv(member) => {
-                    let (done, vacant) = member.take();
+                    let (done, vacant) = member.take_routed();
                     if let ControlFlow::Break(done) = <A as Runtime<'w, 'd, ID>>::dispatch(
                         this.as_mut(),
                         done,
@@ -101,7 +101,7 @@ where
                 Selected::Send(member) => {
                     use writer::phase::send::pump_send;
 
-                    let (done, _) = member.take();
+                    let (done, _) = member.take_routed();
                     pump_send(this.as_mut(), done, turn.reborrow(), &mut driver)
                 }
                 Selected::Accept(member) => {
@@ -169,12 +169,7 @@ where
                 }
                 Released::State(egress) => {
                     if let Some(egress) = egress {
-                        writer::release_egress(
-                            app.as_mut(),
-                            key,
-                            egress,
-                            handler::Disposition::Closed,
-                        );
+                        app.as_mut().released(conn::Id::from_key(key), egress, handler::Disposition::Closed);
                     }
                 }
             });

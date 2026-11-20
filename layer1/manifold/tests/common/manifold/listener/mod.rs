@@ -1,7 +1,7 @@
 use std::{cell::Cell, ops::ControlFlow, pin::Pin, rc::Rc};
 
 use dope_core::{
-    driver::{route::KeyTag, schedule},
+    driver::{route::{self, KeyTag}, schedule},
     io::{
         event::{Kind, batch::Flow, net::accept},
         fd::handles::AcceptedSlot,
@@ -145,7 +145,7 @@ where
 
     fn dispatch<'event>(
         owner: Pin<&mut Self>,
-        done: executor::raw::Dispatch<'event, 'd>,
+        done: executor::raw::Dispatch<'event, 'd, impl route::Selection>,
         turn: schedule::Turn<'_, 'd>,
         mut driver: dispatch::raw::Context<'_, 'd, Self::Access>,
     ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {

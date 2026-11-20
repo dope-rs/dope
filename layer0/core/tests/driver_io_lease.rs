@@ -463,10 +463,18 @@ fn dispatch_retains_blocker() {
                     let route = event.route();
                     let event = event.select().into_dispatch();
                     assert_eq!(event.route(), route);
+                    let event = event
+                        .within::<std::marker::PhantomData<KeyTag<0>>>(|_| true)
+                        .map(|_| ())
+                        .expect_err("foreign route returns its event");
+                    let event = event
+                        .within::<std::marker::PhantomData<KeyTag<1>>>(|actual| actual == route)
+                        .map_err(|miss| miss.route())
+                        .expect("receive route");
                     let event = match event.select() {
                         event::Selected::Recv(member) => {
-                            let (done, vacant) = member.take();
-                            vacant.insert(Kind::Recv(done).into())
+                            let (done, vacant) = member.take_routed();
+                            vacant.insert(done.into())
                         }
                         other => other.into_dispatch().into_event(),
                     };

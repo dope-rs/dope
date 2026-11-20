@@ -296,21 +296,14 @@ impl<'life, 'd: 'life, const TAKE: bool, const REPORT: bool>
         )
     }
 
-    fn sent() -> impl for<'a, 't> Call<(
-        &'a mut Owner<'life, 'd, TAKE, REPORT>,
-        conn::Id<'d, KeyTag<0>>,
-        egress::Pending,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        |(owner, _, pending, _): (
-            &mut Owner<'life, 'd, TAKE, REPORT>,
-            conn::Id<'d, KeyTag<0>>,
-            egress::Pending,
-            &mut region::Token<region::Identity<'d, 1>>,
-        )| {
-            assert!(matches!(pending, egress::Pending::Absent));
-            owner.logic_mut().sent = true;
-        }
+    fn sent(
+        owner: &mut Owner<'life, 'd, TAKE, REPORT>,
+        _: conn::Id<'d, KeyTag<0>>,
+        pending: egress::Pending,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        assert!(matches!(pending, egress::Pending::Absent));
+        owner.logic_mut().sent = true;
     }
 }
 

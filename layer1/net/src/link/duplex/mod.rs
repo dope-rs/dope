@@ -126,18 +126,6 @@ impl<'d, ID: Identity, D: discard::Policy, P: reclaim::Policy> Duplex<'d, ID, D,
         }
     }
 
-    pub(in crate::link) fn captured(&mut self, captured: terminal::Captured) {
-        if matches!(captured, terminal::Captured::None) {
-            return;
-        }
-        let handle = self.ready_handle();
-        if matches!(captured, terminal::Captured::Eof) {
-            Registration::clear(handle.target());
-            self.operations.recv.exhaustion().cancel();
-        }
-        self.operations.capture(handle);
-    }
-
     pub(in crate::link) fn discard<E>(&mut self, end: &mut terminal::State<E>) {
         self.operations.lifecycle.discard();
         let resumed = end.is_pending() && self.operations.recv.resume_app(true).is_some();

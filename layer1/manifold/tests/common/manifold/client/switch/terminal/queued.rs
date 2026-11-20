@@ -63,7 +63,6 @@ impl<'d, M: dispatch::raw::Manifold<'d>> dispatch::raw::Projection<'d> for Host<
 unsafe impl<'d, M> dispatch::raw::Manifold<'d> for Host<'d, M>
 where
     M: dispatch::raw::Manifold<'d, PrePark = dispatch::raw::Retained>,
-    M::Dispatch: event::Set<'d, M, M::Route, Plan = ()>,
 {
     type Route = M::Route;
     type Dispatch = event::Timed<dispatch::raw::Retained>;
@@ -99,13 +98,12 @@ where
 impl<'d, M> event::Turn<'d> for Host<'d, M>
 where
     M: dispatch::raw::Manifold<'d, PrePark = dispatch::raw::Retained>,
-    M::Dispatch: event::Set<'d, M, M::Route, Plan = ()>,
 {
     type Access = dispatch::raw::Retained;
 
     fn dispatch<'event>(
         owner: Pin<&mut Self>,
-        done: executor::raw::Dispatch<'event, 'd>,
+        done: executor::raw::Dispatch<'event, 'd, impl route::Selection>,
         turn: schedule::Turn<'_, 'd>,
         mut driver: dispatch::raw::Context<'_, 'd, Self::Access>,
     ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
@@ -168,12 +166,18 @@ where
             }
             (kind, _) => kind,
         };
+        let done = executor::raw::Dispatch::new(vacant.insert(kind.into()));
+        let done = match done.within(|route| {
+            <M::Dispatch as event::Set<'d, M, M::Route>>::ROUTES.has_route(route)
+        }) {
+            Ok(done) => done,
+            Err(done) => return ControlFlow::Break(done),
+        };
         let result = <M::Dispatch as event::Set<'d, M, M::Route>>::call(
             this.inner,
-            (),
-            executor::raw::Dispatch::new(vacant.insert(kind.into())),
+            done,
             turn,
-            (&mut *driver).reborrow(),
+            (*driver).reborrow(),
         );
         if selected
             && result.is_continue()

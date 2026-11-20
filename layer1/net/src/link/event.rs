@@ -148,15 +148,15 @@ pub enum Kind<'d, R = ()> {
 }
 
 #[must_use = "observed receive data must be delivered, deferred, or dropped"]
-pub struct Data<'d, R = ()> {
-    token: route::Erased<'d, kind::Recv>,
+pub struct Data<'d, R = (), K: route::Selection = route::Route> {
+    token: route::Erased<'d, kind::Recv, K>,
     lease: Lease<'d>,
     receipt: R,
 }
 
 #[must_use = "observed receive control must be dispatched or dropped"]
 #[repr(transparent)]
-pub struct Control<'d>(recv::Control<'d>);
+pub struct Control<'d, K: route::Selection = route::Route>(recv::Control<'d, K>);
 
 impl<'d, R> Completion<'d, R> {
     pub fn classify(self) -> Kind<'d, R> {
@@ -164,8 +164,8 @@ impl<'d, R> Completion<'d, R> {
     }
 }
 
-impl<'d> Data<'d> {
-    pub(in crate::link) fn new(token: route::Erased<'d, kind::Recv>, lease: Lease<'d>) -> Self {
+impl<'d, K: route::Selection> Data<'d, (), K> {
+    pub(in crate::link) fn new(token: route::Erased<'d, kind::Recv, K>, lease: Lease<'d>) -> Self {
         Self {
             token,
             lease,
@@ -173,7 +173,11 @@ impl<'d> Data<'d> {
         }
     }
 
-    pub(in crate::link) fn with_receipt<R>(self, receipt: R) -> Data<'d, R> {
+    pub(in crate::link) fn erase_route(self) -> Data<'d> {
+        Data::new(self.token.erase_route(), self.lease)
+    }
+
+    pub(in crate::link) fn with_receipt<R>(self, receipt: R) -> Data<'d, R, K> {
         Data {
             token: self.token,
             lease: self.lease,
@@ -182,8 +186,8 @@ impl<'d> Data<'d> {
     }
 }
 
-impl<'d, R> Data<'d, R> {
-    pub(in crate::link) const fn token(&self) -> route::Erased<'d, kind::Recv> {
+impl<'d, R, K: route::Selection> Data<'d, R, K> {
+    pub(in crate::link) const fn token(&self) -> route::Erased<'d, kind::Recv, K> {
         self.token
     }
 
@@ -191,7 +195,7 @@ impl<'d, R> Data<'d, R> {
         &mut self.lease
     }
 
-    pub(in crate::link) fn into_parts(self) -> (Data<'d>, R) {
+    pub(in crate::link) fn into_parts(self) -> (Data<'d, (), K>, R) {
         (Data::new(self.token, self.lease), self.receipt)
     }
 
@@ -199,20 +203,29 @@ impl<'d, R> Data<'d, R> {
         (self.lease, self.receipt)
     }
 
+}
+
+impl<'d, R> Data<'d, R> {
     pub(in crate::link) fn complete(self) -> Completion<'d, R> {
         Completion(Kind::Data(self))
     }
 }
 
-impl<'d> Control<'d> {
-    pub(in crate::link) fn new(control: recv::Control<'d>) -> Self {
+impl<'d, K: route::Selection> Control<'d, K> {
+    pub(in crate::link) fn new(control: recv::Control<'d, K>) -> Self {
         Self(control)
     }
 
-    pub(in crate::link) const fn token(&self) -> route::Erased<'d, kind::Recv> {
+    pub(in crate::link) const fn token(&self) -> route::Erased<'d, kind::Recv, K> {
         self.0.token()
     }
 
+    pub(in crate::link) fn erase_route(self) -> Control<'d> {
+        Control(self.0.erase_route())
+    }
+}
+
+impl<'d> Control<'d> {
     pub const fn status(&self) -> recv::Status {
         self.0.status()
     }

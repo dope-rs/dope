@@ -23,7 +23,7 @@ mod progress;
 mod released;
 
 pub use activate::Activate;
-pub use app::{App, Layout};
+pub use app::{App, Layout, project_field};
 pub use cursor::Cursor;
 pub use dope_core::io::event::Dispatch;
 pub(crate) use owner::{Backing, Draining, Live, Owner, Parent, View};

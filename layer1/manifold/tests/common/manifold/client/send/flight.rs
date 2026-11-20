@@ -10,7 +10,7 @@ use dope_manifold::client::{
         self, Output, Parser, Plain, Retirement, Scheduling, Session, Target,
         app::drain::Ready,
         codec::mode,
-        policy::{self, output},
+        policy,
         response, turns,
     },
 };
@@ -179,36 +179,32 @@ impl<'d> Output<'d> for Flight<'_> {
         )
     }
 
-    fn sent() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        conn::Id<'d, KeyTag<0>>,
-        egress::Pending,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Sent::<_>::Ready(|owner: &mut Self| {
-            if let Some(payload) = &owner.payload {
-                owner
-                    .audit
-                    .faults
-                    .record(Send(Error::SentPayload(payload.len())));
-            }
-        })
+    fn sent(
+        &mut self,
+        _: conn::Id<'d, KeyTag<0>>,
+        _: egress::Pending,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        if let Some(payload) = &self.payload {
+            self
+                .audit
+                .faults
+                .record(Send(Error::SentPayload(payload.len())));
+        }
     }
 
-    fn cancel() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        Self::Send,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Cancel::<Infallible, _>::Owner(|(owner, payload): (&mut Self, Self::Send)| {
-            if payload.is_empty() || owner.closed.hits() != 0 {
-                owner.audit.faults.record(Send(Error::Cancel {
-                    bytes: payload.len(),
-                    closed: owner.closed.hits() as usize,
-                }));
-            }
-            owner.canceled.hit();
-        })
+    fn cancel(
+        &mut self,
+        payload: Self::Send,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        if payload.is_empty() || self.closed.hits() != 0 {
+            self.audit.faults.record(Send(Error::Cancel {
+                bytes: payload.len(),
+                closed: self.closed.hits() as usize,
+            }));
+        }
+        self.canceled.hit();
     }
 }
 

@@ -3,7 +3,7 @@ use std::pin;
 use dope_core::{
     driver::{
         self,
-        route::{Identity, table},
+        route::{self, Identity, table},
         schedule,
     },
     io::event::net::{connect, send, socket},
@@ -44,12 +44,12 @@ where
         <A::Continuation as Flush<'p, 'w, 'd, ID, A, S, E, Self>>::flush(machine, turn, driver);
     }
 
-    fn send<'p>(
+    fn send<'p, K: route::Selection>(
         machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
-        done: send::Completion<'d>,
+        done: send::Completion<'d, K>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Result<(), send::Completion<'d>>
+    ) -> Result<(), send::Completion<'d, K>>
     where
         engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: wakes::Completion<'d>,
     {
@@ -118,12 +118,12 @@ where
         <A::Continuation as Flush<'p, 'w, 'd, ID, A, S, E, Self>>::flush(machine, turn, driver);
     }
 
-    fn send<'p>(
+    fn send<'p, K: route::Selection>(
         mut machine: pin::Pin<&mut engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>>,
-        done: send::Completion<'d>,
+        done: send::Completion<'d, K>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Result<(), send::Completion<'d>>
+    ) -> Result<(), send::Completion<'d, K>>
     where
         engine::Machine<'p, 'w, 'd, ID, A, S, E, Self>: wakes::Completion<'d>,
     {

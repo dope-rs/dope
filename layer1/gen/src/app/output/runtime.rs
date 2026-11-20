@@ -1,6 +1,6 @@
 use crate::app::{
     Owner, Spec,
-    output::{bounds, control, dispatch::Dispatch, progress, project::Project, routes},
+    output::{bounds, control, dispatch::Dispatch, progress, project::Project},
 };
 
 pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::TokenStream {
@@ -10,7 +10,6 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
         vcall,
         vcoord1,
         vcoord,
-        vevent,
         vdriver,
         vfinish,
         vinstall,
@@ -26,7 +25,6 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
         "__call",
         "__coord_1",
         "__coord_cursor",
-        "__event",
         "__driver",
         "__finish",
         "__install",
@@ -49,13 +47,15 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
     let owned = app.brand.fresh("__owner");
     let end = app.brand.fresh("__finish");
     let epoch = app.brand.fresh("__epoch");
-    let event = app.brand.fresh("__event");
     let bound = app.brand.generics(&bounds::lifecycle(app));
     let (head, _, clause) = bound.split_for_impl();
     let layout = app.brand.generics(&bounds::layout(app));
     let (layout_head, _, layout_clause) = layout.split_for_impl();
     let router = Dispatch::new(app);
-    let routes = router.generate(life);
+    let (members, dispatch) = router.generate(&app_life);
+    let members = (!members.is_empty()).then(|| {
+        quote::quote! { impl #head #name #args #clause { #members } }
+    });
     let (wcall, wake_set) = router.wakes(life);
     let (plan, select, cursors) = router.park_plan();
     let parks = if app.coordinate || app.owners.iter().any(|owner| !owner.is_app()) {
@@ -69,7 +69,6 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
     let ticks = router.ticks();
     let active = progress::generate(app, false);
     let stop = progress::generate(app, true);
-    let set = routes::sets(app);
     let mut park = ctl.park();
     if app.coordinate && !app.owners.is_empty() {
         let peers = app.owners.len() + 1;
@@ -85,35 +84,8 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
     let mut shutdown = proc_macro2::TokenStream::new();
     let mut finish = proc_macro2::TokenStream::new();
     let mut released = proc_macro2::TokenStream::new();
-    let vneeds = app.brand.ident("__needs");
-    let mut admit = proc_macro2::TokenStream::new();
     for (index, owner) in app.owners.iter().enumerate() {
         let inner = owner.inner();
-        let visit = if owner.is_app() {
-            Project::new(owner, app).shared(|recv| {
-                quote::quote! {
-                    <#inner as #exec::executor::raw::App<#life>>::admit(#recv, #vneeds)?;
-                }
-            })
-        } else {
-            let manifold = app.paths.manifold();
-            let include = quote::quote! {
-                *#vneeds = #vneeds.include(#core::driver::settings::claim::Claim::new(
-                    #core::driver::settings::Routes::singleton_id(
-                        <#inner as #manifold::app::dispatch::raw::Manifold<#life>>::ID,
-                    ),
-                ))?;
-            };
-            if owner.is_optional() {
-                let field = owner.name();
-                quote::quote! {
-                    if #vapp.project_ref().#field.is_some() { #include }
-                }
-            } else {
-                include
-            }
-        };
-        admit.extend(visit);
         let [install, stop, mut end] = lifecycle(app, owner);
         setup.extend(quote::quote! { #vinstall = #install; });
         if app.lending {
@@ -151,21 +123,9 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
         }
     }
 
-    let admit = if app.owners.is_empty() {
-        proc_macro2::TokenStream::new()
-    } else {
-        quote::quote! {
-            fn admit(
-                #vapp: ::core::pin::Pin<&Self>,
-                #vneeds: &mut #core::driver::settings::claim::Needs,
-            ) -> ::core::result::Result<(), #core::driver::settings::errors::Claim> {
-                #admit
-                ::core::result::Result::Ok(())
-            }
-        }
-    };
-
     quote::quote! {
+        #members
+
         impl #layout_head #exec::executor::raw::Layout<#life>
             for #name #args #layout_clause
         {
@@ -178,10 +138,7 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
         unsafe impl #head #exec::executor::raw::App<#life>
             for #name #args #clause
         {
-            const ROUTES: #core::driver::settings::Routes = #set;
             const WAKE_ROUTES: #core::driver::settings::Routes = #wake_set;
-
-            #admit
 
             fn released<#app_life>(
                 mut #vcall: #exec::executor::raw::Released<#app_life, Self>,
@@ -198,15 +155,7 @@ pub(crate) fn generate(app: &Spec, ctl: &control::Control<'_>) -> proc_macro2::T
                 #exec::executor::raw::Install::new(#vapp, #vinstall)
             }
 
-            fn dispatch<#event>(
-                #vapp: ::core::pin::Pin<&mut Self>,
-                #vevent: #exec::executor::raw::Dispatch<#event, #life>,
-                #vturn: #core::driver::schedule::Turn<'_, #life>,
-                #vdriver: #core::driver::Context<'_, #life>,
-            ) -> ::core::ops::ControlFlow<#exec::executor::raw::Dispatch<#event, #life>>
-            {
-                #routes
-            }
+            #dispatch
 
             fn progress(
                 #vapp: ::core::pin::Pin<&Self>,

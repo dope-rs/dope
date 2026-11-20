@@ -1,4 +1,4 @@
-use dope_core::io::event::{batch::Flow, net::recv};
+use dope_core::{driver::route, io::event::{batch::Flow, net::recv}};
 
 use crate::link::event;
 
@@ -32,8 +32,8 @@ pub trait Arrival<'d, R = ()> {
     fn observe(self) -> Input<Self::Observed, R>;
 }
 
-impl<'d, R> Arrival<'d, R> for recv::Data<'d> {
-    type Observed = event::Data<'d>;
+impl<'d, R, K: route::Selection> Arrival<'d, R> for recv::Data<'d, K> {
+    type Observed = event::Data<'d, (), K>;
 
     fn observe(self) -> Input<Self::Observed, R> {
         let (token, more, lease) = self.into_parts();
@@ -44,8 +44,8 @@ impl<'d, R> Arrival<'d, R> for recv::Data<'d> {
     }
 }
 
-impl<'d, R> Arrival<'d, R> for event::Data<'d, R> {
-    type Observed = event::Data<'d>;
+impl<'d, R, K: route::Selection> Arrival<'d, R> for event::Data<'d, R, K> {
+    type Observed = event::Data<'d, (), K>;
 
     fn observe(self) -> Input<Self::Observed, R> {
         let (value, receipt) = self.into_parts();
@@ -56,8 +56,8 @@ impl<'d, R> Arrival<'d, R> for event::Data<'d, R> {
     }
 }
 
-impl<'d> Arrival<'d> for recv::Control<'d> {
-    type Observed = event::Control<'d>;
+impl<'d, K: route::Selection> Arrival<'d> for recv::Control<'d, K> {
+    type Observed = event::Control<'d, K>;
 
     fn observe(self) -> Input<Self::Observed> {
         let more = self.flow();
@@ -68,7 +68,7 @@ impl<'d> Arrival<'d> for recv::Control<'d> {
     }
 }
 
-impl<'d> Arrival<'d> for event::Control<'d> {
+impl<'d, K: route::Selection> Arrival<'d> for event::Control<'d, K> {
     type Observed = Self;
 
     fn observe(self) -> Input<Self::Observed> {

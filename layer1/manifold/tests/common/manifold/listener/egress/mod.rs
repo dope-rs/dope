@@ -71,7 +71,24 @@ impl<'d, ID: route::Identity> handler::Application<'d, ID> for App {
     type Retirement = Retirement;
     type Egress = compose::Tagged<Shared<'d>, Release>;
     type Input = receive::Borrowed;
-    type Send = send::Reported<send::Silent>;
+    type Send = send::Silent;
+
+    fn released(
+        self: Pin<&mut Self>,
+        conn: conn::Id<'d, ID>,
+        egress: Self::Egress,
+        cause: handler::Disposition,
+    ) {
+        let (body, owner) = egress.into_parts();
+        let this = self.get_mut();
+        this.events.record(Event::Released(
+            conn.index().into_usize(),
+            body.as_ref().to_vec(),
+            owner.0.hits(),
+            cause,
+        ));
+        this.returned.hit();
+    }
 
     fn build_failed(self: Pin<&mut Self>, cause: Self::Build) {
         match cause {}
@@ -90,23 +107,6 @@ impl<'d, ID: route::Identity> handler::Application<'d, ID> for App {
         _: conn::Ctx<'e, '_, '_, '_, '_, 'd, ID, Identity, (), Self::Egress>,
     ) {
         self.get_mut().closed.hit();
-    }
-}
-
-impl<'d, ID: route::Identity> send::Report<'d, ID> for App {
-    const ENABLED: bool = true;
-
-    fn released(self: Pin<&mut Self>, release: handler::Release<'d, ID, Self::Egress>) {
-        let (conn, egress, cause) = release.into_parts();
-        let (body, owner) = egress.into_parts();
-        let this = self.get_mut();
-        this.events.record(Event::Released(
-            conn.index().into_usize(),
-            body.as_ref().to_vec(),
-            owner.0.hits(),
-            cause,
-        ));
-        this.returned.hit();
     }
 }
 

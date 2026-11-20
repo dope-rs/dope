@@ -177,7 +177,7 @@ where
 
     fn dispatch<'event>(
         owner: Pin<&mut Self>,
-        done: executor::raw::Dispatch<'event, 'd>,
+        done: executor::raw::Dispatch<'event, 'd, impl driver::route::Selection>,
         turn: schedule::Turn<'_, 'd>,
         driver: dispatch::raw::Context<'_, 'd, Self::Access>,
     ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {

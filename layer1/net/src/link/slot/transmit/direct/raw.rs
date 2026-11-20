@@ -46,7 +46,7 @@ fn submit<
     let (ready, captured) = done.into_parts();
     let ready = ready.resolve(captured);
     let submit = submit.submit(fd, slots, driver, slot.key.target(), ready);
-    slot.engine.captured(captured);
+    slot.engine.operations.captured(&slot.engine.establish, captured);
     outcome::Handoff::from_attempt(submit)
 }
 

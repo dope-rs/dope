@@ -152,6 +152,16 @@ where
     P: socket::Prepared,
     B: data::raw::StableOwner<'d>,
 {
+    pub(super) fn for_completion<C: route::kind::Class>(
+        pool: &'a mut Pool<'d, ID, A, P, B>,
+        target: route::Erased<'d, C, impl route::Selection>,
+    ) -> Option<Self> {
+        let index = pool.routes.index_of(target)?;
+        // SAFETY: this pool's segment admitted the completion's physical slot.
+        let access = Access::new(unsafe { depot::raw::Proof::new((pool, index)) });
+        Self::try_new(access, target.epoch()).ok()
+    }
+
     pub(super) fn try_new(
         access: Access<'a, 'd, ID, A, P, B>,
         epoch: route::Epoch,
@@ -243,11 +253,11 @@ where
         Ok(self.settle(sent, driver))
     }
 
-    pub(super) fn send(
+    pub(super) fn send<K: route::Selection>(
         mut self,
-        done: send::Completion<'d>,
+        done: send::Completion<'d, K>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Result<Progress<A>, send::Completion<'d>> {
+    ) -> Result<Progress<A>, send::Completion<'d, K>> {
         let target = self.local.physical();
         let step = self
             .current

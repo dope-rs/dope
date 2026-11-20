@@ -82,30 +82,13 @@ pub(in crate::network::listener) fn release_payload<
     ID: Identity,
     A: handler::Application<'d, ID>,
 >(
-    mut app: pin::Pin<&mut A>,
+    app: pin::Pin<&mut A>,
     key: pool::Key<'d, ID>,
     body: Payload<'_, '_, 'd, ID, A::Egress>,
     cause: handler::Disposition,
 ) {
     if let compose::Either::Right(egress) = body {
-        release_egress(app.as_mut(), key, egress, cause);
-    }
-}
-
-pub(in crate::network::listener) fn release_egress<
-    'd,
-    ID: Identity,
-    A: handler::Application<'d, ID>,
->(
-    app: pin::Pin<&mut A>,
-    key: pool::Key<'d, ID>,
-    egress: A::Egress,
-    cause: handler::Disposition,
-) {
-    use handler::send::{Dispatch as _, Policy as _};
-
-    if let Some(report) = A::Send::release() {
-        report.dispatch(app, conn::Id::from_key(key), egress, cause);
+        app.released(conn::Id::from_key(key), egress, cause);
     }
 }
 
@@ -263,15 +246,8 @@ where
                                         return Decision::runnable(&slot);
                                     }
                                     slot.state.send.release(
-                                        Some(conn::Transmit::Rejected(failure)),
-                                        |egress| {
-                                            writer::release_egress(
-                                                app.as_mut(),
-                                                key,
-                                                egress,
-                                                handler::Disposition::Closed,
-                                            );
-                                        },
+                                        app.as_mut(), conn::Id::from_key(key),
+                                        Some(conn::Transmit::Rejected(failure)), handler::Disposition::Closed,
                                     );
                                     Decision::Ready
                                 }
@@ -344,7 +320,7 @@ where
     match outcome {
         close::Outcome::Retired((egress, retired)) => {
             if let Some(egress) = egress {
-                writer::release_egress(app.as_mut(), key, egress, handler::Disposition::Closed);
+                app.as_mut().released(conn::Id::from_key(key), egress, handler::Disposition::Closed);
             }
             if let Some(retired) = retired
                 && let Some(policy) = <A::Retirement as retire::Policy<'d, A, ID>>::select()

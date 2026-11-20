@@ -16,7 +16,7 @@ use dope_manifold::{
             self, Output, Parser, Plain, Retirement, Scheduling, Session, Target,
             app::drain::Ready,
             codec::{Input, mode},
-            policy::{self, output},
+            policy,
             response, turns,
         },
     },
@@ -221,40 +221,30 @@ impl<'d> Output<'d> for Half {
         })
     }
 
-    fn sent() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        conn::Id<'d, KeyTag<0>>,
-        egress::Pending,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Sent::<Infallible, Infallible, Infallible, _>::Queue(
-            |(owner, _, pending): (&mut Self, conn::Id<'d, KeyTag<0>>, egress::Pending)| {
-                let conn = owner.conn.hits();
-                if !matches!(pending, egress::Pending::Absent) || conn != 1 {
-                    owner.audit.faults.record(Finish(Error::HalfSent {
-                        connected: conn,
-                        pending: matches!(pending, egress::Pending::Present),
-                    }));
-                }
-                owner.audit.record_sent();
-                owner.progress.sent = true;
-            },
-        )
+    fn sent(
+        &mut self,
+        _: conn::Id<'d, KeyTag<0>>,
+        pending: egress::Pending,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        let conn = self.conn.hits();
+        if !matches!(pending, egress::Pending::Absent) || conn != 1 {
+            self.audit.faults.record(Finish(Error::HalfSent {
+                connected: conn,
+                pending: matches!(pending, egress::Pending::Present),
+            }));
+        }
+        self.audit.record_sent();
+        self.progress.sent = true;
     }
 
-    fn cancel() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        Self::Send,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        use Infallible;
-
-        output::Cancel::<Infallible, Infallible, Infallible, _, _>::Ready(
-            drop::<Self::Send>,
-            |owner: &mut Self| {
-                owner.audit.cancelled();
-            },
-        )
+    fn cancel(
+        &mut self,
+        payload: Self::Send,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        drop(payload);
+        self.audit.cancelled();
     }
 }
 

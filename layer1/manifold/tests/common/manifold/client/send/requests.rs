@@ -10,7 +10,7 @@ use dope_manifold::client::{
         self, Output, Parser, Plain, Retirement, Scheduling, Session, Target,
         app::{drain::Ready, request::Source},
         codec::mode,
-        policy::{self, output},
+        policy,
         response, turns,
     },
 };
@@ -20,7 +20,7 @@ use dope_net::{
 };
 use dope_test::harness::{observe::Trace, signals::Gate};
 use o3::{
-    base::{Call, cell::region},
+    base::cell::region,
     buffer,
     buffer::storage::Shared,
     depot::queue::pool::fair,
@@ -130,33 +130,25 @@ impl<'d> Output<'d> for Lane<'d> {
         self.settled.hit();
     }
 
-    fn sent() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        conn::Id<'d, KeyTag<0>>,
-        egress::Pending,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Sent::<Infallible, Infallible, Infallible, _>::Queue(
-            |(owner, _, pending): (&mut Self, conn::Id<'d, KeyTag<0>>, egress::Pending)| {
-                match pending {
-                    egress::Pending::Absent => owner.sent.hit(),
-                    egress::Pending::Present => {}
-                }
-            },
-        )
+    fn sent(
+        &mut self,
+        _: conn::Id<'d, KeyTag<0>>,
+        pending: egress::Pending,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        match pending {
+            egress::Pending::Absent => self.sent.hit(),
+            egress::Pending::Present => {}
+        }
     }
 
-    fn cancel() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        Self::Send,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Cancel::<Infallible, Infallible, Infallible, _, _>::Ready(
-            drop::<Self::Send>,
-            |owner: &mut Self| {
-                owner.audit.cancelled();
-            },
-        )
+    fn cancel(
+        &mut self,
+        payload: Self::Send,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        drop(payload);
+        self.audit.cancelled();
     }
 }
 

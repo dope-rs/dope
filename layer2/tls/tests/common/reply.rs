@@ -246,7 +246,21 @@ impl<'d> Application<'d, KeyTag<0>> for Capacity<'_, 'd> {
     type Retirement = retire::Close;
     type Egress = Small<'d>;
     type Input = Borrowed;
-    type Send = send::Reported<send::Silent>;
+    type Send = send::Silent;
+
+    fn released(
+        self: Pin<&mut Self>,
+        id: conn::Id<'d, KeyTag<0>>,
+        body: Self::Egress,
+        cause: handler::Disposition,
+    ) {
+        (self.get_mut().observe)(Change::Released {
+            index: id.index().into_usize(),
+            body: body.as_inner().as_ref(),
+            resident: body.as_inner().resident(),
+            cause,
+        });
+    }
 
     fn connection(self: Pin<&Self>, _: &Seed) -> Result<Self::Conn, Self::Build> {
         Ok(false)
@@ -323,20 +337,6 @@ impl<'d> handler::Borrowed<'d, KeyTag<0>> for Capacity<'_, 'd> {
         this.targets.set(targets);
         this.ready.hit();
         Outcome::Continue
-    }
-}
-
-impl<'d> send::Report<'d, KeyTag<0>> for Capacity<'_, 'd> {
-    const ENABLED: bool = true;
-
-    fn released(self: Pin<&mut Self>, release: handler::Release<'d, KeyTag<0>, Self::Egress>) {
-        let (id, body, cause) = release.into_parts();
-        (self.get_mut().observe)(Change::Released {
-            index: id.index().into_usize(),
-            body: body.as_inner().as_ref(),
-            resident: body.as_inner().resident(),
-            cause,
-        });
     }
 }
 

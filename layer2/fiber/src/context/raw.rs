@@ -2,7 +2,7 @@ use core::{pin::Pin, task::Poll};
 
 use crate::{
     abi,
-    context::{Admission, Context, PollCall, PollResult, wake},
+    context::{Admission, Context, Continue, PollCall, PollResult, wake},
     core::driver::schedule::app,
 };
 
@@ -42,9 +42,9 @@ impl<'a, F> Live<'a, F> {
     where
         F: abi::Fiber<'d>,
     {
-        match self.try_poll(context) {
-            PollResult::Polled(poll) => poll,
-            PollResult::Exhausted => Poll::Pending,
+        match context.as_ref().try_continue() {
+            Continue::Permit(permit) => self.with(context, permit),
+            Continue::Exhausted => Poll::Pending,
         }
     }
 

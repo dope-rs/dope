@@ -3,7 +3,7 @@ use std::{pin, time};
 use dope_core::{
     driver::{
         self,
-        route::{Identity, KeyTag},
+        route::Identity,
         schedule::clock,
     },
     random::Seed,
@@ -229,6 +229,8 @@ pub trait Application<'d, ID: Identity>: Sized {
     type Input: receive::Mode<Self::Wire>;
     type Send: send::Policy<'d, ID, Self>;
 
+    fn released(self: pin::Pin<&mut Self>, _: conn::Id<'d, ID>, _: Self::Egress, _: Disposition) {}
+
     /// Closes monotonic application gates synchronously with the listener.
     /// Existing owners remain authoritative while retiring admitted work.
     fn seal(self: pin::Pin<&mut Self>) -> pin::Pin<&mut Self> {
@@ -341,33 +343,3 @@ pub enum Disposition {
     Sent,
     Closed,
 }
-
-/// Exact connection, owner, and disposition released by the listener.
-pub struct Release<'d, ID: Identity, B> {
-    connection: conn::Id<'d, ID>,
-    body: B,
-    disposition: Disposition,
-}
-
-impl<'d, ID: Identity, B> Release<'d, ID, B> {
-    pub(in crate::network::listener) const fn new(
-        conn: conn::Id<'d, ID>,
-        body: B,
-        cause: Disposition,
-    ) -> Self {
-        Self {
-            connection: conn,
-            body,
-            disposition: cause,
-        }
-    }
-
-    pub fn into_parts(self) -> (conn::Id<'d, ID>, B, Disposition) {
-        (self.connection, self.body, self.disposition)
-    }
-}
-
-const _: () = assert!(
-    std::mem::size_of::<Release<'static, KeyTag<0>, usize>>()
-        == std::mem::size_of::<(conn::Id<'static, KeyTag<0>>, usize, Disposition)>()
-);

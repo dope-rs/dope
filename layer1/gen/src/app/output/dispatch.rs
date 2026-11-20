@@ -1,3 +1,5 @@
+use proc_macro2::TokenStream;
+
 use crate::app::{Owner, Spec, output::project::Project};
 
 pub(crate) struct Dispatch<'a> {
@@ -9,23 +11,281 @@ impl<'a> Dispatch<'a> {
         Self { application: app }
     }
 
-    pub(crate) fn generate(&self, life: &syn::Lifetime) -> proc_macro2::TokenStream {
-        let [vapp, vdriver, vevent] =
-            ["__app", "__driver", "__event"].map(|name| self.application.brand.ident(name));
-        if self.application.owners.is_empty() {
-            return quote::quote! { ::core::ops::ControlFlow::Break(#vevent) };
+    pub(crate) fn generate(&self, app_life: &syn::Lifetime) -> (TokenStream, TokenStream) {
+        let app = self.application;
+        let core = app.paths.core();
+        let exec = app.paths.runtime();
+        let life = app.brand.lifetime();
+        let routes = quote::quote! { #core::driver::settings::Routes };
+        let Some(last) = app.owners.last() else {
+            return (
+                TokenStream::new(),
+                quote::quote! { const ROUTES: #routes = #routes::EMPTY; },
+            );
+        };
+        let delegate = last.is_app() && !last.is_optional();
+        let [
+            vapp,
+            vproject,
+            vevent,
+            vturn,
+            vdriver,
+            vnested,
+            vneeds,
+        ] = [
+            "__app",
+            "__project",
+            "__event",
+            "__turn",
+            "__driver",
+            "__NESTED",
+            "__needs",
+        ]
+        .map(|name| app.brand.ident(name));
+        let mut registered = quote::quote! { #routes::EMPTY };
+        let mut observed = registered.clone();
+        let mut admit = TokenStream::new();
+        let mut members = TokenStream::new();
+        let mut fields = Vec::with_capacity(app.owners.len());
+        let [vset, vclipped] = ["__set", "__clipped"].map(|name| app.brand.ident(name));
+        let miss = quote::quote! { ::core::ops::ControlFlow::Break(#vevent.into_dispatch()) };
+        for (index, owner) in app.owners.iter().enumerate() {
+            let inner = owner.inner();
+            let field = owner.name();
+            let project = Project::new(owner, app);
+            let tail = delegate && index + 1 == app.owners.len();
+            let (registration, set, scope, body) = if owner.is_app() {
+                let child = quote::quote! { <#inner as #exec::executor::raw::App<#life>> };
+                admit.extend(
+                    project.shared(|recv| quote::quote! { #child::admit(#recv, #vneeds)?; }),
+                );
+                let body = if tail {
+                    let project_tail = app.brand.ident("__dope_dispatch_tail");
+                    members.extend(quote::quote! {
+                        fn #project_tail(self: ::core::pin::Pin<&mut Self>) -> ::core::pin::Pin<&mut #inner> {
+                            self.project().#field
+                        }
+                    });
+                    quote::quote! {
+                        #child::dispatch_from::<true>(
+                            #exec::executor::raw::project_field(#vproject, Self::#project_tail),
+                            #vevent, #vturn, #vdriver,
+                        )
+                    }
+                } else {
+                    project.map(miss.clone(), |recv| {
+                        quote::quote! {
+                            #child::dispatch(#recv, #vevent, #vturn.reborrow(), #vdriver.reborrow())
+                        }
+                    })
+                };
+                let registration = quote::quote! { #child::ROUTES };
+                let set = quote::quote! { #registration.intersection(#child::DISPATCH_ROUTES) };
+                (registration, set, quote::quote! { #core::driver::route::Route }, body)
+            } else {
+                let mf = app.paths.manifold();
+                let manifold =
+                    quote::quote! { <#inner as #mf::app::dispatch::raw::Manifold<#life>> };
+                let registration = quote::quote! { #routes::singleton_id(#manifold::ID) };
+                let include = quote::quote! {
+                    *#vneeds = #vneeds.include(#core::driver::settings::claim::Claim::new(#registration))?;
+                };
+                admit.extend(if owner.is_optional() {
+                    quote::quote! { if #vapp.project_ref().#field.is_some() { #include } }
+                } else {
+                    include
+                });
+                let dispatch = quote::quote! {
+                    <#manifold::Dispatch as #mf::app::dispatch::event::Set<#life, #inner, #manifold::Route>>
+                };
+                let body = project.map(miss.clone(), |recv| {
+                    quote::quote! {
+                        #dispatch::call(#recv, #vevent, #vturn.reborrow(), #vdriver.reborrow())
+                    }
+                });
+                (registration, quote::quote! { #dispatch::ROUTES }, quote::quote! { #dispatch::Scope }, body)
+            };
+            registered.extend(quote::quote! { .join(#registration) });
+            if tail {
+                observed.extend(quote::quote! { .join(#set) });
+                fields.push((set, scope, body));
+            } else {
+                let routes_for_field = app.brand.ident(&format!("__DOPE_DISPATCH_{index}"));
+                members.extend(quote::quote! {
+                    const #routes_for_field: [(#routes, ::core::option::Option<#core::driver::settings::RouteSpan>); 2] = {
+                        let #vset = #set;
+                        let #vclipped = #vset.intersection(<Self as #exec::executor::raw::App<#life>>::ROUTES);
+                        [(#vset, #vset.span()), (#vclipped, #vclipped.span())]
+                    };
+                });
+                observed.extend(quote::quote! { .join(Self::#routes_for_field[0].0) });
+                fields.push((quote::quote! { Self::#routes_for_field }, scope, body));
+            }
         }
-        let arms = self
-            .application
-            .owners
-            .iter()
-            .map(|owner| self.arm(owner, life));
-        quote::quote! {
-            let mut #vapp = #vapp;
+        let select = self.select(&fields, delegate);
+        let event = app.brand.fresh("__event");
+        let slot = quote::quote! { #exec::executor::raw::Dispatch<#event, #life> };
+        let input = quote::quote! {
+            #vevent: #slot,
+            #vturn: #core::driver::schedule::Turn<'_, #life>,
+            #vdriver: #core::driver::Context<'_, #life>,
+        };
+        let output = quote::quote! { ::core::ops::ControlFlow<#slot> };
+        let dispatch = quote::quote! {
+            const ROUTES: #routes = #registered;
+            const DISPATCH_ROUTES: #routes = #observed;
+
+            fn admit(
+                #vapp: ::core::pin::Pin<&Self>,
+                #vneeds: &mut #core::driver::settings::claim::Needs,
+            ) -> ::core::result::Result<(), #core::driver::settings::errors::Claim> {
+                #admit
+                ::core::result::Result::Ok(())
+            }
+
+            fn dispatch<#event>(#vapp: ::core::pin::Pin<&mut Self>, #input) -> #output {
+                <Self as #exec::executor::raw::App<#life>>::dispatch_from::<false>(
+                    || #vapp, #vevent, #vturn, #vdriver,
+                )
+            }
+
+            fn dispatch_from<#app_life, #event, const #vnested: ::core::primitive::bool>(
+                #vproject: impl ::core::ops::FnOnce() -> ::core::pin::Pin<&#app_life mut Self>,
+                #input
+            ) -> #output
+            where
+                Self: #app_life,
+            {
+                #select
+            }
+        };
+        (members, dispatch)
+    }
+
+    fn select(&self, fields: &[(TokenStream, TokenStream, TokenStream)], delegate: bool) -> TokenStream {
+        let [
+            vapp,
+            vdriver,
+            vevent,
+            vroute,
+            vset,
+            vspan,
+            vproject,
+            vnested,
+        ] = [
+            "__app",
+            "__driver",
+            "__event",
+            "__route",
+            "__set",
+            "__span",
+            "__project",
+            "__NESTED",
+        ]
+        .map(|name| self.application.brand.ident(name));
+        let flow = quote::quote! { ::core::ops::ControlFlow };
+        let miss = quote::quote! { #flow::Break(#vevent) };
+        let (guarded, fallback) = match fields.split_last() {
+            Some(((_, _, tail), prefix)) if delegate => (prefix, tail),
+            _ => (fields, &miss),
+        };
+        let Some(((first_set, first_scope, first), rest)) = guarded.split_first() else {
+            return fallback.clone();
+        };
+        let start = quote::quote! {
             let mut #vdriver = #vdriver;
-            #(#arms)*
-            ::core::ops::ControlFlow::Break(#vevent)
+        };
+        let select_event = |set: &TokenStream, selected: &TokenStream, fresh: bool| {
+            let scope = if fresh {
+                quote::quote! { #vnested as ::core::primitive::usize }
+            } else {
+                quote::quote! { 0 }
+            };
+            quote::quote! {{
+                let #vset = &#set[#scope];
+                #vevent.within::<#selected>(|#vroute| match #vset {
+                    (_, ::core::option::Option::Some(#vspan)) => #vspan.has_route(#vroute),
+                    (#vset, ::core::option::Option::None) => #vset.has_route(#vroute),
+                })
+            }}
+        };
+        let returned = |body: &TokenStream| {
+            quote::quote! {
+                match #body {
+                    #flow::Continue(()) => return #flow::Continue(()),
+                    #flow::Break(#vevent) => #vevent,
+                }
+            }
+        };
+        let finish = if delegate {
+            quote::quote! {
+                let #vproject = || #vapp;
+                #fallback
+            }
+        } else {
+            miss.clone()
+        };
+        if rest.is_empty() && !delegate {
+            let select = select_event(first_set, first_scope, true);
+            return quote::quote! {
+                #start
+                match #select {
+                    ::core::result::Result::Ok(#vevent) => {
+                        let mut #vapp = #vproject();
+                        #first
+                    }
+                    ::core::result::Result::Err(#vevent) => #miss,
+                }
+            };
         }
+        let entries: Vec<_> = (0..guarded.len())
+            .map(|i| self.application.brand.fresh(&format!("__dispatch_{i}")))
+            .collect();
+        let select = entries.iter().zip(guarded).map(|(entry, (set, scope, _))| {
+            let select = select_event(set, scope, true);
+            quote::quote! {
+                let #vevent = match #select {
+                    ::core::result::Result::Ok(#vevent) => {
+                        #vapp = #vproject();
+                        break #entry #vevent;
+                    }
+                    ::core::result::Result::Err(#vevent) => #vevent,
+                };
+            }
+        });
+        let first_entry = &entries[0];
+        let first_return = returned(first);
+        let mut path = quote::quote! {
+            let #vevent = #first_entry: {
+                #(#select)*
+                return #fallback;
+            };
+            let #vevent = #first_return;
+        };
+        // Each entry receives the original event directly. A returned event falls
+        // through the remaining fields with their original declaration order.
+        for (index, (entry, (set, scope, body))) in entries.iter().zip(guarded).enumerate().skip(1) {
+            let next = self.application.brand.fresh(&format!("__next_{index}"));
+            let select = select_event(set, scope, false);
+            let deliver = if !delegate && index + 1 == guarded.len() {
+                quote::quote! { return #body }
+            } else {
+                returned(body)
+            };
+            path = quote::quote! {
+                let #vevent = #next: {
+                    let #vevent = #entry: {
+                        #path
+                        match #select {
+                            ::core::result::Result::Ok(#vevent) => break #entry #vevent,
+                            ::core::result::Result::Err(#vevent) => break #next #vevent,
+                        }
+                    };
+                    #deliver
+                };
+            };
+        }
+        quote::quote! { #start let mut #vapp; #path #finish }
     }
 
     pub(crate) fn wakes(
@@ -349,71 +609,6 @@ impl<'a> Dispatch<'a> {
                 }
             })
             .collect()
-    }
-
-    fn arm(&self, owner: &Owner, life: &syn::Lifetime) -> proc_macro2::TokenStream {
-        let [vdriver, vevent, vplan, vturn] = ["__driver", "__event", "__plan", "__turn"]
-            .map(|name| self.application.brand.ident(name));
-        let mf = self.application.paths.manifold();
-        let exec = self.application.paths.runtime();
-        let inner = owner.inner();
-        let (routes, body) = if owner.is_app() {
-            let body = Project::new(owner, self.application).map(
-                quote::quote! { ::core::ops::ControlFlow::Break(#vevent) },
-                |recv| {
-                    quote::quote! {
-                        <#inner as #exec::executor::raw::App<#life>>::dispatch(
-                            #recv,
-                            #vevent,
-                            #vturn.reborrow(),
-                            #vdriver.reborrow(),
-                        )
-                    }
-                },
-            );
-            (
-                quote::quote! { <#inner as #exec::executor::raw::App<#life>>::ROUTES },
-                body,
-            )
-        } else {
-            let dispatch = quote::quote! {
-                <<#inner as #mf::app::dispatch::raw::Manifold<#life>>::Dispatch as
-                    #mf::app::dispatch::event::Set<
-                        #life,
-                        #inner,
-                        <#inner as #mf::app::dispatch::raw::Manifold<#life>>::Route,
-                    >>
-            };
-            let body = Project::new(owner, self.application).map(
-                quote::quote! { ::core::ops::ControlFlow::Break(#vevent) },
-                |recv| {
-                    quote::quote! {
-                        match #dispatch::select() {
-                            ::core::option::Option::Some(#vplan) => #dispatch::call(
-                                #recv,
-                                #vplan,
-                                #vevent,
-                                #vturn.reborrow(),
-                                #vdriver.reborrow(),
-                            ),
-                            ::core::option::Option::None => ::core::ops::ControlFlow::Break(#vevent),
-                        }
-                    }
-                },
-            );
-            (quote::quote! { #dispatch::ROUTES }, body)
-        };
-        quote::quote! {
-            let #vevent = if #routes.has_route(#vevent.route()) {
-                match #body {
-                    ::core::ops::ControlFlow::Continue(()) =>
-                        return ::core::ops::ControlFlow::Continue(()),
-                    ::core::ops::ControlFlow::Break(#vevent) => #vevent,
-                }
-            } else {
-                #vevent
-            };
-        }
     }
 
     fn tick(

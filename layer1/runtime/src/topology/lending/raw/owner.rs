@@ -52,6 +52,7 @@ where
     Self: executor::raw::Finishes<'d, Self>,
 {
     const ROUTES: settings::Routes = T::ROUTES;
+    const DISPATCH_ROUTES: settings::Routes = T::DISPATCH_ROUTES;
     const WAKE_ROUTES: settings::Routes = T::WAKE_ROUTES;
     const COORDS: usize = <T as executor::raw::App<'d>>::COORDS;
     const PARK: bool = T::PARK;
@@ -113,7 +114,24 @@ where
         turn: schedule::Turn<'_, 'd>,
         driver: driver::Context<'_, 'd>,
     ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>> {
-        forward::dispatch(app, event, turn, driver)
+        Self::dispatch_from::<false>(|| app, event, turn, driver)
+    }
+
+    fn dispatch_from<'app, 'event, const NESTED: bool>(
+        project: impl FnOnce() -> pin::Pin<&'app mut Self>,
+        event: executor::raw::Dispatch<'event, 'd>,
+        turn: schedule::Turn<'_, 'd>,
+        driver: driver::Context<'_, 'd>,
+    ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>>
+    where
+        Self: 'app,
+    {
+        T::dispatch_from::<NESTED>(
+            executor::raw::project_field(project, lending::raw::Project::exclusive),
+            event,
+            turn,
+            driver,
+        )
     }
 
     fn shutdown<'app, 'turn, 'driver>(

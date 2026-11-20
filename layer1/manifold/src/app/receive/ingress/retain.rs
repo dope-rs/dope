@@ -1,6 +1,6 @@
 use std::{convert, pin};
 
-use dope_core::driver::route::Identity;
+use dope_core::driver::route::{self, Identity};
 use dope_net::{
     link::{
         event,
@@ -39,7 +39,7 @@ where
         'd: 'a + 'c,
         W: 'd;
 
-    fn drive_data<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A>(
+    fn drive_data<'p, 'a, 'c, 'w, 'd, ID: Identity + 'd, P, A, K: route::Selection>(
         policy: pin::Pin<&mut P>,
         data: A,
         work: Self::Admission<'a, 'c, 'd>,
@@ -49,7 +49,7 @@ where
         W: 'w + 'd,
         P: ingress::Policy<'p, 'w, 'd, ID, Wire = W, Input = M>,
         M::Reserve: Choice<W, M::Ingress>,
-        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d>>,
+        A: arrival::Arrival<'d, input::Receipt<W, M>, Observed = event::Data<'d, (), K>>,
     {
         work.drive(policy, data, |prep| prep.retained(), flow::apply_done::<ID, P>)
     }

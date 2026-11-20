@@ -77,7 +77,7 @@ impl<'d, ID: Identity> Keyspace<'d, ID> {
 
     pub(in crate::link) fn parse<C: kind::Class>(
         self,
-        target: route::Erased<'d, C>,
+        target: route::Erased<'d, C, impl route::Selection>,
     ) -> Result<Key<'d, ID, C>, route::Mismatch<'d, ID, C>> {
         let op = self.space.parse(target)?;
         Ok(Key {

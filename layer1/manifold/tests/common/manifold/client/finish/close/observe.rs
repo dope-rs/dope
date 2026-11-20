@@ -10,7 +10,7 @@ use dope_manifold::client::{
         self, Output, Parser, Plain, Retirement, Scheduling, Target,
         app::drain::Ready,
         codec::{Codec, Stateless, eof, mode},
-        policy::{self, output},
+        policy,
         response, turns,
     },
 };
@@ -191,30 +191,22 @@ impl<'d, C: Codec> Output<'d> for Session<'d, C> {
         })
     }
 
-    fn sent() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        conn::Id<'d, KeyTag<0>>,
-        egress::Pending,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        output::Sent::<_>::Ready(|owner: &mut Self| {
-            owner.audit.record_sent();
-        })
+    fn sent(
+        &mut self,
+        _: conn::Id<'d, KeyTag<0>>,
+        _: egress::Pending,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        self.audit.record_sent();
     }
 
-    fn cancel() -> impl for<'a, 't> Call<(
-        &'a mut Self,
-        Self::Send,
-        &'t mut region::Token<region::Identity<'d, 1>>,
-    )> {
-        use std::convert::Infallible;
-
-        output::Cancel::<Infallible, Infallible, Infallible, _, _>::Ready(
-            drop::<Self::Send>,
-            |owner: &mut Self| {
-                owner.audit.cancelled();
-            },
-        )
+    fn cancel(
+        &mut self,
+        payload: Self::Send,
+        _: &mut region::Token<region::Identity<'d, 1>>,
+    ) {
+        drop(payload);
+        self.audit.cancelled();
     }
 }
 

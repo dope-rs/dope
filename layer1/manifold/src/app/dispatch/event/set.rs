@@ -1,4 +1,4 @@
-use std::{convert, ops, pin};
+use std::{convert, marker::PhantomData, ops, pin};
 
 use dope_core::driver::{self, route, schedule, settings};
 use dope_runtime::executor;
@@ -7,16 +7,13 @@ use crate::app::dispatch::{self, event};
 
 /// Statically selected completion capability for one exact route.
 pub trait Set<'d, M, R: route::App> {
-    type Plan;
+    type Scope: route::Selection;
 
     const ROUTES: settings::Routes;
 
-    fn select() -> Option<Self::Plan>;
-
     fn call<'event, 'driver, 'turn>(
         owner: pin::Pin<&mut M>,
-        plan: Self::Plan,
-        event: executor::raw::Dispatch<'event, 'd>,
+        event: executor::raw::Dispatch<'event, 'd, Self::Scope>,
         turn: schedule::Turn<'turn, 'd>,
         driver: driver::Context<'driver, 'd>,
     ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>>
@@ -25,25 +22,20 @@ pub trait Set<'d, M, R: route::App> {
 }
 
 impl<'d, M, R: route::App> Set<'d, M, R> for dispatch::raw::Omit {
-    type Plan = convert::Infallible;
+    type Scope = convert::Infallible;
 
     const ROUTES: settings::Routes = settings::Routes::EMPTY;
 
-    fn select() -> Option<Self::Plan> {
-        None
-    }
-
     fn call<'event, 'driver, 'turn>(
         _: pin::Pin<&mut M>,
-        plan: Self::Plan,
-        _: executor::raw::Dispatch<'event, 'd>,
+        event: executor::raw::Dispatch<'event, 'd, Self::Scope>,
         _: schedule::Turn<'turn, 'd>,
         _: driver::Context<'driver, 'd>,
     ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>>
     where
         'd: 'driver + 'turn,
     {
-        match plan {}
+        ops::ControlFlow::Break(event.into_dispatch())
     }
 }
 
@@ -53,19 +45,14 @@ where
     M: dispatch::raw::Projection<'d>,
     M::Inner: dispatch::raw::Manifold<'d, Route = R>,
 {
-    type Plan = <<M::Inner as dispatch::raw::Manifold<'d>>::Dispatch as Set<'d, M::Inner, R>>::Plan;
+    type Scope = <<M::Inner as dispatch::raw::Manifold<'d>>::Dispatch as Set<'d, M::Inner, R>>::Scope;
 
     const ROUTES: settings::Routes =
         <<M::Inner as dispatch::raw::Manifold<'d>>::Dispatch as Set<'d, M::Inner, R>>::ROUTES;
 
-    fn select() -> Option<Self::Plan> {
-        <<M::Inner as dispatch::raw::Manifold<'d>>::Dispatch as Set<'d, M::Inner, R>>::select()
-    }
-
     fn call<'event, 'driver, 'turn>(
         owner: pin::Pin<&mut M>,
-        plan: Self::Plan,
-        event: executor::raw::Dispatch<'event, 'd>,
+        event: executor::raw::Dispatch<'event, 'd, Self::Scope>,
         turn: schedule::Turn<'turn, 'd>,
         driver: driver::Context<'driver, 'd>,
     ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>>
@@ -74,7 +61,6 @@ where
     {
         <<M::Inner as dispatch::raw::Manifold<'d>>::Dispatch as Set<'d, M::Inner, R>>::call(
             dispatch::raw::Projection::inner_mut(owner),
-            plan,
             event,
             turn,
             driver,
@@ -87,18 +73,13 @@ where
     M: event::Complete<'d>,
     R: route::App,
 {
-    type Plan = ();
+    type Scope = route::Route;
 
     const ROUTES: settings::Routes = settings::Routes::singleton_id(R::ID);
 
-    fn select() -> Option<Self::Plan> {
-        Some(())
-    }
-
     fn call<'event, 'driver, 'turn>(
         owner: pin::Pin<&mut M>,
-        _: Self::Plan,
-        event: executor::raw::Dispatch<'event, 'd>,
+        event: executor::raw::Dispatch<'event, 'd, Self::Scope>,
         _: schedule::Turn<'turn, 'd>,
         _: driver::Context<'driver, 'd>,
     ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>>
@@ -114,18 +95,13 @@ where
     M: event::Drive<'d, Access = A>,
     R: route::App,
 {
-    type Plan = ();
+    type Scope = route::Route;
 
     const ROUTES: settings::Routes = settings::Routes::singleton_id(R::ID);
 
-    fn select() -> Option<Self::Plan> {
-        Some(())
-    }
-
     fn call<'event, 'driver, 'turn>(
         owner: pin::Pin<&mut M>,
-        _: Self::Plan,
-        event: executor::raw::Dispatch<'event, 'd>,
+        event: executor::raw::Dispatch<'event, 'd, Self::Scope>,
         _: schedule::Turn<'turn, 'd>,
         driver: driver::Context<'driver, 'd>,
     ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>>
@@ -142,18 +118,13 @@ where
     M: event::Turn<'d, Access = A>,
     R: route::App,
 {
-    type Plan = ();
+    type Scope = PhantomData<R>;
 
     const ROUTES: settings::Routes = settings::Routes::singleton_id(R::ID);
 
-    fn select() -> Option<Self::Plan> {
-        Some(())
-    }
-
     fn call<'event, 'driver, 'turn>(
         owner: pin::Pin<&mut M>,
-        _: Self::Plan,
-        event: executor::raw::Dispatch<'event, 'd>,
+        event: executor::raw::Dispatch<'event, 'd, Self::Scope>,
         turn: schedule::Turn<'turn, 'd>,
         driver: driver::Context<'driver, 'd>,
     ) -> ops::ControlFlow<executor::raw::Dispatch<'event, 'd>>

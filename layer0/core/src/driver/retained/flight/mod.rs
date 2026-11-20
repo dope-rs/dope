@@ -355,7 +355,7 @@ impl<'d, C: kind::Class> Flight<'d, C> {
         self.flight.value().bind(self.driver, self.key())
     }
 
-    pub fn matches(&self, target: route::Erased<'d, C>) -> bool {
+    pub fn matches(&self, target: route::Erased<'d, C, impl route::Selection>) -> bool {
         self.target().matches_flight(target)
     }
 

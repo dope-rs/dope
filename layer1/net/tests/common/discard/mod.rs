@@ -342,8 +342,8 @@ impl Observed {
                                 pool.settle(
                                     done, &mut driver, &mut (),
                                     |_, slot| slot.discard(), |_, _, _, _| {},
-                                    |_, outcome, mut settlement, space, driver| {
-                                        let (sender, done) = settlement.finish(space, |_| {});
+                                    |_, outcome, settlement, driver| {
+                                        let (mut sender, done) = settlement.finish();
                                         settled(outcome);
                                         (done, sender.submit(driver, drop))
                                     },

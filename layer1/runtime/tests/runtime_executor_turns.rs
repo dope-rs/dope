@@ -369,7 +369,28 @@ fn dispatches_the_returned_route_only_in_the_remaining_fields() {
                         driver.reborrow(),
                     );
                     let returned = result.break_value().expect("return earlier route");
-                    assert_eq!(returned.route(), KeyTag::<0>::ROUTE);
+                    let high = pin::pin!(Fallback {
+                        first: Missing {
+                            other_route: dispatch::Builder::new(&swap).probe::<KeyTag<64>>(),
+                            app: None,
+                        },
+                        second: dispatch::Builder::new(&swap).probe::<KeyTag<65>>(),
+                    });
+                    let mut projected = false;
+                    let miss = raw::App::dispatch_from::<true>(
+                        || {
+                            projected = true;
+                            high
+                        },
+                        returned,
+                        turn.reborrow(),
+                        driver.reborrow(),
+                    );
+                    assert!(!projected);
+                    assert_eq!(
+                        miss.break_value().expect("return unmatched route").route(),
+                        KeyTag::<0>::ROUTE
+                    );
                     assert_eq!(swap.visits.get(), 2);
                     observed = true;
                     ControlFlow::Continue(())

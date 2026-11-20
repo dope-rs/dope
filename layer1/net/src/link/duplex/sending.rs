@@ -260,7 +260,7 @@ impl<'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w, S>
 {
     pub(in crate::link) fn observe_send(
         &mut self,
-        target: route::Erased<'d, kind::Send>,
+        target: route::Erased<'d, kind::Send, impl route::Selection>,
         before: impl FnOnce(&mut Self),
     ) -> Option<Inflight> {
         let active = &self.control.engine.operations.sending.active;

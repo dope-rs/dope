@@ -3,7 +3,7 @@ use std::{ops::ControlFlow, pin};
 use dope_core::{
     driver::{
         self,
-        route::{Identity, indices, table},
+        route::{self, Identity, indices, table},
         schedule::{self, maint, ready},
     },
     io,
@@ -362,7 +362,7 @@ where
 
     fn dispatch<'event>(
         mut this: pin::Pin<&mut Self>,
-        event: executor::raw::Dispatch<'event, 'd>,
+        event: executor::raw::Dispatch<'event, 'd, impl route::Selection>,
         turn: schedule::Turn<'_, 'd>,
         mut driver: dispatch::raw::Context<'_, 'd, Self::Access>,
     ) -> ControlFlow<executor::raw::Dispatch<'event, 'd>> {
@@ -371,7 +371,7 @@ where
         let (event, vacant) = 'rejected: {
             match event.select() {
                 Selected::Recv(member) => {
-                    let (done, vacant) = member.take();
+                    let (done, vacant) = member.take_routed();
                     if let ControlFlow::Break(done) =
                         ingress::Policy::dispatch(this.as_mut(), done, turn.reborrow(), &mut driver)
                     {
@@ -381,11 +381,11 @@ where
                     return ControlFlow::Continue(());
                 }
                 Selected::Send(member) => {
-                    let (done, vacant) = member.take();
+                    let (done, vacant) = member.take_routed();
                     if let Err(done) =
                         Complete::send(this.as_mut(), done, turn.reborrow(), &mut driver)
                     {
-                        break 'rejected (Kind::Send(done).into(), vacant);
+                        break 'rejected (io::Event::from(done), vacant);
                     }
                 }
                 Selected::Socket(member) => {

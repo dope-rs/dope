@@ -253,7 +253,7 @@ type ExecResult<'owner, S, O, Q> = Result<
     >,
 >;
 type CreateResult<'owner, S, F, R, Q> =
-    Result<R, domain::Error<'owner, domain::Rejected<<S as storage::Create>::Error, F>, R, Q>>;
+    Result<R, domain::Error<'owner, domain::Rejected<<S as storage::Build>::Error, F>, R, Q>>;
 
 /// One execution borrows its exact persistent native retirement owner.
 pub struct Execution<'owner, S, Q> {
@@ -289,9 +289,7 @@ impl<'owner, S: storage::Build, Q: Startup> Execution<'owner, S, Q> {
             .try_enter(store, Entry(op), report)
             .map_err(|error| error.map_storage(|rejected| rejected.map_op(|entry| entry.0)))
     }
-}
 
-impl<'owner, S: storage::Create, Q: Startup> Execution<'owner, S, Q> {
     pub fn try_create<F, R>(
         self,
         op: F,
@@ -300,24 +298,7 @@ impl<'owner, S: storage::Create, Q: Startup> Execution<'owner, S, Q> {
     where
         F: for<'scope, 'life, 'p, 'd> FnOnce(session::Scope<'scope, 'life, 'p, 'd, S, Q>) -> R,
     {
-        self.try_scope(Scoped(op), report)
-            .map_err(|error| error.map_storage(|rejected| rejected.map_op(|entry| entry.0)))
-    }
-
-    pub(crate) fn try_scope<O>(
-        self,
-        op: O,
-        report: impl recovery::Observe,
-    ) -> CreateResult<'owner, S, O, O::Output, Q>
-    where
-        O: Op<S, Q>,
-    {
-        let Self {
-            storage: store,
-            domain,
-        } = self;
-        domain
-            .try_create(store, Entry(op), report)
+        self.try_enter(Scoped(op), report)
             .map_err(|error| error.map_storage(|rejected| rejected.map_op(|entry| entry.0)))
     }
 }

@@ -69,7 +69,7 @@ where
         rearm: &mut bool,
         captured: terminal::Captured,
     ) {
-        engine.captured(captured);
+        engine.operations.captured(&engine.establish, captured);
         if let terminal::Captured::Eof | terminal::Captured::Terminal = captured {
             *rearm |= engine.operations.recv.has_cancel();
         }
