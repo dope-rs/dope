@@ -1,8 +1,6 @@
 use dope::net::{
     wire,
     wire::{
-        domain,
-        domain::Limits,
         failure, open,
         open::Outcome,
         receive,
@@ -151,18 +149,5 @@ impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for Context<
             open::Disposition::Commit(output) | open::Disposition::Retry { output, .. } => output,
         };
         Outcome::Opened(output)
-    }
-}
-
-impl domain::Init<Wire> for Wire {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: Limits,
-        bind: <Self as wire::Spec>::Binding<'w, ID>,
-    ) -> <Self as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Self: 'w,
-        'd: 'w,
-    {
-        bind
     }
 }

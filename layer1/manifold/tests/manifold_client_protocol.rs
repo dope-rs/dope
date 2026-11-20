@@ -173,7 +173,6 @@ where
 #[test]
 fn retained_eof_send_close() {
     for action in [Action::Send, Action::Close] {
-        let mut finish = Completion::new();
 
         peer::TcpScript::with(
             |stream| {
@@ -198,7 +197,7 @@ fn retained_eof_send_close() {
                     Duration::from_millis(10),
                     Duration::from_millis(50),
                 )
-                .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Value::new(Half {
+                .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>(Value::new(Half {
                     action,
                     progress: Progress {
                         eof: false,
@@ -218,32 +217,23 @@ fn retained_eof_send_close() {
                     input: received.clone(),
                 }))
                 .expect("prepare actual client layout");
-                let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-                planned
-                    .with_run(
-                        &mut finish,
-                        |case| {
-                            assert_eq!(
-                                case.try_wait(&conn, 1).expect("progress wait"),
-                                fibers::Wait::Reached
-                            );
-                            assert_eq!(
-                                case.try_wait(&parked, 2).expect("progress wait"),
-                                fibers::Wait::Reached
-                            );
-                            assert_eq!(closed.hits(), 0);
-                            release.hit();
-                            assert_eq!(
-                                case.try_wait(&closed, 1).expect("progress wait"),
-                                fibers::Wait::Reached
-                            );
-                        },
-                        recovery::Policy::new(|event| reclaim1.push(event), recover),
-                        |result| result.expect("native lifecycle"),
-                    )
-                    .expect("application scenario");
-                assert_reclaimed(&reclaim1);
+                planned.run(|case| {
+                    assert_eq!(
+                        case.try_wait(&conn, 1).expect("progress wait"),
+                        fibers::Wait::Reached
+                    );
+                    assert_eq!(
+                        case.try_wait(&parked, 2).expect("progress wait"),
+                        fibers::Wait::Reached
+                    );
+                    assert_eq!(closed.hits(), 0);
+                    release.hit();
+                    assert_eq!(
+                        case.try_wait(&closed, 1).expect("progress wait"),
+                        fibers::Wait::Reached
+                    );
+                });
 
                 assert_eq!(received.take().as_slice(), RESPONSE);
                 audit.checked((usize::from(matches!(action, Action::Send)), 0));
@@ -313,7 +303,7 @@ fn held_eof_timeout_closes() {
                     );
                     let backoff = runtime.hash_state(health::Domain::DEFAULT);
                     let set = Snapshot::from_one(Revision::new(1), Endpoint::new(address, address));
-                    let result = plan.bind(domain::Local::new(()), backoff).install::<
+                    let result = plan.bind(domain::Local::new(Clean::<true>), backoff).install::<
                         _,
                         _,
                         sync::Preserve,

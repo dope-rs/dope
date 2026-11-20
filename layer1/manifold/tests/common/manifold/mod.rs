@@ -1,14 +1,6 @@
-use std::{convert::Infallible, fmt::Debug};
-
-use dope_runtime::topology::error;
-
 pub mod client;
 pub mod datagram;
 pub mod listener;
-
-pub fn native<R: Debug>(outcome: Result<R, error::Kind<'_, Infallible, &R>>) -> R {
-    outcome.expect("native lifecycle")
-}
 
 pub struct Pattern(pub(crate) usize);
 impl Pattern {

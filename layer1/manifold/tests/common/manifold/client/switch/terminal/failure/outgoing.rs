@@ -1,6 +1,6 @@
 use dope_core::driver::route::Identity;
 use dope_net::wire::{
-    self, domain, failure, open, receive, receive::mode::Disabled, send, send::reclaim, terminal,
+    self, failure, open, receive, receive::mode::Disabled, send, send::reclaim, terminal,
 };
 
 use crate::common::{Buffer, manifold::client::switch::terminal::failure::Cause};
@@ -9,6 +9,7 @@ pub struct State {
     failed: bool,
 }
 
+#[derive(Default)]
 pub struct Outgoing<const LATE: bool>;
 
 impl<const LATE: bool> failure::Errors<failure::Terminal> for Outgoing<LATE> {
@@ -46,19 +47,6 @@ impl<const LATE: bool> wire::Spec for Outgoing<LATE> {
     type Bootstrap = Self;
     type Receive = receive::Transparent<Disabled>;
     type Send = Egress;
-}
-
-impl<const LATE: bool> domain::Init<Outgoing<LATE>> for Outgoing<LATE> {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: domain::Limits,
-        _: <Self as wire::Spec>::Binding<'w, ID>,
-    ) -> <Self as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Self: 'w,
-        'd: 'w,
-    {
-        Self
-    }
 }
 
 pub struct Egress;

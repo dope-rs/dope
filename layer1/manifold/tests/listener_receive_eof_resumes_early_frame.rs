@@ -1,22 +1,17 @@
 pub mod common;
 
-use std::{convert::Infallible, iter, time::Instant};
+use std::{iter, time::Instant};
 
 use common::{
     manifold::listener::defer::preamble::{self, FRAMES, HANDSHAKE, PREFIX},
     scenario::case::listener::Listener,
 };
-use dope_core::driver::{
-    life::recovery,
-    route::{FrameworkTag, KeyTag, Tag, kind},
-};
+use dope_core::driver::route::KeyTag;
 use dope_manifold::{
     app::{env::Bundle, receive},
-    network::listener::conn::write,
     timing::Throughput,
 };
 use dope_net::tcp::Tcp;
-use dope_runtime::executor::session::Completion;
 use dope_test::{
     fibers::{self, Wait},
     harness::{
@@ -24,12 +19,10 @@ use dope_test::{
         peer::{self, Peer},
         signals::{Gate, Progress as _},
     },
-    reclaim::Reports,
 };
 
 #[test]
 fn eof_resumes_early_frame() {
-    let mut finish = Completion::new();
     let admitted = Gate::new();
     let wrote = Gate::new();
     let eof = Gate::new();
@@ -64,63 +57,45 @@ fn eof_resumes_early_frame() {
                 gate: closed.clone(),
                 observe: observe.clone(),
             },
-            (observe, true),
+            preamble::Runtime(observe, true),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
-                assert_eq!(
-                    case.try_wait(&admitted, 1).expect("admitted early frame"),
-                    Wait::Reached
-                );
-                assert_eq!(wrote.hits(), 0);
-                peer.write_all(HANDSHAKE).expect("final wire input");
-                assert_eq!(
-                    case.try_wait(&closed, 1).expect("flushed EOF close"),
-                    Wait::Reached
-                );
-                assert_eq!(eof.hits(), 1);
-                let want: Vec<_> = iter::once(PREFIX)
-                    .chain(FRAMES[0].iter().copied())
-                    .collect();
-                peer.nonblock(true);
-                let started = Instant::now();
-                let mut reply = Vec::new();
-                let mut bytes = [0; 64];
-                loop {
-                    assert!(started.elapsed() < GUARD, "peer did not observe EOF");
-                    match peer.read(&mut bytes) {
-                        Ok(0) => break,
-                        Ok(count) => reply.extend_from_slice(&bytes[..count]),
-                        Err(error) => {
-                            assert!(
-                                matches!(error, peer::Error::Syscall(error)
-                                    if error.is_block() || error.is_intr()),
-                                "read peer EOF: {error:?}"
-                            );
-                            case.try_drive(fibers::Yield::new())
-                                .expect("drive peer EOF");
-                        }
-                    }
+    prepared.run(|case| {
+        let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+        assert_eq!(
+            case.try_wait(&admitted, 1).expect("admitted early frame"),
+            Wait::Reached
+        );
+        assert_eq!(wrote.hits(), 0);
+        peer.write_all(HANDSHAKE).expect("final wire input");
+        assert_eq!(
+            case.try_wait(&closed, 1).expect("flushed EOF close"),
+            Wait::Reached
+        );
+        assert_eq!(eof.hits(), 1);
+        let want: Vec<_> = iter::once(PREFIX)
+            .chain(FRAMES[0].iter().copied())
+            .collect();
+        peer.nonblock(true);
+        let started = Instant::now();
+        let mut reply = Vec::new();
+        let mut bytes = [0; 64];
+        loop {
+            assert!(started.elapsed() < GUARD, "peer did not observe EOF");
+            match peer.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(count) => reply.extend_from_slice(&bytes[..count]),
+                Err(error) => {
+                    assert!(
+                        matches!(error, peer::Error::Syscall(error)
+                            if error.is_block() || error.is_intr()),
+                        "read peer EOF: {error:?}"
+                    );
+                    case.try_drive(fibers::Yield::new())
+                        .expect("drive peer EOF");
                 }
-                assert_eq!(reply, want);
-            },
-            recovery::Policy::new(
-                |event| reports.push(event),
-                |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                    panic!("native recovery: {:?}", failure.cause())
-                },
-            ),
-            |outcome| outcome.expect("native lifecycle"),
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+            }
+        }
+        assert_eq!(reply, want);
+    });
 }

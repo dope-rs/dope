@@ -6,7 +6,7 @@ use dope::{
         tcp::Tcp,
         wire,
         wire::{
-            domain, domain::Limits, failure, open, open::Outcome, receive, receive::mode, send,
+            failure, open, open::Outcome, receive, receive::mode, send,
         },
     },
 };
@@ -70,19 +70,6 @@ impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for Binding<
             context,
             cause: open::Error::from_cause(Error(self.0)),
         }
-    }
-}
-
-impl domain::Init<Wire> for Wire {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: Limits,
-        bind: <Wire as wire::Spec>::Binding<'w, ID>,
-    ) -> <Wire as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Wire: 'w,
-        'd: 'w,
-    {
-        bind
     }
 }
 

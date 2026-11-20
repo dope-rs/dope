@@ -2,7 +2,7 @@ pub mod common;
 
 use std::{num::NonZero, rc::Rc, time::Duration};
 
-use common::manifold::{listener::reached, native};
+use common::manifold::listener::reached;
 use common::{
     manifold::listener::finish::lifetime::{Event, Expiry, Lifetime},
     recover,
@@ -31,7 +31,6 @@ fn released_backlog_keeps_authority_sealed() {
     use dope_manifold::network::listener::conn::write;
     use dope_net::link::egress;
 
-    let mut finish = Completion::new();
     let activated = Gate::new();
     let retired = Gate::new();
     let prepared = Listener::new::<1>(Default::default())
@@ -48,28 +47,15 @@ fn released_backlog_keeps_authority_sealed() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                for count in 1..=2 {
-                    let before = activated.hits();
-                    let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
-                    peer.write_all(b"REQ").expect("request");
-                    reached(case.try_wait(&retired, count), retired.hits(), count);
-                    assert!(activated.hits() > before, "activation after release");
-                }
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    prepared.run(|case| {
+        for count in 1..=2 {
+            let before = activated.hits();
+            let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+            peer.write_all(b"REQ").expect("request");
+            reached(case.try_wait(&retired, count), retired.hits(), count);
+            assert!(activated.hits() > before, "activation after release");
+        }
+    });
 }
 
 #[test]
@@ -86,7 +72,6 @@ fn persistent_and_clear_deadline() {
             expiry,
             Expiry::Overflow | Expiry::Disabled | Expiry::Reject
         ));
-        let mut finish = Completion::new();
         let accept = Gate::new();
         let expire = Gate::new();
         let begun = Gate::new();
@@ -105,52 +90,38 @@ fn persistent_and_clear_deadline() {
                 Identity,
             ))
             .expect("listener layout");
-        let mut reports =
-            Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-        prepared
-            .with_run(
-                &mut finish,
-                |case| {
-                    let peer = Peer::at(case.addr())
-                        .try_connect()
-                        .expect("connect lifetime peer");
-                    reached(case.try_wait(&accept, 1), accept.hits(), 1);
-                    if count != 0 {
-                        reached(case.try_wait(&expire, count), expire.hits(), count);
-                    }
-                    if closes != 0 {
-                        reached(case.try_wait(&closed, closes), closed.hits(), closes);
-                    } else {
-                        case.try_pause(Duration::from_millis(50))
-                            .expect("drive pause");
-                    }
-                    assert_eq!(expire.hits(), count);
-                    assert_eq!(begun.hits(), 0);
-                    assert_eq!(closed.hits(), closes);
-                    if sends {
-                        peer.read_wait(Some(Duration::from_secs(1)))
-                            .expect("read bound");
-                        let mut response = [0];
-                        peer.read_exact(&mut response).expect("timeout response");
-                        assert_eq!(response, [b'x']);
-                    }
-                    assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
-                },
-                recovery::Policy::new(|event| reports.push(event), recover),
-                native,
-            )
-            .expect("listener run");
-        assert!(
-            reports.events().expect("reclaimed events").is_empty(),
-            "unexpected reclaimed operations: {reports:?}"
-        );
+        prepared.run(|case| {
+            let peer = Peer::at(case.addr())
+                .try_connect()
+                .expect("connect lifetime peer");
+            reached(case.try_wait(&accept, 1), accept.hits(), 1);
+            if count != 0 {
+                reached(case.try_wait(&expire, count), expire.hits(), count);
+            }
+            if closes != 0 {
+                reached(case.try_wait(&closed, closes), closed.hits(), closes);
+            } else {
+                case.try_pause(Duration::from_millis(50))
+                    .expect("drive pause");
+            }
+            assert_eq!(expire.hits(), count);
+            assert_eq!(begun.hits(), 0);
+            assert_eq!(closed.hits(), closes);
+            if sends {
+                peer.read_wait(Some(Duration::from_secs(1)))
+                    .expect("read bound");
+                let mut response = [0];
+                peer.read_exact(&mut response).expect("timeout response");
+                assert_eq!(response, [b'x']);
+            }
+            assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
+        });
     }
 }
 
 #[test]
 fn drain_bound() {
     for drain in [handler::Drain::Pending, handler::Drain::Complete] {
-        let mut finish = Completion::new();
         let accept = Gate::new();
         let expire = Gate::new();
         let begun = Gate::new();
@@ -173,48 +144,34 @@ fn drain_bound() {
                 Identity,
             ))
             .expect("listener layout");
-        let mut reports =
-            Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-        prepared
-            .with_run(
-                &mut finish,
-                |case| {
-                    {
-                        let peer = Peer::at(case.addr())
-                            .try_connect()
-                            .expect("connect lifetime peer");
-                        reached(case.try_wait(&accept, 1), accept.hits(), 1);
-                        reached(case.try_wait(&begun, 1), begun.hits(), 1);
-                        reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                        assert_eq!(expire.hits(), 0);
-                        assert_eq!(begun.hits(), 1);
-                        let mut response = [0];
-                        peer.read_exact(&mut response).expect("drain response");
-                        assert_eq!(response, [b'x']);
-                        assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
-                    }
-                    if matches!(drain, handler::Drain::Complete) {
-                        let next = Peer::at(case.addr())
-                            .try_connect()
-                            .expect("connect next peer");
-                        reached(case.try_wait(&accept, 2), accept.hits(), 2);
-                        assert!(matches!(next.peer_addr(), Ok(addr) if addr == case.addr()));
-                    }
-                },
-                recovery::Policy::new(|event| reports.push(event), recover),
-                native,
-            )
-            .expect("listener run");
-        assert!(
-            reports.events().expect("reclaimed events").is_empty(),
-            "unexpected reclaimed operations: {reports:?}"
-        );
+        prepared.run(|case| {
+            {
+                let peer = Peer::at(case.addr())
+                    .try_connect()
+                    .expect("connect lifetime peer");
+                reached(case.try_wait(&accept, 1), accept.hits(), 1);
+                reached(case.try_wait(&begun, 1), begun.hits(), 1);
+                reached(case.try_wait(&closed, 1), closed.hits(), 1);
+                assert_eq!(expire.hits(), 0);
+                assert_eq!(begun.hits(), 1);
+                let mut response = [0];
+                peer.read_exact(&mut response).expect("drain response");
+                assert_eq!(response, [b'x']);
+                assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
+            }
+            if matches!(drain, handler::Drain::Complete) {
+                let next = Peer::at(case.addr())
+                    .try_connect()
+                    .expect("connect next peer");
+                reached(case.try_wait(&accept, 2), accept.hits(), 2);
+                assert!(matches!(next.peer_addr(), Ok(addr) if addr == case.addr()));
+            }
+        });
     }
 }
 
 #[test]
 fn past_application_deadline_preserves_own_lifetime_and_drain() {
-    let mut finish = Completion::new();
     let accept = Gate::new();
     let expire = Gate::new();
     let begun = Gate::new();
@@ -242,33 +199,22 @@ fn past_application_deadline_preserves_own_lifetime_and_drain() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let _peer = Peer::at(case.addr())
-                    .try_connect()
-                    .expect("connect repeating deadline peer");
-                reached(case.try_wait(&accept, 1), accept.hits(), 1);
-                reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                assert!(expire.hits() > 1, "application deadline was repeatedly due");
-                assert_eq!(
-                    &*events.values().expect("lifetime events"),
-                    &[Event::Drain(0), Event::Close(0)]
-                );
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(reports.events().expect("reclaimed events").is_empty());
+    prepared.run(|case| {
+        let _peer = Peer::at(case.addr())
+            .try_connect()
+            .expect("connect repeating deadline peer");
+        reached(case.try_wait(&accept, 1), accept.hits(), 1);
+        reached(case.try_wait(&closed, 1), closed.hits(), 1);
+        assert!(expire.hits() > 1, "application deadline was repeatedly due");
+        assert_eq!(
+            &*events.values().expect("lifetime events"),
+            &[Event::Drain(0), Event::Close(0)]
+        );
+    });
 }
 
 #[test]
 fn past_application_deadline_preserves_other_connection_bounds() {
-    let mut finish = Completion::new();
     let accept = Gate::new();
     let expire = Gate::new();
     let begun = Gate::new();
@@ -296,43 +242,32 @@ fn past_application_deadline_preserves_other_connection_bounds() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let _first = Peer::at(case.addr())
-                    .try_connect()
-                    .expect("connect earlier lifetime peer");
-                reached(case.try_wait(&accept, 1), accept.hits(), 1);
-                let _second = Peer::at(case.addr())
-                    .try_connect()
-                    .expect("connect repeating deadline peer");
-                reached(case.try_wait(&accept, 2), accept.hits(), 2);
-                assert_eq!(begun.hits(), 0, "both peers precede the lifetime bounds");
-                reached(case.try_wait(&closed, 2), closed.hits(), 2);
-                assert!(expire.hits() > 1, "application deadline was repeatedly due");
-                let events = events.values().expect("lifetime events");
-                let position = |event| {
-                    events
-                        .iter()
-                        .position(|actual| *actual == event)
-                        .expect("connection event")
-                };
-                assert!(position(Event::Drain(0)) < position(Event::Drain(1)));
-                assert!(position(Event::Close(0)) < position(Event::Close(1)));
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(reports.events().expect("reclaimed events").is_empty());
+    prepared.run(|case| {
+        let _first = Peer::at(case.addr())
+            .try_connect()
+            .expect("connect earlier lifetime peer");
+        reached(case.try_wait(&accept, 1), accept.hits(), 1);
+        let _second = Peer::at(case.addr())
+            .try_connect()
+            .expect("connect repeating deadline peer");
+        reached(case.try_wait(&accept, 2), accept.hits(), 2);
+        assert_eq!(begun.hits(), 0, "both peers precede the lifetime bounds");
+        reached(case.try_wait(&closed, 2), closed.hits(), 2);
+        assert!(expire.hits() > 1, "application deadline was repeatedly due");
+        let events = events.values().expect("lifetime events");
+        let position = |event| {
+            events
+                .iter()
+                .position(|actual| *actual == event)
+                .expect("connection event")
+        };
+        assert!(position(Event::Drain(0)) < position(Event::Drain(1)));
+        assert!(position(Event::Close(0)) < position(Event::Close(1)));
+    });
 }
 
 #[test]
 fn overdue_application_backlog_remains_admitted() {
-    let mut finish = Completion::new();
     let accept = Gate::new();
     let expire = Gate::new();
     let begun = Gate::new();
@@ -355,27 +290,17 @@ fn overdue_application_backlog_remains_admitted() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let _peer = Peer::at(case.addr())
-                    .try_connect()
-                    .expect("connect overdue backlog peer");
-                reached(case.try_wait(&accept, 1), accept.hits(), 1);
-                reached(case.try_wait(&expire, 3), expire.hits(), 3);
-                case.try_pause(Duration::from_millis(20))
-                    .expect("drain application backlog");
-                assert_eq!(expire.hits(), 3);
-                assert_eq!(closed.hits(), 0, "overdue application work remains valid");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(reports.events().expect("reclaimed events").is_empty());
+    prepared.run(|case| {
+        let _peer = Peer::at(case.addr())
+            .try_connect()
+            .expect("connect overdue backlog peer");
+        reached(case.try_wait(&accept, 1), accept.hits(), 1);
+        reached(case.try_wait(&expire, 3), expire.hits(), 3);
+        case.try_pause(Duration::from_millis(20))
+            .expect("drain application backlog");
+        assert_eq!(expire.hits(), 3);
+        assert_eq!(closed.hits(), 0, "overdue application work remains valid");
+    });
 }
 
 #[test]

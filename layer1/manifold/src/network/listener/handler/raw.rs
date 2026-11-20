@@ -8,7 +8,7 @@ use crate::{
         self,
         handler::{self, Runtime},
         runtime::control,
-        writer::phase,
+        writer::{self, phase},
     },
 };
 
@@ -30,25 +30,25 @@ pub(in crate::network::listener) unsafe fn activate<'turn, 'w, 'd: 'w, ID: Ident
         wake.wake();
         return;
     }
-    let key = {
-        let fields = listener.as_ref().project_ref();
-        let view = fields.owner.pool().inspect();
-        let Some(key) = view.by_target(target) else {
-            return;
-        };
-        key
-    };
     {
         let mut fields = listener.as_mut().project();
-        let Some(mut egress) = fields.owner.egress_mut(key) else {
+        let writer::Owner { pool, deadlines, writes } = fields.owner;
+        let Some(mut entry) = pool.by_target(target) else {
             return;
         };
+        let Some(view) = entry.egress_mut() else { return };
         handler::Application::activate(
             fields.app.as_mut(),
-            egress.context(turn.reborrow().app()),
+            writer::Egress::<ID, A>::new(view, *writes, deadlines).context(turn.reborrow().app()),
             driver,
         );
+        if phase::current::<ID, A>(entry.get(), entry.egress(), fields.app.as_ref())
+            .is_some_and(|action| action.apply::<ID, A, _>(&mut entry))
+        {
+            drop(writer::close(
+                Ok(entry), *writes, &mut (fields.app, fields.accept, deadlines), turn.reborrow(), driver,
+            ));
+        }
     }
-    phase::close_ready(listener.as_mut(), key, turn.reborrow(), driver);
     phase::flush_dirty(listener.as_mut(), turn, driver);
 }

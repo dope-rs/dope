@@ -18,8 +18,8 @@ use dope_manifold::{
     },
 };
 use dope_net::wire::{
-    self, domain, failure, open,
-    receive::{Policy, batch, eof, mode, mode::access, reserve, scoped},
+    self, failure, open,
+    receive::{Policy, batch, eof, mode, reserve, scoped},
     send::Direct,
     terminal,
 };
@@ -174,7 +174,6 @@ impl Policy<Wire> for Receive {
         = recv::Shared<'d>
     where
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::Clean;
     type Reserve = reserve::Waiting<Self>;
     type Credit = mode::Disabled;
@@ -238,15 +237,6 @@ impl wire::Spec for Wire {
     type Bootstrap = Self;
     type Receive = Receive;
     type Send = Direct;
-}
-
-impl domain::Init<Wire> for Wire {
-    fn runtime<'w, 'd, ID: Identity + 'w>(_: domain::Limits, state: &'w State) -> &'w State
-    where
-        'd: 'w,
-    {
-        state
-    }
 }
 
 pub struct App<'a, I> {
@@ -335,13 +325,13 @@ impl<'w, 'd: 'w, ID: Identity> handler::Scoped<'w, 'd, ID> for App<'_, receive::
         Budget::new(limits::Bound::new(0), 4096)
     }
 
-    fn scoped_chunk(
+    fn scoped_chunk<'s, 'e>(
         self: Pin<&mut Self>,
-        _: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Wire, ()>,
-        _: scoped::Input<'_, 'w, 'd, Wire>,
+        _: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Wire, ()>,
+        _: scoped::Input<'s, 'w, 'd, Wire>,
         _: &mut driver::Context<'_, 'd>,
-    ) -> receive::Outcome {
+    ) -> Result<receive::Outcome, scoped::Pending<'s>> {
         self.state.events.record(Event::Chunk);
-        receive::Outcome::CloseAfter
+        Ok(receive::Outcome::CloseAfter)
     }
 }

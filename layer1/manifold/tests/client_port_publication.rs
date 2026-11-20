@@ -42,7 +42,7 @@ use crate::common::{
     contract::Report,
     manifold::client::{
         connect::ports::{App, NESTED, PAYLOAD, pair},
-        send::wire::Wire,
+        send::wire::{Runtime as WireRuntime, Wire},
     },
     scenario::case::attempt::Attempts,
 };
@@ -207,7 +207,7 @@ fn publication_keeps_owner() {
                         source,
                         Capacity::fixed::<1>(),
                         egress::Config::default(),
-                        Local::new(()),
+                        Local::new(WireRuntime),
                     )
                     .try_with::<Bundle<Tcp, Wire, Throughput>, _, _>(
                         &mut session,
@@ -339,7 +339,7 @@ fn deadline_cuts_retiring_queue() {
                             source,
                             Capacity::fixed::<1>(),
                             egress::Config::default(),
-                            Local::new(()),
+                            Local::new(WireRuntime),
                         )
                         .try_with::<Bundle<Tcp, Wire, Throughput>, _, _>(
                             &mut session,

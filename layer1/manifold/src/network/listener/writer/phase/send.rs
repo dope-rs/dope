@@ -4,7 +4,7 @@ use dope_core::{
     driver::{self, route::{self, Identity}, schedule},
     io::event::net::send::Completion,
 };
-use handler::{Runtime, send};
+use handler::Runtime;
 use o3::mem::slot;
 
 use crate::{
@@ -15,24 +15,7 @@ use crate::{
     },
 };
 
-pub(super) fn complete<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
-    source: &mut super::sender::Source<'_, 'n, 'p, 's, 'w, 'd, ID, A, T>,
-    deadlines: &mut writer::deadline::Schedule<'d, ID>,
-    writes: &'p writer::memory::Arena<'s, 'd, ID, A::Egress>,
-    mut app: pin::Pin<&mut A>,
-    turn: schedule::Turn<'_, 'd>,
-    driver: &mut driver::Context<'_, 'd>,
-) where
-    A: Runtime<'w, 'd, ID>,
-{
-    let (_, mut connection, _, _) = super::sender::view::<ID, A, T>(source, deadlines);
-    let key = connection.key();
-    connection.cancel_send();
-    connection.state.send.release(app.as_mut(), conn::Id::from_key(key), None, handler::Disposition::Sent);
-    notify(source, deadlines, writes, app, turn, driver);
-}
-
-fn notify<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
+pub(super) fn notify<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
     source: &mut super::sender::Source<'_, 'n, 'p, 's, 'w, 'd, ID, A, T>,
     deadlines: &mut writer::deadline::Schedule<'d, ID>,
     writes: &'p writer::memory::Arena<'s, 'd, ID, A::Egress>,
@@ -42,8 +25,10 @@ fn notify<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
 ) where
     A: Runtime<'w, 'd, ID>,
 {
-    let mut egress = writer::Egress::new(source.view(), writes, deadlines);
-    send::settle(app, &mut egress, turn, driver);
+    if A::SEND {
+        let mut egress = writer::Egress::<ID, A>::new(source.view(), writes, deadlines);
+        A::send(app, egress.context(turn.reborrow().app()), driver);
+    }
 }
 
 pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
@@ -87,14 +72,20 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
                             }
                             slot.cancel_send();
                             (source, settled) = settlement.finish();
-                            advance::<ID, A, _>(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
+                            sender::advance::<ID, A, _>(
+                                &mut source, ctx.2, *writes, ctx.0.as_mut(), phase::Wake::Io,
+                                turn.reborrow(), driver,
+                            );
                             break 'complete false;
                         }
                         SendOutcome::Queued { .. } | SendOutcome::WriteShutdown => {
                             slot.cancel_send();
                             (source, settled) = settlement.finish();
                             notify(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
-                            advance::<ID, A, _>(&mut source, ctx.2, *writes, ctx.0.as_mut(), turn.reborrow(), driver);
+                            sender::advance::<ID, A, _>(
+                                &mut source, ctx.2, *writes, ctx.0.as_mut(), phase::Wake::Io,
+                                turn.reborrow(), driver,
+                            );
                             break 'complete false;
                         }
                         SendOutcome::Terminal => {
@@ -124,26 +115,12 @@ pub(in crate::network::listener) fn pump_send<'w, 'd: 'w, ID: Identity, A, E>(
                 }
             };
             let mut entry = source.into_entry();
-            if close || phase::finish(&mut entry, ctx.0.as_ref()) {
+            if close || phase::current::<ID, A>(entry.get(), entry.egress(), ctx.0.as_ref())
+                .is_some_and(|action| action.apply::<ID, A, _>(&mut entry))
+            {
                 drop(writer::close(Ok(entry), *writes, ctx, turn, driver));
             }
             (settled, ())
         },
     );
-}
-
-fn advance<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
-    source: &mut super::sender::Source<'_, 'n, 'p, 's, 'w, 'd, ID, A, T>,
-    deadlines: &mut writer::deadline::Schedule<'d, ID>,
-    writes: &'p writer::memory::Arena<'s, 'd, ID, A::Egress>,
-    mut app: pin::Pin<&mut A>,
-    turn: schedule::Turn<'_, 'd>,
-    driver: &mut driver::Context<'_, 'd>,
-) where A: Runtime<'w, 'd, ID>,
-{
-    if matches!(super::sender::commit_chunk::<ID, A, _>(
-        source, deadlines, app.as_mut(), phase::Wake::Send, driver,
-    ), writer::flow::Flow::Done) {
-        complete(source, deadlines, writes, app, turn, driver);
-    }
 }

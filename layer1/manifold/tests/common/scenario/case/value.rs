@@ -7,18 +7,17 @@ use dope_core::driver::{
 };
 use dope_manifold::{
     app::{env, receive},
-    client::{app::request, session},
+    client::session,
     network::{
-        client::topology::{
-            factory::{Application, disabled},
-            plan,
-        },
+        client::topology::{factory::Application, plan},
         listener::{handler, topology::factory},
     },
 };
-use dope_net::wire::{self, domain};
+use dope_net::{
+    link::pool::change,
+    wire::{self, domain},
+};
 use session::{
-    app::request::Source,
     codec::{self, staging},
     ingress,
     policy::Compatible,
@@ -53,8 +52,7 @@ impl<ID: Identity, T, B, I, E> factory::Direct<ID, E> for Value<(T, B), I>
 where
     E: env::Spec,
     E::Transport: dope_net::Listen,
-    <E::Wire as wire::Spec>::Bootstrap: domain::Init<E::Wire>,
-    for<'d> <E::Wire as wire::Spec>::Binding<'d, ID>: From<B>,
+    for<'d> domain::Local<B>: change::Prepare<'d, 'd, ID, E::Wire>,
     I: receive::Mode<E::Wire> + receive::Resources,
     for<'d> T:
         handler::Application<'d, ID, Wire = E::Wire, Input = I> + handler::Runtime<'d, 'd, ID>,
@@ -68,7 +66,7 @@ where
     type Error = Infallible;
 
     type Wire<'d>
-        = domain::Local<'d, E::Wire, ID>
+        = domain::Local<B>
     where
         ID: 'd,
         Self: 'd,
@@ -82,7 +80,7 @@ where
         Self::Input: 'd,
     {
         let (app, binding) = self.value;
-        Ok((app, domain::Local::new(binding.into())))
+        Ok((app, domain::Local::new(binding)))
     }
 }
 
@@ -92,134 +90,33 @@ const _: () = {
     assert!(mem::needs_drop::<Value<String>>() == mem::needs_drop::<String>());
 };
 
-impl<ID: Identity, const MAX: usize, N, E> Application<(), ID, MAX, E> for Value<N>
+impl<'life, 'p, 'd, ID: Identity + 'd, const MAX: usize, N, E>
+    Application<'life, 'p, 'd, (), ID, MAX, E> for Value<N>
 where
     E: env::Spec,
-    <E::Wire as wire::Spec>::Bootstrap: domain::Init<E::Wire>,
-    for<'d> N: session::Target<'d, ID, MAX>
+    E::Wire: 'd,
+    N: session::Target<'d, ID, MAX>
         + session::Connected<'d, ID>
         + session::Exhausted<'d, ID>
         + session::Failed<'d, ID>
-        + Source<'d, ID>
         + Compatible<'d, 'd, E::Wire, ID>,
-    for<'d> <N as session::Session<'d, ID>>::Codec: codec::Codec<Staging = staging::Buffered>,
-    for<'d> <E::Wire as wire::Spec>::Binding<'d, ID>: Default,
+    <N as session::Session<'d, ID>>::Codec: codec::Codec<Staging = staging::Buffered>,
+    <E::Wire as wire::Spec>::Runtime<'d, 'd, ID>: Default,
 {
     type Input = plan::Local;
-    type Session<'life, 'p, 'd>
-        = N
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        ID: 'd,
-        E::Wire: 'd;
-    type Source<'life, 'p, 'd>
-        = ingress::None
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        ID: 'd,
-        E::Wire: 'd;
-    type Wire<'life, 'p, 'd>
-        = domain::Local<'d, E::Wire, ID>
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        ID: 'd,
-        E::Wire: 'd;
+    type Session = N;
+    type Source = ingress::None;
+    type Wire = domain::Local<<E::Wire as wire::Spec>::Runtime<'d, 'd, ID>>;
     type Error = Infallible;
 
-    fn build<'life, 'p, 'd>(
+    fn build(
         self,
         _: &'life (),
-    ) -> Result<
-        (
-            session::Setup<'d, Self::Session<'life, 'p, 'd>, Self::Source<'life, 'p, 'd>>,
-            Self::Wire<'life, 'p, 'd>,
-        ),
-        Self::Error,
-    >
+    ) -> Result<(session::Setup<'d, Self::Session, Self::Source>, Self::Wire), Self::Error>
     where
+        Self: 'd,
         'd: 'p,
         'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        ID: 'd,
-        E::Wire: 'd,
-    {
-        Ok((
-            session::Setup::new(self.value, ingress::Plan::none()),
-            domain::Local::new(Default::default()),
-        ))
-    }
-}
-
-impl<ID: Identity, const MAX: usize, N, E> disabled::Application<(), ID, MAX, E> for Value<N>
-where
-    E: env::Spec,
-    <E::Wire as wire::Spec>::Bootstrap: domain::Init<E::Wire>,
-    for<'d> N: session::Target<'d, ID, MAX>
-        + session::Connected<'d, ID>
-        + session::Exhausted<'d, ID>
-        + session::Failed<'d, ID>
-        + session::Session<'d, ID, Requests = request::Disabled>
-        + Compatible<'d, 'd, E::Wire, ID>,
-    for<'d> <N as session::Session<'d, ID>>::Codec: codec::Codec<Staging = staging::Buffered>,
-    for<'d> <E::Wire as wire::Spec>::Binding<'d, ID>: Default,
-{
-    type Input = plan::Local;
-    type Session<'life, 'p, 'd>
-        = N
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        ID: 'd,
-        E::Wire: 'd;
-    type Source<'life, 'p, 'd>
-        = ingress::None
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        ID: 'd,
-        E::Wire: 'd;
-    type Wire<'life, 'p, 'd>
-        = domain::Local<'d, E::Wire, ID>
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        ID: 'd,
-        E::Wire: 'd;
-    type Error = Infallible;
-
-    fn build<'life, 'p, 'd>(
-        self,
-        _: &'life (),
-    ) -> Result<
-        (
-            session::Setup<'d, Self::Session<'life, 'p, 'd>, Self::Source<'life, 'p, 'd>>,
-            Self::Wire<'life, 'p, 'd>,
-        ),
-        Self::Error,
-    >
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        ID: 'd,
-        E::Wire: 'd,
     {
         Ok((
             session::Setup::new(self.value, ingress::Plan::none()),

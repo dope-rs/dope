@@ -1,10 +1,10 @@
-use std::convert::Infallible;
+use std::fmt::Debug;
 
-use dope_core::driver::{life::recovery, route::Identity, settings};
-use dope_manifold::{app::env, client::app::request};
+use dope_core::driver::route::Identity;
+use dope_manifold::app::env;
 use dope_runtime::{
     executor::session::Completion,
-    topology::{self, error::Kind, ops},
+    topology::{self, ops},
 };
 
 use crate::common::scenario::{
@@ -13,49 +13,31 @@ use crate::common::scenario::{
 };
 
 /// The original client installation and its resolved driver layout.
-pub struct Prepared<ID: Identity, const MAX: usize, E: env::Spec, F, Q = request::Enabled> {
-    plan: topology::Prepared<(), Client<ID, MAX, E, F, Q>>,
+pub struct Prepared<ID: Identity, const MAX: usize, E: env::Spec, F> {
+    plan: topology::Prepared<(), Client<ID, MAX, E, F>>,
 }
 
-impl<ID: Identity, const MAX: usize, E: env::Spec, F, Q> Prepared<ID, MAX, E, F, Q> {
-    pub(super) fn new(plan: topology::Prepared<(), Client<ID, MAX, E, F, Q>>) -> Self {
+impl<ID: Identity, const MAX: usize, E: env::Spec, F> Prepared<ID, MAX, E, F> {
+    pub(super) fn new(plan: topology::Prepared<(), Client<ID, MAX, E, F>>) -> Self {
         Self { plan }
     }
 
-    pub const fn layout(&self) -> settings::Config {
-        self.plan.layout()
-    }
-
-    pub fn with_run<'report, B, R, K, Done>(
-        self,
-        complete: &'report mut Completion,
-        body: B,
-        policy: impl recovery::Observe,
-        finish: impl for<'owner> FnOnce(
-            Result<
-                Result<R, Failure<'report, K, R>>,
-                Kind<'owner, Infallible, &'owner Result<R, Failure<'report, K, R>>>,
-            >,
-        ) -> Done,
-    ) -> Done
+    pub fn run<B, R: Debug, K: Debug>(self, body: B) -> R
     where
         B: FnOnce(&mut dyn RuntimeCase) -> R,
-        Connect<'report, B>: for<'scope, 'life, 'p, 'd> ops::Operation<
+        for<'report, 'scope, 'life, 'p, 'd> Connect<'report, B>: ops::Operation<
                 'd,
-                topology::Worker<'scope, 'life, 'p, 'd, (), Client<ID, MAX, E, F, Q>, ()>,
+                topology::Worker<'scope, 'life, 'p, 'd, (), Client<ID, MAX, E, F>, ()>,
                 Output = Result<R, Failure<'report, K, R>>,
             >,
     {
-        self.plan.enter_local(
+        super::checked(super::enter(
+            self.plan,
+            ID::ROUTE,
             Connect {
-                finish: complete,
+                finish: &mut Completion::new(),
                 body,
             },
-            policy,
-            |outcome| match outcome {
-                Ok(output) => finish(Ok(output)),
-                Err(error) => finish(Err(error.kind())),
-            },
-        )
+        ))
     }
 }

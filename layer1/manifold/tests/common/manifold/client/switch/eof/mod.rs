@@ -20,13 +20,12 @@ use dope_manifold::{
             Output, Parser, Resume, Retirement, Scheduling, Session, Stored, Target,
             app::{admit, drain::Ready},
             codec::{self, mode, staging::Limit, storage},
-            policy,
-            response,
+            policy, response,
             response::work,
             turns,
         },
     },
-    network::client::topology::{factory::disabled, plan},
+    network::client::topology::{factory::Application, plan},
     timing::Balanced,
 };
 use dope_net::{
@@ -267,11 +266,7 @@ impl<'d> Output<'d> for State<'d> {
         self.audit.record_sent();
     }
 
-    fn cancel(
-        &mut self,
-        payload: Self::Send,
-        _: &mut region::Token<region::Identity<'d, 1>>,
-    ) {
+    fn cancel(&mut self, payload: Self::Send, _: &mut region::Token<region::Identity<'d, 1>>) {
         drop(payload);
         self.audit.cancelled();
     }
@@ -425,54 +420,23 @@ impl settings::Resource for Eof {
     }
 }
 
-impl disabled::Application<(), KeyTag<0>, 1, Bundle<Tcp, wire::Identity, Balanced>> for Eof {
+impl<'life, 'p, 'd>
+    Application<'life, 'p, 'd, (), KeyTag<0>, 1, Bundle<Tcp, wire::Identity, Balanced>> for Eof
+{
     type Input = plan::Local;
-    type Session<'life, 'p, 'd>
-        = State<'d>
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        (): 'd,
-        wire::Identity: 'd;
-    type Source<'life, 'p, 'd>
-        = ingress::None
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        (): 'd,
-        wire::Identity: 'd;
-    type Wire<'life, 'p, 'd>
-        = domain::Local<'d, wire::Identity, KeyTag<0>>
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        (): 'd,
-        wire::Identity: 'd;
+    type Session = State<'d>;
+    type Source = ingress::None;
+    type Wire = domain::Local<wire::Identity>;
     type Error = Infallible;
 
-    fn build<'life, 'p, 'd>(
+    fn build(
         self,
         _: &'life (),
-    ) -> Result<
-        (
-            session::Setup<'d, Self::Session<'life, 'p, 'd>, Self::Source<'life, 'p, 'd>>,
-            Self::Wire<'life, 'p, 'd>,
-        ),
-        Self::Error,
-    >
+    ) -> Result<(session::Setup<'d, Self::Session, Self::Source>, Self::Wire), Self::Error>
     where
+        Self: 'd,
         'd: 'p,
         'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        (): 'd,
-        wire::Identity: 'd,
     {
         let state = State {
             audit: self.audit,

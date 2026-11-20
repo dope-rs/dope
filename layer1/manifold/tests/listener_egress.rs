@@ -1,8 +1,6 @@
 pub mod common;
 
-use common::manifold::{listener::reached, native};
-
-use dope_core::driver::life::recovery;
+use common::manifold::listener::reached;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
@@ -17,10 +15,9 @@ use common::{
         },
         pipeline::prefix::Admission,
     },
-    recover,
     scenario::case::{Failure, listener::Listener},
 };
-use dope_core::driver::route::{FrameworkTag, KeyTag, Tag, kind};
+use dope_core::driver::route::KeyTag;
 use dope_manifold::{
     BuildError, ConfigError,
     app::{creation, env::Bundle},
@@ -36,7 +33,6 @@ use dope_test::{
         peer,
         signals::{Gate, Progress as _},
     },
-    reclaim::Reports,
 };
 use o3::buffer::storage;
 
@@ -87,7 +83,6 @@ fn bounded(event: BoundedEvent) {
 
 #[test]
 fn owned_releases_after_send_or_abort() {
-    let mut finish = Completion::new();
     for (direct, abort, expected) in [
         (0, false, handler::Disposition::Sent),
         (1, false, handler::Disposition::Sent),
@@ -131,52 +126,38 @@ fn owned_releases_after_send_or_abort() {
                 Identity,
             ))
             .expect("listener layout");
-        let mut reports =
-            Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-        prepared
-            .with_run(
-                &mut finish,
-                |case| {
-                    peer::Peer::at(case.addr())
-                        .exchange(b"request".to_vec(), |peer| {
-                            reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                            reached(case.try_wait(&released, 1), released.hits(), 1);
-                            reached(case.try_wait(&returned, 1), returned.hits(), 1);
-                            reached(case.try_wait(&retired, 1), retired.hits(), 1);
-                            let response = peer
-                                .finish()
-                                .expect("finish client peer")
-                                .expect("client peer failed");
-                            if abort {
-                                assert!(response.is_empty());
-                            } else {
-                                assert_eq!(response, RESPONSE);
-                            }
-                            assert_eq!(
-                                released.hits(),
-                                1,
-                                "payload owner must retire exactly once"
-                            );
-                            assert_eq!(returned.hits(), 1, "owner must cross one release callback");
-                            assert_eq!(retired.hits(), 1, "retirement audit must run exactly once");
-                        })
-                        .expect("spawn egress peer");
-                },
-                recovery::Policy::new(|event| reports.push(event), recover),
-                native,
-            )
-            .expect("listener run");
+        prepared.run(|case| {
+            peer::Peer::at(case.addr())
+                .exchange(b"request".to_vec(), |peer| {
+                    reached(case.try_wait(&closed, 1), closed.hits(), 1);
+                    reached(case.try_wait(&released, 1), released.hits(), 1);
+                    reached(case.try_wait(&returned, 1), returned.hits(), 1);
+                    reached(case.try_wait(&retired, 1), retired.hits(), 1);
+                    let response = peer
+                        .finish()
+                        .expect("finish client peer")
+                        .expect("client peer failed");
+                    if abort {
+                        assert!(response.is_empty());
+                    } else {
+                        assert_eq!(response, RESPONSE);
+                    }
+                    assert_eq!(
+                        released.hits(),
+                        1,
+                        "payload owner must retire exactly once"
+                    );
+                    assert_eq!(returned.hits(), 1, "owner must cross one release callback");
+                    assert_eq!(retired.hits(), 1, "retirement audit must run exactly once");
+                })
+                .expect("spawn egress peer");
+        });
         observed(&events.values().expect("egress observations"), expected);
-        assert!(
-            reports.events().expect("reclaimed events").is_empty(),
-            "unexpected reclaimed operations: {reports:?}"
-        );
     }
 }
 
 #[test]
 fn unbounded_uses_fallback() {
-    let mut finish = Completion::new();
     let closed = Gate::new();
     let retired = Gate::new();
     let prepared = Listener::new::<1>(Default::default())
@@ -193,39 +174,25 @@ fn unbounded_uses_fallback() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                peer::Peer::at(case.addr())
-                    .exchange(b"request".to_vec(), |peer| {
-                        reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                        reached(case.try_wait(&retired, 1), retired.hits(), 1);
-                        let response = peer
-                            .finish()
-                            .expect("finish client peer")
-                            .expect("client peer failed");
-                        assert_eq!(response.len(), 1 + 2 * 1024 * 1024);
-                        assert_eq!(response[0], 0xa5);
-                        assert!(response[1..].iter().all(|byte| *byte == 0x5a));
-                    })
-                    .expect("spawn egress peer");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    prepared.run(|case| {
+        peer::Peer::at(case.addr())
+            .exchange(b"request".to_vec(), |peer| {
+                reached(case.try_wait(&closed, 1), closed.hits(), 1);
+                reached(case.try_wait(&retired, 1), retired.hits(), 1);
+                let response = peer
+                    .finish()
+                    .expect("finish client peer")
+                    .expect("client peer failed");
+                assert_eq!(response.len(), 1 + 2 * 1024 * 1024);
+                assert_eq!(response[0], 0xa5);
+                assert!(response[1..].iter().all(|byte| *byte == 0x5a));
+            })
+            .expect("spawn egress peer");
+    });
 }
 
 #[test]
 fn bounded_uses_queue() {
-    let mut finish = Completion::new();
     let closed = Gate::new();
     let retired = Gate::new();
     let called = Rc::new(Cell::new(false));
@@ -245,38 +212,25 @@ fn bounded_uses_queue() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                peer::Peer::at(case.addr())
-                    .exchange(b"request".to_vec(), |peer| {
-                        reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                        reached(case.try_wait(&retired, 1), retired.hits(), 1);
-                        let response = peer
-                            .finish()
-                            .expect("finish client peer")
-                            .expect("client peer failed");
-                        assert_eq!(response[0], 0xb5);
-                        assert_eq!(&response[1..response.len() - 1], RESPONSE);
-                        assert_eq!(response.last(), Some(&0xc5));
-                        assert!(
-                            called.get(),
-                            "the deferred builder must resume after credit release"
-                        );
-                    })
-                    .expect("spawn egress peer");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    prepared.run(|case| {
+        peer::Peer::at(case.addr())
+            .exchange(b"request".to_vec(), |peer| {
+                reached(case.try_wait(&closed, 1), closed.hits(), 1);
+                reached(case.try_wait(&retired, 1), retired.hits(), 1);
+                let response = peer
+                    .finish()
+                    .expect("finish client peer")
+                    .expect("client peer failed");
+                assert_eq!(response[0], 0xb5);
+                assert_eq!(&response[1..response.len() - 1], RESPONSE);
+                assert_eq!(response.last(), Some(&0xc5));
+                assert!(
+                    called.get(),
+                    "the deferred builder must resume after credit release"
+                );
+            })
+            .expect("spawn egress peer");
+    });
 }
 
 #[test]
@@ -298,15 +252,8 @@ fn bounded_needs_egress() {
             Identity,
         ))
         .expect("bounded listener resource claim");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
     let entered = Cell::new(false);
-    let result = prepared.with_run(
-        &mut finish,
-        |_| entered.set(true),
-        recovery::Policy::new(|event| reports.push(event), recover),
-        native,
-    );
+    let (result, reports) = prepared.observe(&mut finish, |_| entered.set(true));
     assert!(matches!(
         result,
         Err(Failure::Install(BuildError::Create(
@@ -339,15 +286,8 @@ fn unbounded_needs_direct() {
             Identity,
         ))
         .expect("unbounded listener resource claim");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
     let entered = Cell::new(false);
-    let result = prepared.with_run(
-        &mut finish,
-        |_| entered.set(true),
-        recovery::Policy::new(|event| reports.push(event), recover),
-        native,
-    );
+    let (result, reports) = prepared.observe(&mut finish, |_| entered.set(true));
     assert!(matches!(
         result,
         Err(Failure::Install(BuildError::Create(

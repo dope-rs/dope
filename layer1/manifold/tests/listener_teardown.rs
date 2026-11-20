@@ -2,7 +2,7 @@ pub mod common;
 
 use std::{cell::Cell, net::SocketAddr, rc::Rc, time::Duration};
 
-use common::manifold::{listener::reached, native};
+use common::manifold::listener::reached;
 use common::{
     manifold::{
         Pattern,
@@ -169,7 +169,7 @@ fn forced_detaches_credit() {
             let hash = session.hash_state(Domain::DEFAULT);
             let result = listener::Install::<KeyTag<0>, Bundle<Tcp, Teardown, Throughput>, _>::new(
                 cfg,
-                domain::Local::new(()),
+                domain::Local::new(Teardown),
             )
             .with_driver(
                 App {
@@ -250,7 +250,6 @@ fn forced_detaches_credit() {
 
 #[test]
 fn shutdown_scans_capacity() {
-    let mut finish = Completion::new();
     let prepared = Listener::new::<4096>(Default::default())
         .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Throughput>>((
             Drain {
@@ -260,25 +259,11 @@ fn shutdown_scans_capacity() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| assert!(case.addr().ip().is_loopback()),
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    prepared.run(|case| assert!(case.addr().ip().is_loopback()));
 }
 
 #[test]
 fn reply_drains_first() {
-    let mut finish = Completion::new();
     let want = Pattern(12_000).bytes();
     let gate = Gate::new();
     let prepared = Listener::new::<64>(Default::default())
@@ -290,33 +275,20 @@ fn reply_drains_first() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .exchange(b"GET\n".to_vec(), |peer| {
-                        reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                        let got = peer
-                            .finish()
-                            .expect("finish client peer")
-                            .expect("client peer failed");
+    prepared.run(|case| {
+        Peer::at(case.addr())
+            .exchange(b"GET\n".to_vec(), |peer| {
+                reached(case.try_wait(&gate, 1), gate.hits(), 1);
+                let got = peer
+                    .finish()
+                    .expect("finish client peer")
+                    .expect("client peer failed");
 
-                        assert_eq!(got, want, "reply truncated or corrupted on the drain path");
-                        assert_eq!(gate.hits(), 1, "connection must close exactly once");
-                    })
-                    .expect("peer spawn failed");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+                assert_eq!(got, want, "reply truncated or corrupted on the drain path");
+                assert_eq!(gate.hits(), 1, "connection must close exactly once");
+            })
+            .expect("peer spawn failed");
+    });
 }
 
 #[test]

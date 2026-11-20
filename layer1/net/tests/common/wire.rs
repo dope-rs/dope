@@ -3,8 +3,8 @@ use std::{cell::Cell, rc::Rc};
 use dope_core::{driver::route::Identity, io::recv};
 use dope_net::link::pool::recv::input;
 use dope_net::wire::{
-    self, domain, failure, open, receive,
-    receive::{batch, eof, mode, mode::access, reserve},
+    self, failure, open, receive,
+    receive::{batch, eof, mode, reserve},
     send, terminal,
 };
 use o3::{base::marker::ThreadBound, buffer::storage::inline};
@@ -118,15 +118,6 @@ impl wire::Spec for Eof {
     type Send = send::Direct;
 }
 
-impl domain::Init<Eof> for Eof {
-    fn runtime<'w, 'd, ID: Identity + 'w>(_: domain::Limits, binding: Self) -> Self
-    where
-        'd: 'w,
-    {
-        binding
-    }
-}
-
 impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Eof, ID> for Eof {
     fn open<C, T>(
         &mut self,
@@ -147,7 +138,6 @@ impl receive::Policy<Eof> for Eof {
         = recv::Shared<'d>
     where
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::State;
     type Reserve = reserve::Borrowed;
     type Credit = mode::Enabled;
@@ -229,7 +219,7 @@ pub mod contract {
     };
     use o3::buffer::write::Sink as _;
 
-    use super::{Buffer, Identity, domain, failure, mode, open, receive, send, terminal, wire};
+    use super::{Buffer, Identity, failure, mode, open, receive, send, terminal, wire};
     use crate::common::discard::{Error, Peer, next};
 
     #[derive(Clone, Copy)]
@@ -253,15 +243,6 @@ pub mod contract {
         type Bootstrap = Self;
         type Receive = receive::Transparent<mode::Disabled>;
         type Send = Self;
-    }
-
-    impl domain::Init<Case> for Case {
-        fn runtime<'w, 'd, ID: Identity + 'w>(_: domain::Limits, binding: Self) -> Self
-        where
-            'd: 'w,
-        {
-            binding
-        }
     }
 
     impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Case, ID> for Case {

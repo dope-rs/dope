@@ -2,7 +2,7 @@ use dope_core::driver::route::Identity;
 use dope_net::{
     link::{
         egress::{self, data},
-        slot::{transmit::outcome, types},
+        slot::{transmit::{direct::Status, outcome}, types},
     },
     wire::{self, send},
 };
@@ -10,6 +10,7 @@ use send::reclaim;
 
 use crate::network::listener::writer::{deadline::Slot, memory::access, state};
 
+#[derive(Clone, Copy)]
 pub(in crate::network::listener) enum Flow {
     Clear,
     Done,
@@ -20,7 +21,35 @@ pub(in crate::network::listener) enum Flow {
     Deferred,
 }
 
-pub(in crate::network::listener) fn flow<
+impl Flow {
+    pub(super) fn runnable(self, waiting: bool) -> bool {
+        match self {
+            Self::Done => true,
+            Self::Plain | Self::Deferred => !waiting,
+            _ => false,
+        }
+    }
+
+    pub(super) fn observe<'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w>(
+        self,
+        sending: Status<'_, 'w, 'd, ID, W>,
+    ) -> Self {
+        match self {
+            Self::Clear | Self::Deferred if sending.retention() == outcome::Retention::Held => Self::Held,
+            Self::Stalled if sending.retention() == outcome::Retention::Held => Self::Plain,
+            other => other,
+        }
+    }
+
+    pub(super) fn retry(self) -> Self {
+        match self {
+            Self::Stalled => Self::Plain,
+            other => other,
+        }
+    }
+}
+
+pub(super) fn unheld<
     'p,
     's,
     'w,
@@ -38,25 +67,22 @@ pub(in crate::network::listener) fn flow<
     if control.send_status().is_inflight() {
         return Flow::Inflight;
     }
-    let held = control.send_status().retention();
     match send.motion() {
         Motion::Empty => {}
         Motion::Done => return Flow::Done,
         Motion::Consumed => return Flow::Plain,
-        Motion::Waiting if held == outcome::Retention::Clear => return Flow::Stalled,
-        Motion::Ready | Motion::Waiting => {
+        Motion::Waiting => return Flow::Stalled,
+        Motion::Ready => {
             let rule =
                 <<<W as wire::Spec>::Send as send::Policy<W>>::Reclaim as reclaim::Policy>::direct(
                 );
-            return match (rule, held) {
-                (reclaim::Direct::Independent, outcome::Retention::Clear) => Flow::Stalled,
-                (reclaim::Direct::Retained, _) | (_, outcome::Retention::Held) => Flow::Plain,
+            return match rule {
+                reclaim::Direct::Independent => Flow::Stalled,
+                reclaim::Direct::Retained => Flow::Plain,
             };
         }
     }
-    if held == outcome::Retention::Held {
-        Flow::Held
-    } else if matches!(pending, egress::Pending::Present) || control.send_status().is_closing() {
+    if matches!(pending, egress::Pending::Present) || control.send_status().is_closing() {
         Flow::Deferred
     } else {
         Flow::Clear
@@ -67,6 +93,6 @@ impl<'p, 's, 'w, 'd: 'w, ID: Identity, W: wire::Spec + 'w + 'd, C, B: data::raw:
     Slot<'_, 'p, 's, 'w, 'd, ID, W, C, B>
 {
     pub(in crate::network::listener) fn flow(&self, pending: egress::Pending) -> Flow {
-        flow(self.source, &self.state.send, pending)
+        unheld(self.source, &self.state.send, pending).observe(self.source.send_status())
     }
 }

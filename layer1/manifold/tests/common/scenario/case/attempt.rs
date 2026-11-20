@@ -1,4 +1,4 @@
-use std::{cell::Cell, marker, net, time::Duration};
+use std::{marker, net, time::Duration};
 
 use dope_core::driver::{
     life::recovery,
@@ -16,14 +16,14 @@ use dope_manifold::{
 };
 use dope_net::{
     Transport as _,
-    link::egress,
+    link::{egress, pool::change},
     tcp,
-    wire::{self, domain},
 };
 use dope_runtime::{
     executor::{self, session, session::Completion},
     topology::error::Kind,
 };
+use dope_test::reclaim::Reports;
 use o3::depot::{arena::slab, capacity};
 use queue::mailbox;
 
@@ -38,10 +38,9 @@ impl<ID: Identity> Attempts<ID> {
 }
 
 #[derive(Debug)]
-pub enum Failure<'report> {
+pub enum Failure {
     Attempt(slab::Vacancy),
     Engine(creation::Error),
-    Application(session::Error<'report, ()>),
 }
 
 impl<ID: Identity> storage::Plan for Attempts<ID> {
@@ -117,29 +116,11 @@ pub struct Prepared<ID: Identity, A, E> {
 }
 
 impl<ID: Identity, A, E> Prepared<ID, A, E> {
-    pub const fn layout(&self) -> settings::Config {
-        self.config
-    }
-
-    pub fn with_run<'report, B, Done>(
-        self,
-        complete: &'report mut Completion,
-        binding: B,
-        body: impl FnOnce(&mut dyn scenario::RuntimeCase),
-        policy: impl recovery::Observe,
-        finish: impl for<'owner> FnOnce(
-            Result<
-                Result<(), Failure<'report>>,
-                Kind<'owner, creation::Error, &'owner Result<(), Failure<'report>>>,
-            >,
-            Option<bool>,
-        ) -> Done,
-    ) -> Done
+    pub fn run<B>(self, binding: B, body: impl FnOnce(&mut dyn scenario::RuntimeCase))
     where
         E: env::Spec<Transport = tcp::Tcp>,
         for<'d> E::Wire: 'd,
-        for<'d> <E::Wire as wire::Spec>::Binding<'d, ID>: From<B>,
-        <E::Wire as wire::Spec>::Bootstrap: domain::Init<E::Wire>,
+        for<'d> B: change::Prepare<'d, 'd, ID, E::Wire>,
         for<'d> A: app::Borrowed<'d, ID, Wire = E::Wire>
             + app::Lifecycle<'d, 'd, ID>
             + app::Scheduling<'d, ID>,
@@ -156,14 +137,15 @@ impl<ID: Identity, A, E> Prepared<ID, A, E> {
         } = self;
         use dope_core::driver::life::creation::Attempt;
         let mut create = Attempt::new();
-        let executor = match executor::Executor::new(&mut create, config) {
-            Ok(executor) => executor,
-            Err(error) => return finish(Err(Kind::Runtime(error.kind())), None),
-        };
-        let held = Cell::new(None);
-        let lease = &held;
-
-        executor
+        let creation = executor::Executor::new(&mut create, config);
+        let executor = match creation {
+            Ok(executor) => Ok(executor),
+            Err(ref error) => Err(error.kind()),
+        }
+        .expect("native creation");
+        let complete = &mut Completion::new();
+        let mut reports = Reports::new(config, [ID::ROUTE]);
+        let (output, held) = executor
             .with_plan(Attempts::<ID>::new(capacity::Count::new(1)))
             .run(|executor| {
                 let result = executor.try_create(
@@ -178,34 +160,36 @@ impl<ID: Identity, A, E> Prepared<ID, A, E> {
                             source,
                             Capacity::fixed::<1>(),
                             egress::Config::default(),
-                            domain::Local::new(binding.into()),
+                            binding,
                         )
                         .try_with::<E, _, _>(
                             &mut session,
                             session::Scope::driver,
                             |engine, session| {
-                                session
-                                    .with_quiesce(
-                                        complete,
-                                        Host::new(engine),
-                                        Duration::from_secs(2),
-                                        |mut app| body(&mut app),
-                                    )
-                                    .map_err(Failure::Application)
+                                session.with_quiesce(
+                                    complete,
+                                    Host::new(engine),
+                                    Duration::from_secs(2),
+                                    |mut app| body(&mut app),
+                                )
                             },
                         )
                         .map_err(Failure::Engine)?;
-                        lease.set(Some(!source.has_room()));
+                        let held = !source.has_room();
                         attempt.cancel();
-                        output
+                        Ok::<_, Failure>((output, held))
                     },
-                    policy,
+                    recovery::Policy::new(|event| reports.push(event), crate::common::recover),
                 );
                 match result {
-                    Ok(output) => finish(Ok(output), held.get()),
-                    Err(error) => finish(Err((&error).into()), held.get()),
+                    Ok(output) => Ok(output),
+                    Err(ref error) => Err(Kind::from(error)),
                 }
+                .expect("native lifecycle")
             })
+            .expect("attempt admission");
+        assert!(held, "terminal attempt lease: {output:?}");
+        super::checked((output, reports));
     }
 }
 

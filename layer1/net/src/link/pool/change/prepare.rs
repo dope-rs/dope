@@ -21,11 +21,9 @@ where
 }
 
 impl<'w, 'd: 'w, ID: Identity + 'w, W: wire::Spec + 'w> Prepare<'w, 'd, ID, W>
-    for domain::Local<'w, W, ID>
-where
-    W::Bootstrap: domain::Init<W>,
+    for domain::Local<W::Runtime<'w, 'd, ID>>
 {
-    fn try_runtime(self, limits: domain::Limits) -> crate::Result<W::Runtime<'w, 'd, ID>> {
-        Ok(self.init(limits))
+    fn try_runtime(self, _: domain::Limits) -> crate::Result<W::Runtime<'w, 'd, ID>> {
+        Ok(self.runtime)
     }
 }

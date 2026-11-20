@@ -1,4 +1,4 @@
-use std::{convert, mem, num, pin::Pin, rc::Rc};
+use std::{convert, mem, pin::Pin, rc::Rc};
 
 use conn::write;
 use dope_core::{
@@ -15,14 +15,14 @@ use dope_manifold::{
 };
 use dope_net::{
     link::egress,
-    wire::{self, Identity, domain, failure, open, receive as input, receive::scoped, terminal},
+    wire::{self, Identity, failure, open, receive as input, receive::scoped, terminal},
 };
 use dope_test::harness::{observe::Trace, signals::Gate};
 use o3::{
     alloc,
     buffer::{
         bytes::TryRetain,
-        hold::{limits, scope},
+        hold::limits,
         resident, segments,
         storage::{self, Shared},
     },
@@ -268,19 +268,20 @@ impl<'w, 'd: 'w, ID: route::Identity, const DRAIN: bool> handler::Scoped<'w, 'd,
         Budget::new(limits::Bound::new(0), 4096)
     }
 
-    fn scoped_chunk(
+    fn scoped_chunk<'s, 'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Identity, Self::Conn>,
-        chunk: scoped::Input<'_, 'w, 'd, Identity>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Identity, Self::Conn>,
+        chunk: scoped::Input<'s, 'w, 'd, Identity>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Outcome {
+    ) -> Result<Outcome, scoped::Pending<'s>> {
         let id = conn.id();
         let remaining = conn.work().remaining();
         let mut conn = conn.map_state(|state| &mut state.0);
         assert!(conn.id() == id);
         assert_eq!(conn.work().remaining(), remaining);
         let this = self.get_mut();
-        this.seen.record(chunk.as_ref().to_vec());
+        let head = chunk.head().expect("scoped data");
+        this.seen.record(head.input().as_slice().to_vec());
         let state = conn.state();
         assert!(state.phase <= 1 || (matches!(state.phase, 2 | 3) && state.prefix_completions > 0));
         match state.phase {
@@ -294,7 +295,7 @@ impl<'w, 'd: 'w, ID: route::Identity, const DRAIN: bool> handler::Scoped<'w, 'd,
                 ));
                 this.first.hit();
                 if this.gated {
-                    return Outcome::Continue;
+                    return Err(head.defer());
                 }
             }
             1 if !this.gated => this.second.hit(),
@@ -306,20 +307,10 @@ impl<'w, 'd: 'w, ID: route::Identity, const DRAIN: bool> handler::Scoped<'w, 'd,
                 conn.close_after();
                 this.second.hit();
             }
-            _ => return Outcome::CloseAfter,
+            _ => return Ok(Outcome::CloseAfter),
         }
-        let (chunk, budget) = chunk.into_parts();
-        let consumed = scope::Input::consume(chunk, budget, |input| {
-            let Some(len) = num::NonZero::new(input.as_slice().len()) else {
-                return (None, None);
-            };
-            match input.try_prefix::<{ u32::MAX }>(0, len) {
-                Ok((_, end)) => (Some(end), Some(Ok(()))),
-                Err(error) => (None, Some(Err(error))),
-            }
-        });
-        assert!(matches!(consumed, Some(Ok(()))));
-        Outcome::Continue
+        head.finish().expect("finish input").settle()?;
+        Ok(Outcome::Continue)
     }
 }
 
@@ -386,7 +377,6 @@ impl input::Policy<BorrowedWire> for BorrowedWire {
         = recv::Shared<'d>
     where
         'd: 'w;
-    type Access = input::mode::access::Direct;
     type Eof = input::eof::Clean;
     type Reserve = input::reserve::Waiting<Self>;
     type Credit = input::mode::Disabled;
@@ -450,12 +440,6 @@ impl wire::Spec for BorrowedWire {
     type Bootstrap = Self;
     type Receive = Self;
     type Send = wire::send::Direct;
-}
-
-impl domain::Init<BorrowedWire> for BorrowedWire {
-    fn runtime<'w, 'd: 'w, ID: route::Identity + 'w>(_: domain::Limits, binding: Self) -> Self {
-        binding
-    }
 }
 
 pub struct BorrowedApp {

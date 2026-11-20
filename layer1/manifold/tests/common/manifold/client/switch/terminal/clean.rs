@@ -1,11 +1,12 @@
 use dope_core::{driver::route::Identity, io::recv};
 use dope_net::wire::{
-    self, domain, failure, open, receive,
+    self, failure, open, receive,
     receive::{batch, eof, mode},
     send, terminal,
 };
-use wire::receive::{mode::access, reserve};
+use wire::receive::reserve;
 
+#[derive(Default)]
 pub struct Clean<const EOF: bool = false>;
 
 pub struct State {
@@ -38,7 +39,6 @@ impl<const EOF: bool> receive::Policy<Clean<EOF>> for Ingress<EOF> {
         = recv::Shared<'d>
     where
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::Clean;
     type Reserve = reserve::Borrowed;
     type Credit = mode::Disabled;
@@ -106,17 +106,4 @@ impl<const EOF: bool> wire::Spec for Clean<EOF> {
     type Bootstrap = Self;
     type Receive = Ingress<EOF>;
     type Send = send::Direct;
-}
-
-impl<const EOF: bool> domain::Init<Clean<EOF>> for Clean<EOF> {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: domain::Limits,
-        _: <Self as wire::Spec>::Binding<'w, ID>,
-    ) -> <Self as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Self: 'w,
-        'd: 'w,
-    {
-        Self
-    }
 }

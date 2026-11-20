@@ -1,13 +1,13 @@
 pub mod common;
 
-use common::manifold::{listener::reached, native};
+use common::manifold::listener::reached;
 
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use common::{
     manifold::listener::{
         Cancel, CancelAt, Trace,
-        probes::{Allocation, Opening, Wire},
+        probes::{Allocation, Opening, Runtime, Wire},
         trace::{self, Active, App, Connect, One, Turns},
     },
     recover,
@@ -58,7 +58,6 @@ fn observe(event: trace::Event<'_, '_, KeyTag<0>>) {
 
 #[test]
 fn readiness_activates() {
-    let mut finish = Completion::new();
     let hits = Rc::new(Cell::new(0));
     let gate = Gate::new();
     let prepared = Listener::new::<8>(Default::default())
@@ -71,31 +70,17 @@ fn readiness_activates() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let peer = (Peer::at(case.addr()).try_connect()).expect("connect acceptance peer");
-                reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                assert_eq!(hits.get(), 1);
-                assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    prepared.run(|case| {
+        let peer = (Peer::at(case.addr()).try_connect()).expect("connect acceptance peer");
+        reached(case.try_wait(&gate, 1), gate.hits(), 1);
+        assert_eq!(hits.get(), 1);
+        assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
+    });
 }
 
 #[test]
 fn accepts_once() {
     for no_delay in [None, Some(option::Switch::On)] {
-        let mut finish = Completion::new();
         let trace = Rc::new(trace::Trace::default());
         let gate = Gate::new();
         let prepared = Listener::new::<64>(Default::default())
@@ -113,27 +98,14 @@ fn accepts_once() {
                 Identity,
             ))
             .expect("listener layout");
-        let mut reports =
-            Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-        prepared
-            .with_run(
-                &mut finish,
-                |case| {
-                    let peer =
-                        (Peer::at(case.addr()).try_connect()).expect("connect acceptance peer");
-                    reached(case.try_wait(&gate, 1), gate.hits(), 1);
+        prepared.run(|case| {
+            let peer =
+                (Peer::at(case.addr()).try_connect()).expect("connect acceptance peer");
+            reached(case.try_wait(&gate, 1), gate.hits(), 1);
 
-                    assert_eq!(trace.accepted.get(), 1, "accept must fire exactly once");
-                    assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
-                },
-                recovery::Policy::new(|event| reports.push(event), recover),
-                native,
-            )
-            .expect("listener run");
-        assert!(
-            reports.events().expect("reclaimed events").is_empty(),
-            "unexpected reclaimed operations: {reports:?}"
-        );
+            assert_eq!(trace.accepted.get(), 1, "accept must fire exactly once");
+            assert!(matches!(peer.peer_addr(), Ok(addr) if addr == case.addr()));
+        });
     }
 }
 
@@ -381,7 +353,6 @@ fn resource_exhaustion_recovers() {
 
 #[test]
 fn ip_release_keeps_peers() {
-    let mut finish = Completion::new();
     let trace = Rc::new(trace::Trace::default());
     let gate = Gate::new();
     let prepared = Listener::new::<8>(Default::default())
@@ -395,61 +366,47 @@ fn ip_release_keeps_peers() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let mut peers = case.addr().connect_n(2).expect("fill IP quota");
-                reached(case.try_wait(&gate, 2), gate.hits(), 2);
-                peers.truncate(1);
-                reached(case.try_wait(&trace.closed, 1), trace.closed.hits(), 1);
-                peers.push(
-                    Peer::at(case.addr())
-                        .try_connect()
-                        .expect("replace one peer"),
-                );
-                reached(case.try_wait(&gate, 3), gate.hits(), 3);
-                peers.push(
-                    Peer::at(case.addr())
-                        .try_connect()
-                        .expect("excess peer socket"),
-                );
-                assert!(case.try_drive(Turns(64)).is_ok());
-                assert_eq!(
-                    trace.accepted.get(),
-                    3,
-                    "the surviving peer still occupies quota"
-                );
-                peers.clear();
-                reached(case.try_wait(&trace.closed, 3), trace.closed.hits(), 3);
-                let mut peers = case
-                    .addr()
-                    .connect_n(2)
-                    .expect("reuse the retired IP entry");
-                reached(case.try_wait(&gate, 5), gate.hits(), 5);
-                assert_eq!(
-                    trace.accepted.get(),
-                    5,
-                    "last release retires the exact IP entry"
-                );
-                peers.clear();
-                reached(case.try_wait(&trace.closed, 5), trace.closed.hits(), 5);
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    prepared.run(|case| {
+        let mut peers = case.addr().connect_n(2).expect("fill IP quota");
+        reached(case.try_wait(&gate, 2), gate.hits(), 2);
+        peers.truncate(1);
+        reached(case.try_wait(&trace.closed, 1), trace.closed.hits(), 1);
+        peers.push(
+            Peer::at(case.addr())
+                .try_connect()
+                .expect("replace one peer"),
+        );
+        reached(case.try_wait(&gate, 3), gate.hits(), 3);
+        peers.push(
+            Peer::at(case.addr())
+                .try_connect()
+                .expect("excess peer socket"),
+        );
+        assert!(case.try_drive(Turns(64)).is_ok());
+        assert_eq!(
+            trace.accepted.get(),
+            3,
+            "the surviving peer still occupies quota"
+        );
+        peers.clear();
+        reached(case.try_wait(&trace.closed, 3), trace.closed.hits(), 3);
+        let mut peers = case
+            .addr()
+            .connect_n(2)
+            .expect("reuse the retired IP entry");
+        reached(case.try_wait(&gate, 5), gate.hits(), 5);
+        assert_eq!(
+            trace.accepted.get(),
+            5,
+            "last release retires the exact IP entry"
+        );
+        peers.clear();
+        reached(case.try_wait(&trace.closed, 5), trace.closed.hits(), 5);
+    });
 }
 
 #[test]
 fn admission_ignores_timing() {
-    let mut finish = Completion::new();
     let trace = Rc::new(trace::Trace::default());
     let gate = Gate::new();
     let prepared = Listener::new::<64>(Default::default())
@@ -462,31 +419,17 @@ fn admission_ignores_timing() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let mut peers = (case.addr().connect_n(2)).expect("connect quota peers");
-                reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                assert!(case.try_drive(Turns(64)).is_ok());
-                assert_eq!(trace.accepted.get(), 1);
-                peers.clear();
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    prepared.run(|case| {
+        let mut peers = (case.addr().connect_n(2)).expect("connect quota peers");
+        reached(case.try_wait(&gate, 1), gate.hits(), 1);
+        assert!(case.try_drive(Turns(64)).is_ok());
+        assert_eq!(trace.accepted.get(), 1);
+        peers.clear();
+    });
 }
 
 #[test]
 fn wire_failure_releases_ip() {
-    let mut finish = Completion::new();
     let failed = Gate::new();
     let accepted = Rc::new(Cell::new(0));
     let gate = Gate::new();
@@ -498,43 +441,29 @@ fn wire_failure_releases_ip() {
                 gate: gate.clone(),
                 failed: failed.clone(),
             },
-            (),
+            Runtime(Cell::new(true)),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                {
-                    let addr = case.addr();
-                    let first =
-                        (Peer::at(addr).try_connect()).expect("connect first admission peer");
-                    reached(case.try_wait(&failed, 1), failed.hits(), 1);
-                    let second =
-                        (Peer::at(addr).try_connect()).expect("connect second admission peer");
-                    reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                    assert!(matches!(first.peer_addr(), Ok(observed) if observed == addr));
-                    assert!(matches!(second.peer_addr(), Ok(observed) if observed == addr));
-                }
+    prepared.run(|case| {
+        {
+            let addr = case.addr();
+            let first =
+                (Peer::at(addr).try_connect()).expect("connect first admission peer");
+            reached(case.try_wait(&failed, 1), failed.hits(), 1);
+            let second =
+                (Peer::at(addr).try_connect()).expect("connect second admission peer");
+            reached(case.try_wait(&gate, 1), gate.hits(), 1);
+            assert!(matches!(first.peer_addr(), Ok(observed) if observed == addr));
+            assert!(matches!(second.peer_addr(), Ok(observed) if observed == addr));
+        }
 
-                assert_eq!(accepted.get(), 1);
-                assert_eq!(failed.hits(), 1);
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+        assert_eq!(accepted.get(), 1);
+        assert_eq!(failed.hits(), 1);
+    });
 }
 
 #[test]
 fn alloc_error_releases_ip() {
-    let mut finish = Completion::new();
     let accepted = Rc::new(Cell::new(0));
     let gate = Gate::new();
     let failed = Gate::new();
@@ -554,37 +483,24 @@ fn alloc_error_releases_ip() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                {
-                    let addr = case.addr();
-                    let first =
-                        (Peer::at(addr).try_connect()).expect("connect first admission peer");
-                    reached(case.try_wait(&failed, 1), failed.hits(), 1);
-                    let second =
-                        (Peer::at(addr).try_connect()).expect("connect second admission peer");
-                    reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                    reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                    assert!(matches!(first.peer_addr(), Ok(observed) if observed == addr));
-                    assert!(matches!(second.peer_addr(), Ok(observed) if observed == addr));
-                }
+    prepared.run(|case| {
+        {
+            let addr = case.addr();
+            let first =
+                (Peer::at(addr).try_connect()).expect("connect first admission peer");
+            reached(case.try_wait(&failed, 1), failed.hits(), 1);
+            let second =
+                (Peer::at(addr).try_connect()).expect("connect second admission peer");
+            reached(case.try_wait(&gate, 1), gate.hits(), 1);
+            reached(case.try_wait(&closed, 1), closed.hits(), 1);
+            assert!(matches!(first.peer_addr(), Ok(observed) if observed == addr));
+            assert!(matches!(second.peer_addr(), Ok(observed) if observed == addr));
+        }
 
-                assert_eq!(accepted.get(), 1);
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+        assert_eq!(accepted.get(), 1);
+    });
     assert_eq!(
         &*causes.values().expect("allocation error observations"),
         &[o3::alloc::Error::Overflow]
-    );
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
     );
 }

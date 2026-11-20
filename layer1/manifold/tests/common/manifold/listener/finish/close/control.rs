@@ -13,7 +13,7 @@ use dope_manifold::{
     },
 };
 use dope_net::wire::{
-    self, domain, failure, open, receive,
+    self, failure, open, receive,
     receive::{
         batch::{self},
         mode,
@@ -26,7 +26,7 @@ use dope_net::wire::{
 };
 use dope_test::harness::{observe::Trace, signals::Gate};
 use o3::buffer::{bytes::TryRetain, resident, write::Sink as _};
-use wire::receive::{eof, mode::access, reserve};
+use wire::receive::{eof, reserve};
 
 use crate::common::{Buffer, contract::batch::Pair, manifold::listener::finish::close::buffer};
 
@@ -79,7 +79,6 @@ impl receive::Policy<Control> for Recv {
     where
         Control: 'w,
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::Clean;
     type Reserve = reserve::Borrowed;
     type Credit = mode::Disabled;
@@ -240,18 +239,6 @@ impl wire::Spec for Control {
     type Bootstrap = Control;
     type Receive = Recv;
     type Send = Send;
-}
-
-impl domain::Init<Control> for Control {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: domain::Limits,
-        _: <Control as wire::Spec>::Binding<'w, ID>,
-    ) -> <Control as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Control: 'w,
-        'd: 'w,
-    {
-    }
 }
 
 #[derive(Debug)]

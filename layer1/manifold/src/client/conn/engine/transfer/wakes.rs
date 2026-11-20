@@ -213,7 +213,8 @@ where
     ) {
         let key = {
             let this = self.as_mut().project();
-            this.links.pool_mut().update_target(target, |slot| {
+            this.links.pool_mut().by_target(target).map(|mut entry| {
+                let slot = entry.get_mut();
                 let ready = slot.state.is_attached()
                     && match slot.state.conn_mut() {
                         Some(conn) => {
@@ -224,6 +225,7 @@ where
                 if ready && !slot.is_closing() {
                     slot.state.work.request_next();
                 }
+                slot.key()
             })
         };
         apply(self, key, turn, driver);

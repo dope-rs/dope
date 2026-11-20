@@ -5,7 +5,7 @@ use dope_core::{
     io::{recv, socket, transfer},
 };
 use dope_net::wire::{
-    self, domain, failure, open, receive,
+    self, failure, open, receive,
     receive::{batch, eof, mode, reserve},
     send,
     send::{
@@ -16,7 +16,6 @@ use dope_net::wire::{
 };
 use dope_test::harness::{observe::VecCellExt as _, signals::Gate};
 use o3::buffer::write::{Sink as _, consume};
-use wire::receive::mode::access;
 
 use crate::common::Buffer;
 
@@ -316,7 +315,6 @@ impl receive::Policy<Wire> for Ingress {
         = recv::Shared<'d>
     where
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::State;
     type Reserve = reserve::Borrowed;
     type Credit = mode::Disabled;
@@ -400,16 +398,4 @@ impl wire::Spec for Wire {
     type Bootstrap = Self;
     type Receive = Ingress;
     type Send = Egress;
-}
-
-impl domain::Init<Wire> for Wire {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: domain::Limits,
-        bind: <Wire as wire::Spec>::Binding<'w, ID>,
-    ) -> <Wire as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        'd: 'w,
-    {
-        bind
-    }
 }

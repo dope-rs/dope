@@ -1,6 +1,6 @@
 use std::{cell::Cell, convert::Infallible, net::SocketAddr, rc::Rc, time::Duration};
 
-use client::topology::{factory::disabled, plan};
+use client::topology::{factory::Application, plan};
 use dope_core::{
     driver::{
         self,
@@ -30,17 +30,10 @@ use dope_net::{
     link::{egress, pool::change::opening},
     wire::domain,
 };
-use dope_runtime::{
-    executor,
-    executor::session::{Completion, Error},
-    topology::lending,
-};
-use dope_test::{
-    fibers,
-    harness::{
-        observe::Trace,
-        signals::{LocalGateRef, Progress as _},
-    },
+use dope_runtime::executor::session::Completion;
+use dope_test::harness::{
+    observe::Trace,
+    signals::{LocalGateRef, Progress as _},
 };
 use o3::{
     base::{Call, cell::region},
@@ -176,11 +169,7 @@ impl<'d> Output<'d> for State<'_> {
         self.audit.record_sent();
     }
 
-    fn cancel(
-        &mut self,
-        payload: Self::Send,
-        _: &mut region::Token<region::Identity<'d, 1>>,
-    ) {
+    fn cancel(&mut self, payload: Self::Send, _: &mut region::Token<region::Identity<'d, 1>>) {
         drop(payload);
         self.audit.cancelled();
     }
@@ -287,56 +276,24 @@ impl settings::Resource for App<'_> {
     }
 }
 
-impl<'test> disabled::Application<(), KeyTag<0>, 1, Bundle<Net, DeferredWire, Throughput>>
+impl<'life, 'p, 'd, 'test>
+    Application<'life, 'p, 'd, (), KeyTag<0>, 1, Bundle<Net, DeferredWire, Throughput>>
     for App<'test>
 {
     type Input = plan::Local;
-    type Session<'life, 'p, 'd>
-        = State<'test>
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        (): 'd,
-        DeferredWire: 'd;
-    type Source<'life, 'p, 'd>
-        = ingress::None
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        (): 'd,
-        DeferredWire: 'd;
-    type Wire<'life, 'p, 'd>
-        = domain::Local<'d, DeferredWire, KeyTag<0>>
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        (): 'd,
-        DeferredWire: 'd;
+    type Session = State<'test>;
+    type Source = ingress::None;
+    type Wire = domain::Local<DeferredWire>;
     type Error = Infallible;
 
-    fn build<'life, 'p, 'd>(
+    fn build(
         self,
         _: &'life (),
-    ) -> Result<
-        (
-            session::Setup<'d, Self::Session<'life, 'p, 'd>, Self::Source<'life, 'p, 'd>>,
-            Self::Wire<'life, 'p, 'd>,
-        ),
-        Self::Error,
-    >
+    ) -> Result<(session::Setup<'d, Self::Session, Self::Source>, Self::Wire), Self::Error>
     where
+        Self: 'd,
         'd: 'p,
         'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        (): 'd,
-        DeferredWire: 'd,
     {
         Ok((
             session::Setup::new(
@@ -350,32 +307,6 @@ impl<'test> disabled::Application<(), KeyTag<0>, 1, Bundle<Net, DeferredWire, Th
             ),
             domain::Local::new(self.wire),
         ))
-    }
-}
-
-pub struct Wait<'report, 'a>(
-    pub(crate) LocalGateRef<'a>,
-    pub(crate) &'report mut Completion,
-);
-
-impl<'report, 'stage, 'scope, 'life: 'scope, 'p: 'life, 'd: 'p, A>
-    lending::Next<lending::Stage<'stage, 'scope, 'life, 'p, 'd, (), ()>, A> for Wait<'report, '_>
-where
-    A: executor::raw::App<'d>,
-{
-    type Output = Result<
-        Result<fibers::Wait, fibers::Run>,
-        Error<'report, Result<fibers::Wait, fibers::Run>>,
-    >;
-
-    fn run(
-        self,
-        host: A,
-        stage: &mut lending::Stage<'stage, 'scope, 'life, 'p, 'd, (), ()>,
-    ) -> Self::Output {
-        stage.with_quiesce(self.1, host, Duration::from_secs(2), |mut app| {
-            fibers::TEST.try_wait(&mut app, &self.0, 1)
-        })
     }
 }
 

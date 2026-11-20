@@ -1,10 +1,5 @@
 pub mod common;
 
-use crate::common::manifold::{
-    client::{assert_reclaimed, leased},
-    native,
-};
-
 use std::{cell::Cell, net, rc::Rc};
 
 use dope_core::{
@@ -60,7 +55,6 @@ fn requests_do_not_starve_retained_input() {
             assert_eq!(stream.read(&mut [0]).expect("retirement"), 0);
         },
         |server| {
-            let mut finish = Completion::new();
             let left = Rc::new(Cell::new(0));
             let at_resume = Rc::new(Cell::new(0));
             let resumed = Gate::new();
@@ -79,25 +73,16 @@ fn requests_do_not_starve_retained_input() {
                 errors: errors.clone(),
             }))
             .expect("client layout");
-            let mut reports = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
-            planned
-                .with_run(
-                    &mut finish,
-                    |case| {
-                        assert_eq!(
-                            case.try_wait(&resumed, 1).expect("input resume"),
-                            fibers::Wait::Reached
-                        );
-                        assert_eq!(
-                            case.try_wait(&drained, 1).expect("remaining requests"),
-                            fibers::Wait::Reached
-                        );
-                    },
-                    recovery::Policy::new(|event| reports.push(event), recover),
-                    native,
-                )
-                .expect("client retirement");
-            assert_reclaimed(&reports);
+            planned.run(|case| {
+                assert_eq!(
+                    case.try_wait(&resumed, 1).expect("input resume"),
+                    fibers::Wait::Reached
+                );
+                assert_eq!(
+                    case.try_wait(&drained, 1).expect("remaining requests"),
+                    fibers::Wait::Reached
+                );
+            });
             assert!(errors.values().expect("errors").is_empty());
             assert!(
                 at_resume.get() != 0,
@@ -112,7 +97,6 @@ fn requests_do_not_starve_retained_input() {
 
 #[test]
 fn drain_resumes_next_turn() {
-    let mut finish = Completion::new();
 
     TcpScript::with(
         |stream| {
@@ -142,17 +126,10 @@ fn drain_resumes_next_turn() {
                     first: Rc::clone(&first),
                     phase: Cell::new(Phase::New),
                 });
-            let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-            let run = planned.with_run(
-                &mut finish,
-                Identity,
-                |case| reached(case.try_wait(&done, 1), &audit),
-                recovery::Policy::new(|event| reclaim1.push(event), recover),
-                leased,
-            );
-            run.expect("bounded attempt scenario failed");
-            assert_reclaimed(&reclaim1);
+            planned.run(Local::new(Identity), |case| {
+                reached(case.try_wait(&done, 1), &audit)
+            });
 
             let finish = server.finish();
             assert!(finish.is_ok(), "finish held peer");
@@ -180,7 +157,10 @@ fn exhausted_activations_preserve_liveness_phase() {
     use o3::{base::time::Positive, depot::capacity};
 
     use crate::common::{
-        manifold::{client::{connect::open::First, probe::Probe}, root::Until},
+        manifold::{
+            client::{connect::open::{First, Opening}, probe::Probe},
+            root::Until,
+        },
         scenario::{Runtime, case::attempt::Attempts},
     };
 
@@ -244,7 +224,7 @@ fn exhausted_activations_preserve_liveness_phase() {
                                 source,
                                 Capacity::fixed::<{ schedule::LIMIT + 1 }>(),
                                 Default::default(),
-                                Local::new(()),
+                                Local::new(Opening(true)),
                             )
                             .try_with::<Bundle<Tcp, First, Throughput>, _, _>(
                                 &mut runtime,
@@ -306,7 +286,6 @@ fn exhaustion_waits() {
         opening::Exhaustion::Submission(SubmitError::from(Vacancy::IdentityExhausted)),
         opening::Exhaustion::Identity,
     ] {
-        let mut finish = Completion::new();
         let listener =
             peer::TcpAcceptor::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("listener");
         let addr = listener.local_addr().expect("listener address");
@@ -332,37 +311,28 @@ fn exhaustion_waits() {
                 pending: Cell::new(false),
             }))
             .expect("prepare two live connections");
-        let mut reclaim = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
-        planned
-            .with_run(
-                &mut finish,
-                |case| {
-                    let mut held = [const { None }; 2];
-                    for (index, slot) in held.iter_mut().enumerate() {
-                        reached(case.try_wait(&conn, index as u32 + 1), &audit);
-                        *slot = Some(
-                            listener
-                                .accept_for(GUARD)
-                                .expect("accept")
-                                .expect("connected peer"),
-                        );
-                    }
-                    reached(case.try_wait(&closed, 1), &audit);
-                    case.try_pause(BACKOFF.saturating_mul(4))
-                        .expect("retain the healthy connection");
-                    audit.no_faults();
-                    assert_eq!((conn.hits(), closed.hits(), notice.hits()), (2, 1, 0));
+        planned.run(|case| {
+            let mut held = [const { None }; 2];
+            for (index, slot) in held.iter_mut().enumerate() {
+                reached(case.try_wait(&conn, index as u32 + 1), &audit);
+                *slot = Some(
+                    listener
+                        .accept_for(GUARD)
+                        .expect("accept")
+                        .expect("connected peer"),
+                );
+            }
+            reached(case.try_wait(&closed, 1), &audit);
+            case.try_pause(BACKOFF.saturating_mul(4))
+                .expect("retain the healthy connection");
+            audit.no_faults();
+            assert_eq!((conn.hits(), closed.hits(), notice.hits()), (2, 1, 0));
 
-                    drop(held);
-                    reached(case.try_wait(&notice, 1), &audit);
-                    case.try_pause(BACKOFF.saturating_mul(4))
-                        .expect("observe terminal admission");
-                },
-                recovery::Policy::new(|event| reclaim.push(event), recover),
-                native,
-            )
-            .expect("identity exhaustion scenario");
-        assert_reclaimed(&reclaim);
+            drop(held);
+            reached(case.try_wait(&notice, 1), &audit);
+            case.try_pause(BACKOFF.saturating_mul(4))
+                .expect("observe terminal admission");
+        });
         audit.no_faults();
         assert_eq!((conn.hits(), closed.hits(), notice.hits()), (2, 2, 1));
         assert_eq!(
@@ -376,7 +346,6 @@ fn exhaustion_waits() {
 #[test]
 fn close_policy_controls_redial() {
     for kind in [Mode::Reconnect, Mode::Permanent] {
-        let mut finish = Completion::new();
         let listener =
             peer::TcpAcceptor::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("listener");
         let addr = listener.local_addr().expect("listener address");
@@ -404,38 +373,29 @@ fn close_policy_controls_redial() {
                 pending: Cell::new(false),
             }))
             .expect("prepare actual client layout");
-        let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-        planned
-            .with_run(
-                &mut finish,
-                |case| {
-                    reached(case.try_wait(&conn, 1), &audit);
-                    held[0] = Some(
-                        listener
-                            .accept_for(GUARD)
-                            .expect("accept")
-                            .expect("connected peer"),
-                    );
-                    reached(case.try_wait(&closed, 1), &audit);
-                    if matches!(kind, Mode::Reconnect) {
-                        reached(case.try_wait(&conn, 2), &audit);
-                        held[1] = Some(
-                            listener
-                                .accept_for(GUARD)
-                                .expect("accept")
-                                .expect("connected peer"),
-                        );
-                    } else {
-                        case.try_pause(BACKOFF.saturating_mul(4))
-                            .expect("runtime pause");
-                    }
-                },
-                recovery::Policy::new(|event| reclaim1.push(event), recover),
-                native,
-            )
-            .expect("application scenario");
-        assert_reclaimed(&reclaim1);
+        planned.run(|case| {
+            reached(case.try_wait(&conn, 1), &audit);
+            held[0] = Some(
+                listener
+                    .accept_for(GUARD)
+                    .expect("accept")
+                    .expect("connected peer"),
+            );
+            reached(case.try_wait(&closed, 1), &audit);
+            if matches!(kind, Mode::Reconnect) {
+                reached(case.try_wait(&conn, 2), &audit);
+                held[1] = Some(
+                    listener
+                        .accept_for(GUARD)
+                        .expect("accept")
+                        .expect("connected peer"),
+                );
+            } else {
+                case.try_pause(BACKOFF.saturating_mul(4))
+                    .expect("runtime pause");
+            }
+        });
 
         let expected = usize::from(matches!(kind, Mode::Reconnect)) + 1;
         let accepts = held.iter().flatten().count();
@@ -458,7 +418,6 @@ fn close_policy_controls_redial() {
 
 #[test]
 fn close_yield_resumes() {
-    let mut finish = Completion::new();
     let server = peer::TcpAcceptor::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("bind peer");
     let addr = server.local_addr().expect("peer address");
     let conn = Gate::new();
@@ -486,22 +445,12 @@ fn close_yield_resumes() {
             checks: Rc::clone(&checks),
             resumed: Rc::clone(&resumed),
         });
-    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-    planned
-        .with_run(
-            &mut finish,
-            Identity,
-            |case| {
-                reached(case.try_wait(&conn, 1), &audit);
-                reached(case.try_wait(&closed, 1), &audit);
-                reached(case.try_wait(&retired, 1), &audit);
-            },
-            recovery::Policy::new(|event| reclaim1.push(event), recover),
-            leased,
-        )
-        .expect("yielding attempt scenario failed");
-    assert_reclaimed(&reclaim1);
+    planned.run(Local::new(Identity), |case| {
+        reached(case.try_wait(&conn, 1), &audit);
+        reached(case.try_wait(&closed, 1), &audit);
+        reached(case.try_wait(&retired, 1), &audit);
+    });
 
     audit.no_faults();
     assert_eq!(

@@ -1,7 +1,7 @@
 use std::slice;
 
 use dope_core::{driver::route::Identity, io::transfer};
-use dope_net::wire::{self, domain, failure, open, receive, send, terminal};
+use dope_net::wire::{self, failure, open, receive, send, terminal};
 use o3::base::{marker::ThreadBound, num::bounded};
 use receive::mode::Disabled;
 use send::reclaim::OnSubmit;
@@ -137,17 +137,5 @@ impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for Wire {
             open::Disposition::Commit(output) | open::Disposition::Retry { output, .. } => output,
         };
         open::Outcome::Opened(output)
-    }
-}
-
-impl domain::Init<Wire> for Wire {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: domain::Limits,
-        _: <Wire as wire::Spec>::Binding<'w, ID>,
-    ) -> <Wire as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        'd: 'w,
-    {
-        Wire
     }
 }

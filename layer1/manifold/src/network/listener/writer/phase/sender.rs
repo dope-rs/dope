@@ -1,6 +1,6 @@
 use std::{mem::MaybeUninit, pin};
 
-use dope_core::driver::{self, route::Identity};
+use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::{egress, event, pool, pool::pending::Handle, slot::transmit},
     wire::send::reclaim,
@@ -10,12 +10,12 @@ use o3::{depot, mem::slot};
 use crate::network::listener::{
     self, conn, handler,
     writer::{
-        self,
+        self, state,
         deadline::{self, Slot},
     },
 };
 
-use super::{Wake, flow, state};
+use super::{Wake, flow};
 
 pub(super) type Source<'a, 'n, 'p, 's, 'w, 'd, ID, A, T> = transmit::Sender<
     'a,
@@ -32,7 +32,7 @@ pub(super) type Source<'a, 'n, 'p, 's, 'w, 'd, ID, A, T> = transmit::Sender<
     writer::Reserve<'d, <A as handler::Application<'d, ID>>::Egress>,
 >;
 
-pub(super) fn view<'a, 'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
+fn view<'a, 'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
     source: &'a mut Source<'_, 'n, 'p, 's, 'w, 'd, ID, A, T>,
     schedule: &'a mut deadline::Schedule<'d, ID>,
 ) -> (
@@ -98,38 +98,35 @@ pub(super) fn commit_end<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::T
     }
 }
 
-pub(super) fn commit_chunk<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
+pub(super) fn advance<'n, 'p, 's, 'w, 'd: 'w, ID: Identity, A, T: dope_net::Transport>(
     source: &mut Source<'_, 'n, 'p, 's, 'w, 'd, ID, A, T>,
     schedule: &mut deadline::Schedule<'d, ID>,
+    writes: &'p writer::memory::Arena<'s, 'd, ID, A::Egress>,
     mut app: pin::Pin<&mut A>,
     wake: Wake,
+    turn: schedule::Turn<'_, 'd>,
     driver: &mut driver::Context<'_, 'd>,
-) -> flow::Flow
-where
-    A: handler::Application<'d, ID>,
+) where
+    A: handler::Runtime<'w, 'd, ID>,
 {
     let mut projection = view::<ID, A, T>(source, schedule);
     let (slots, slot, handle, egress) = &mut projection;
     let key = slot.key();
-    match wake {
-        Wake::Progress => {
-            slot.progress(driver.driver_ref().clock().now());
-        }
-        Wake::Pending | Wake::Capacity => {
-            slot.ensure_send(driver.driver_ref().clock().now());
-        }
-        Wake::Ingress | Wake::Send => {}
-    }
-    let result = if slot.is_closing() {
-        Ok(flow::Flow::Clear)
-    } else {
-        let pending = egress.pending();
-        let flow = slot.flow(pending);
-        let flow = match (flow, wake) {
-            (flow::Flow::Stalled, Wake::Capacity | Wake::Ingress | Wake::Progress | Wake::Send) => {
-                flow::Flow::Plain
+    let result = 'send: {
+        let flow = match wake {
+            Wake::Maintenance(flow) => {
+                slot.ensure_send(driver.driver_ref().clock().now());
+                flow
             }
-            (flow, _) => flow,
+            Wake::Io | Wake::Progress => {
+                if matches!(wake, Wake::Progress) {
+                    slot.progress(driver.driver_ref().clock().now());
+                }
+                if slot.is_closing() {
+                    break 'send Ok(flow::Flow::Clear);
+                }
+                slot.flow(egress.pending()).retry()
+            }
         };
         match flow {
             flow::Flow::Inflight => Ok(flow::Flow::Inflight),
@@ -201,15 +198,22 @@ where
             flow::Flow::Clear
         }
     };
-    if !matches!(wake, Wake::Pending | Wake::Capacity)
+    if !matches!(wake, Wake::Maintenance(_))
         && (matches!(result, flow::Flow::Inflight)
             || matches!(egress.pending(), egress::Pending::Present))
     {
         slot.ensure_send(driver.driver_ref().clock().now());
     }
 
-    if matches!(result, flow::Flow::Plain | flow::Flow::Deferred) {
-        handle.wake();
+    match result {
+        flow::Flow::Done => {
+            slot.cancel_send();
+            slot.state.send.release(
+                app.as_mut(), conn::Id::from_key(key), None, handler::Disposition::Sent,
+            );
+            super::send::notify(source, schedule, writes, app, turn, driver);
+        }
+        flow::Flow::Plain | flow::Flow::Deferred => handle.wake(),
+        _ => {}
     }
-    result
 }

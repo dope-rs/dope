@@ -1,6 +1,6 @@
 pub mod common;
 
-use crate::common::manifold::{client::assert_reclaimed, native};
+use crate::common::manifold::client::assert_reclaimed;
 
 use std::{cell::Cell, net::Ipv4Addr, rc::Rc, time::Duration};
 
@@ -37,7 +37,7 @@ use crate::common::{
         lane::{self, Signals},
         profile,
         requests::{self, Requests},
-        wire::Wire,
+        wire::{Runtime, Wire},
     },
     recover,
     scenario::{
@@ -48,7 +48,6 @@ use crate::common::{
 
 #[test]
 fn release_wakes_request() {
-    let mut finish = Completion::new();
     let acceptor = peer::TcpAcceptor::bind((Ipv4Addr::LOCALHOST, 0).into()).expect("bind peers");
     let address = acceptor.local_addr().expect("peer address");
     let mut peers: Option<[peer::Stream<'static>; 2]> = None;
@@ -63,57 +62,48 @@ fn release_wakes_request() {
             abort: Cell::new(false),
         }))
         .expect("prepare actual client layout");
-    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-    planned
-        .with_run(
-            &mut finish,
-            |case| {
-                assert_eq!(
-                    case.try_wait(&signals.conn, 2).expect("progress wait"),
-                    fibers::Wait::Reached
-                );
-                assert_eq!(
-                    case.try_wait(&signals.moved, 1).expect("progress wait"),
-                    fibers::Wait::Reached
-                );
-                assert_eq!(signals.moved.hits(), 1);
-                let peers = peers.insert(std::array::from_fn(|_| {
-                    acceptor
-                        .accept_for(GUARD)
-                        .expect("accept peer")
-                        .expect("connected peer")
-                }));
-                for peer in peers.iter() {
-                    peer.set_nodelay(true).expect("TCP_NODELAY");
-                    peer.read_wait(Some(GUARD)).expect("read deadline");
-                    peer.write_wait(Some(GUARD)).expect("write deadline");
-                    peer.write_all(b"negotiate").expect("negotiate parked wire");
-                }
-                assert_eq!(
-                    case.try_wait(&signals.negotiated, 2)
-                        .expect("negotiation wait"),
-                    fibers::Wait::Reached
-                );
-                assert_eq!(
-                    case.try_wait(&signals.moved, 2).expect("progress wait"),
-                    fibers::Wait::Reached
-                );
-                assert_eq!(
-                    case.try_wait(&signals.sent, 2).expect("progress wait"),
-                    fibers::Wait::Reached
-                );
-                for peer in peers.iter() {
-                    let mut byte = [0; 1];
-                    peer.read_exact(&mut byte).expect("read request");
-                    assert_eq!(byte, *b"x");
-                }
-            },
-            recovery::Policy::new(|event| reclaim1.push(event), recover),
-            native,
-        )
-        .expect("application scenario");
-    assert_reclaimed(&reclaim1);
+    planned.run(|case| {
+        assert_eq!(
+            case.try_wait(&signals.conn, 2).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        assert_eq!(
+            case.try_wait(&signals.moved, 1).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        assert_eq!(signals.moved.hits(), 1);
+        let peers = peers.insert(std::array::from_fn(|_| {
+            acceptor
+                .accept_for(GUARD)
+                .expect("accept peer")
+                .expect("connected peer")
+        }));
+        for peer in peers.iter() {
+            peer.set_nodelay(true).expect("TCP_NODELAY");
+            peer.read_wait(Some(GUARD)).expect("read deadline");
+            peer.write_wait(Some(GUARD)).expect("write deadline");
+            peer.write_all(b"negotiate").expect("negotiate parked wire");
+        }
+        assert_eq!(
+            case.try_wait(&signals.negotiated, 2)
+                .expect("negotiation wait"),
+            fibers::Wait::Reached
+        );
+        assert_eq!(
+            case.try_wait(&signals.moved, 2).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        assert_eq!(
+            case.try_wait(&signals.sent, 2).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        for peer in peers.iter() {
+            let mut byte = [0; 1];
+            peer.read_exact(&mut byte).expect("read request");
+            assert_eq!(byte, *b"x");
+        }
+    });
     audit.no_faults();
     assert_eq!(signals.moved.hits(), 2);
     assert_eq!(signals.sent.hits(), 2);
@@ -121,7 +111,6 @@ fn release_wakes_request() {
 
 #[test]
 fn close_relays_capacity() {
-    let mut finish = Completion::new();
     let acceptor = peer::TcpAcceptor::bind((Ipv4Addr::LOCALHOST, 0).into()).expect("bind peers");
     let address = acceptor.local_addr().expect("peer address");
     let mut peers: Option<[peer::Stream<'static>; 3]> = None;
@@ -136,70 +125,61 @@ fn close_relays_capacity() {
             abort: Cell::new(true),
         }))
         .expect("prepare actual client layout");
-    let mut reclaim2 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-    planned
-        .with_run(
-            &mut finish,
-            |case| {
-                assert_eq!(
-                    case.try_wait(&signals.conn, 3).expect("progress wait"),
-                    fibers::Wait::Reached
+    planned.run(|case| {
+        assert_eq!(
+            case.try_wait(&signals.conn, 3).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        assert_eq!(
+            case.try_wait(&signals.closed, 1).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        assert_eq!(signals.moved.hits(), 1);
+        let peers = peers.insert(std::array::from_fn(|_| {
+            acceptor
+                .accept_for(GUARD)
+                .expect("accept peer")
+                .expect("connected peer")
+        }));
+        for peer in peers.iter() {
+            peer.set_nodelay(true).expect("TCP_NODELAY");
+            peer.read_wait(Some(GUARD)).expect("read deadline");
+            peer.write_wait(Some(GUARD)).expect("write deadline");
+            if let Err(error) = peer.write_all(b"open") {
+                assert!(
+                    matches!(error, peer::Error::Syscall(error) if error.is_reset() || error.is_pipe()),
+                    "unexpected open failure: {error:?}"
                 );
-                assert_eq!(
-                    case.try_wait(&signals.closed, 1).expect("progress wait"),
-                    fibers::Wait::Reached
-                );
-                assert_eq!(signals.moved.hits(), 1);
-                let peers = peers.insert(std::array::from_fn(|_| {
-                    acceptor
-                        .accept_for(GUARD)
-                        .expect("accept peer")
-                        .expect("connected peer")
-                }));
-                for peer in peers.iter() {
-                    peer.set_nodelay(true).expect("TCP_NODELAY");
-                    peer.read_wait(Some(GUARD)).expect("read deadline");
-                    peer.write_wait(Some(GUARD)).expect("write deadline");
-                    if let Err(error) = peer.write_all(b"open") {
-                        assert!(
-                            matches!(error, peer::Error::Syscall(error) if error.is_reset() || error.is_pipe()),
-                            "unexpected open failure: {error:?}"
-                        );
-                    }
+            }
+        }
+        assert_eq!(
+            case.try_wait(&signals.moved, 2).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        assert_eq!(
+            case.try_wait(&signals.sent, 2).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        let mut count = 0;
+        for peer in peers.iter() {
+            let mut byte = [0; 1];
+            match peer.read_exact(&mut byte) {
+                Ok(()) => {
+                    assert_eq!(byte, *b"x");
+                    count += 1;
                 }
-                assert_eq!(
-                    case.try_wait(&signals.moved, 2).expect("progress wait"),
-                    fibers::Wait::Reached
-                );
-                assert_eq!(
-                    case.try_wait(&signals.sent, 2).expect("progress wait"),
-                    fibers::Wait::Reached
-                );
-                let mut count = 0;
-                for peer in peers.iter() {
-                    let mut byte = [0; 1];
-                    match peer.read_exact(&mut byte) {
-                        Ok(()) => {
-                            assert_eq!(byte, *b"x");
-                            count += 1;
-                        }
-                        Err(error) => {
-                            assert!(
-                                matches!(error, peer::Error::UnexpectedEof)
-                                    || matches!(error, peer::Error::Syscall(error) if error.is_reset() || error.is_pipe()),
-                                "unexpected read failure: {error:?}"
-                            );
-                        }
-                    }
+                Err(error) => {
+                    assert!(
+                        matches!(error, peer::Error::UnexpectedEof)
+                            || matches!(error, peer::Error::Syscall(error) if error.is_reset() || error.is_pipe()),
+                        "unexpected read failure: {error:?}"
+                    );
                 }
-                assert_eq!(count, 2);
-            },
-            recovery::Policy::new(|event| reclaim2.push(event), recover),
-            native,
-        )
-        .expect("application scenario");
-    assert_reclaimed(&reclaim2);
+            }
+        }
+        assert_eq!(count, 2);
+    });
     audit.no_faults();
     assert_eq!(signals.moved.hits(), 2);
     assert_eq!(signals.sent.hits(), 2);
@@ -266,7 +246,7 @@ fn credit_grants_source() {
                 }),
             );
             let hash = runtime.hash_state(Domain::for_id(0));
-            plan.bind(Local::<Wire, KeyTag<0>>::new(()), hash)
+            plan.bind(Local::new(Runtime), hash)
                 .install::<_, _, Preserve, _, Bundle<Tcp, Wire, profile::Slow>, 4, _, _>(
                     setup,
                     snapshot,
