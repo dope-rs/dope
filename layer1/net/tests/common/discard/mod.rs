@@ -268,7 +268,7 @@ impl Observed {
                         egress::Config::DEFAULT,
                         conn::Capacity::fixed::<1>(),
                     ),
-                    Local::new(()),
+                    Local::new(Wire),
                     scope,
                     life::Scope::context,
                     |(prepared, need), scope| {

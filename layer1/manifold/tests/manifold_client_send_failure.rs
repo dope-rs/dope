@@ -1,8 +1,6 @@
 use crate::common::manifold::client::error;
 pub mod common;
 
-use crate::common::manifold::{client::assert_reclaimed, native};
-
 use std::{cell::Cell, net, rc::Rc, time::Duration};
 
 use dope_core::{
@@ -44,7 +42,6 @@ use crate::common::{
 
 #[test]
 fn impossible_send() {
-    let mut finish = Completion::new();
     let listener = peer::TcpAcceptor::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("listener");
     let address = listener.local_addr().expect("listener address");
     let state = LocalGate::new();
@@ -64,22 +61,13 @@ fn impossible_send() {
                 reason: &reason,
             }))
             .expect("prepare actual client layout");
-    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-    planned
-        .with_run(
-            &mut finish,
-            |case| {
-                assert_eq!(
-                    case.try_wait(&closed, 1).expect("progress wait"),
-                    fibers::Wait::Reached
-                );
-            },
-            recovery::Policy::new(|event| reclaim1.push(event), recover),
-            native,
-        )
-        .expect("application scenario");
-    assert_reclaimed(&reclaim1);
+    planned.run(|case| {
+        assert_eq!(
+            case.try_wait(&closed, 1).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+    });
 
     audit.no_faults();
     assert_eq!(closed.hits(), 1);
@@ -107,7 +95,6 @@ fn flushes_input_during_kernel_flight() {
             ));
         },
         |peer| {
-            let mut finish = Completion::new();
             let cancel = LocalGate::new();
             let canceled = cancel.handle();
             let state = LocalGate::new();
@@ -129,32 +116,23 @@ fn flushes_input_during_kernel_flight() {
                 egress::Entries::new(4),
                 egress::Resident::new(PAYLOAD_BYTES as u32),
             )))
-            .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, profile::Slow>>(Value::new(
+            .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, profile::Slow>>(Value::new(
                 Flight::new(payload, canceled, closed, &reason, audit.clone()).blocked(flushed),
             ))
             .expect("prepare actual client layout");
-            let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-            planned
-                .with_run(
-                    &mut finish,
-                    |case| {
-                        assert_eq!(
-                            case.try_wait(&flushed, 1).expect("input flush wait"),
-                            fibers::Wait::Reached
-                        );
-                        assert_eq!(canceled.hits(), 0);
-                        assert_eq!(closed.hits(), 0);
-                        assert_eq!(
-                            case.try_wait(&closed, 1).expect("progress wait"),
-                            fibers::Wait::Reached
-                        )
-                    },
-                    recovery::Policy::new(|event| reclaim1.push(event), recover),
-                    native,
+            planned.run(|case| {
+                assert_eq!(
+                    case.try_wait(&flushed, 1).expect("input flush wait"),
+                    fibers::Wait::Reached
+                );
+                assert_eq!(canceled.hits(), 0);
+                assert_eq!(closed.hits(), 0);
+                assert_eq!(
+                    case.try_wait(&closed, 1).expect("progress wait"),
+                    fibers::Wait::Reached
                 )
-                .expect("application scenario");
-            assert_reclaimed(&reclaim1);
+            });
 
             audit.no_faults();
             assert_eq!(canceled.hits(), 1);
@@ -168,7 +146,6 @@ fn flushes_input_during_kernel_flight() {
 
 #[test]
 fn starts_before_flight() {
-    let mut finish = Completion::new();
     let listener = peer::TcpAcceptor::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("listener");
     let address = listener.local_addr().expect("listener address");
     let cancel = LocalGate::new();
@@ -183,7 +160,7 @@ fn starts_before_flight() {
     let planned =
         Connector::<{ wait::MAX }>::new(address, Duration::from_secs(1), Duration::from_secs(1))
             .egress(egress::Config::shared(egress::Credit::fixed::<1, 1>()))
-            .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Wire, profile::Fast>>(Value::new(Flight::new(
+            .prepare::<KeyTag<0>, _, Bundle<Tcp, Wire, profile::Fast>>(Value::new(Flight::new(
                 payload,
                 canceled,
                 closed,
@@ -191,22 +168,13 @@ fn starts_before_flight() {
                 audit.clone(),
             )))
             .expect("prepare actual client layout");
-    let mut reclaim2 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-    planned
-        .with_run(
-            &mut finish,
-            |case| {
-                assert_eq!(
-                    case.try_wait(&closed, 1).expect("progress wait"),
-                    fibers::Wait::Reached
-                );
-            },
-            recovery::Policy::new(|event| reclaim2.push(event), recover),
-            native,
-        )
-        .expect("application scenario");
-    assert_reclaimed(&reclaim2);
+    planned.run(|case| {
+        assert_eq!(
+            case.try_wait(&closed, 1).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+    });
 
     audit.no_faults();
     assert_eq!(canceled.hits(), 1);
@@ -216,7 +184,6 @@ fn starts_before_flight() {
 
 #[test]
 fn starts_on_capacity_wait() {
-    let mut finish = Completion::new();
     let listener = peer::TcpAcceptor::bind((net::Ipv4Addr::LOCALHOST, 0).into()).expect("listener");
     let address = listener.local_addr().expect("listener address");
     let mut held = [const { None }; 2];
@@ -245,50 +212,41 @@ fn starts_on_capacity_wait() {
             closed: closed.clone(),
         }))
         .expect("prepare actual client layout");
-    let mut reclaim3 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-    planned
-        .with_run(
-            &mut finish,
-            |case| {
-                for index in 0..held.len() {
-                    assert_eq!(
-                        case.try_wait(&connected, index as u32 + 1)
-                            .expect("connect"),
-                        fibers::Wait::Reached
-                    );
-                    let id = order.values().expect("connected order")[index];
-                    held[id] = Some(
-                        listener
-                            .accept_for(GUARD)
-                            .expect("accept")
-                            .expect("connected peer"),
-                    );
-                }
-                assert_eq!(
-                    case.try_wait(&seen, 1).expect("progress wait"),
-                    fibers::Wait::Reached
-                );
-                let waiting = index.get().expect("waiting connection");
-                held[waiting]
-                    .as_ref()
-                    .expect("waiting peer")
-                    .write_all(b"negotiate")
-                    .expect("negotiate while credit is denied");
-                assert_eq!(
-                    case.try_wait(&negotiated, 1).expect("negotiation progress"),
-                    fibers::Wait::Reached
-                );
-                assert_eq!(
-                    case.try_wait(&closed, 1).expect("progress wait"),
-                    fibers::Wait::Reached
-                );
-            },
-            recovery::Policy::new(|event| reclaim3.push(event), recover),
-            native,
-        )
-        .expect("application scenario");
-    assert_reclaimed(&reclaim3);
+    planned.run(|case| {
+        for index in 0..held.len() {
+            assert_eq!(
+                case.try_wait(&connected, index as u32 + 1)
+                    .expect("connect"),
+                fibers::Wait::Reached
+            );
+            let id = order.values().expect("connected order")[index];
+            held[id] = Some(
+                listener
+                    .accept_for(GUARD)
+                    .expect("accept")
+                    .expect("connected peer"),
+            );
+        }
+        assert_eq!(
+            case.try_wait(&seen, 1).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        let waiting = index.get().expect("waiting connection");
+        held[waiting]
+            .as_ref()
+            .expect("waiting peer")
+            .write_all(b"negotiate")
+            .expect("negotiate while credit is denied");
+        assert_eq!(
+            case.try_wait(&negotiated, 1).expect("negotiation progress"),
+            fibers::Wait::Reached
+        );
+        assert_eq!(
+            case.try_wait(&closed, 1).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+    });
 
     audit.no_faults();
     let reasons = reasons.values().expect("disconnect reasons");

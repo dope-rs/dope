@@ -13,7 +13,7 @@ use dope_manifold::{
     },
 };
 use dope_net::wire::{
-    self, domain, failure, open, receive,
+    self, failure, open, receive,
     receive::{batch, mode},
     send::{
         Completion, Context, Payload, Plain, Policy, Prepared, Storage, Transition, Vectored,
@@ -30,7 +30,7 @@ use o3::buffer::{
         consume::{self, Consume as _},
     },
 };
-use wire::receive::{eof, mode::access, reserve};
+use wire::receive::{eof, reserve};
 
 use crate::common::Buffer;
 
@@ -103,7 +103,7 @@ where
 
 pub struct Recv;
 
-pub struct Runtime<F>(F, bool);
+pub struct Runtime<F>(pub(crate) F, pub(crate) bool);
 
 impl<'w, 'd: 'w, ID: Identity + 'w, F> open::Runtime<'w, 'd, Preamble<F>, ID> for Runtime<F>
 where
@@ -143,7 +143,6 @@ where
     where
         Preamble<F>: 'w,
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::Clean;
     type Reserve = reserve::Borrowed;
     type Credit = mode::Disabled;
@@ -322,22 +321,6 @@ where
     type Bootstrap = Self;
     type Receive = Recv;
     type Send = Send;
-}
-
-impl<F> domain::Init<Preamble<F>> for Preamble<F>
-where
-    F: for<'a> Fn(Event<'a>) + Clone + Unpin,
-{
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: domain::Limits,
-        observe: <Preamble<F> as wire::Spec>::Binding<'w, ID>,
-    ) -> <Preamble<F> as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Preamble<F>: 'w,
-        'd: 'w,
-    {
-        Runtime(observe.0, observe.1)
-    }
 }
 
 pub struct App<'a, F> {

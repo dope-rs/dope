@@ -1,41 +1,22 @@
 pub mod common;
 
-use crate::common::manifold::{
-    client::{assert_reclaimed},
-    native,
-};
+use std::{cell::Cell, convert::Infallible, rc::Rc, time::Duration};
 
-use std::{cell::Cell, rc::Rc, time::Duration};
-
-use dope_core::driver::{
-    life::recovery,
-    route::{Id, KeyTag},
-};
+use dope_core::driver::route::KeyTag;
 use dope_manifold::{
     app::env::Bundle,
-    client::{
-        app::request,
-        close,
-        session::{
-            Session,
-            codec::{Codec, staging::Buffered},
-            policy,
-        },
-    },
+    client::close,
+    network::client::topology::{factory::Application, plan},
     timing::Balanced,
 };
 use dope_net::{
-    link::pool::recv::{input, reserve},
+    link::pool::recv::input,
     tcp::Tcp,
     wire::{
-        self, domain,
-        receive::{
-            self,
-            mode::{Disabled, access},
-        },
+        self,
+        receive::{self, mode::Disabled},
     },
 };
-use dope_runtime::executor::session::Completion;
 use dope_test::{
     fibers::Wait,
     harness::{
@@ -44,7 +25,6 @@ use dope_test::{
         peer,
         signals::{self, Progress as _},
     },
-    reclaim::Reports,
 };
 
 use crate::common::{
@@ -54,13 +34,11 @@ use crate::common::{
         failure::{Cause, Event, Failure, Fault, outgoing::Outgoing},
         reject::{Decode, Reject},
     },
-    recover,
-    scenario::case::{Connector, Value},
+    scenario::case::{ClientHost, Connector, Value},
 };
 
 #[test]
 fn wire_failure_wins() {
-    let mut finish = Completion::new();
     let listener =
         peer::TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind wire-failure peer");
     let conn = signals::Gate::new();
@@ -72,59 +50,47 @@ fn wire_failure_wins() {
         Duration::from_millis(10),
         Duration::from_millis(50),
     )
-    .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Fault, Balanced>>(Value::new(Failure {
+    .prepare::<KeyTag<0>, _, Bundle<Tcp, Fault, Balanced>>(Value::new(Failure {
         events: events.clone(),
         conn: conn.clone(),
         recv_drained: Cell::new(false),
         closed: closed.clone(),
     }))
     .expect("prepare actual client layout");
-    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-    let result = planned.with_run(
-        &mut finish,
-        |case| {
-            let ready = case.try_wait(&conn, 1);
-            assert!(
-                matches!(ready, Ok(Wait::Reached)),
-                "connect: {ready:?}; {:?}",
-                events.values().expect("terminal observations")
-            );
-            let rule = close::Directive::permanent(close::Reason::Local(
-                close::LocalOrigin::ApiRequest,
-            ));
-            assert!(
-                matches!(events.values().expect("terminal observations").first(), Some(Event::Connected {
-                    applied: Some(applied)
-                }) if *applied == rule),
-                "connection: {:?}",
-                events.values().expect("terminal observations")
-            );
-            let stream = listener
-                .accept_for(GUARD)
-                .expect("accept wire-failure peer")
-                .expect("connected wire-failure peer");
-            stream.set_nodelay(true).expect("wire-failure nodelay");
-            stream.read_wait(Some(GUARD)).expect("wire-failure read deadline");
-            stream.write_wait(Some(GUARD)).expect("wire-failure write deadline");
-            stream.write_all(b"X").expect("write failing wire input");
-            let ended = case.try_wait(&closed, 1);
-            assert!(
-                matches!(ended, Ok(Wait::Reached)),
-                "close: {ended:?}; {:?}",
-                events.values().expect("terminal observations")
-            );
-            stream
-        },
-        recovery::Policy::new(|event| reclaim1.push(event), recover),
-        native,
-    );
-    assert!(
-        result.is_ok(),
-        "application: {result:?}; {:?}",
-        events.values().expect("terminal observations")
-    );
-    assert_reclaimed(&reclaim1);
+    let stream = planned.run(|case| {
+        let ready = case.try_wait(&conn, 1);
+        assert!(
+            matches!(ready, Ok(Wait::Reached)),
+            "connect: {ready:?}; {:?}",
+            events.values().expect("terminal observations")
+        );
+        let rule = close::Directive::permanent(close::Reason::Local(
+            close::LocalOrigin::ApiRequest,
+        ));
+        assert!(
+            matches!(events.values().expect("terminal observations").first(), Some(Event::Connected {
+                applied: Some(applied)
+            }) if *applied == rule),
+            "connection: {:?}",
+            events.values().expect("terminal observations")
+        );
+        let stream = listener
+            .accept_for(GUARD)
+            .expect("accept wire-failure peer")
+            .expect("connected wire-failure peer");
+        stream.set_nodelay(true).expect("wire-failure nodelay");
+        stream.read_wait(Some(GUARD)).expect("wire-failure read deadline");
+        stream.write_wait(Some(GUARD)).expect("wire-failure write deadline");
+        stream.write_all(b"X").expect("write failing wire input");
+        let ended = case.try_wait(&closed, 1);
+        assert!(
+            matches!(ended, Ok(Wait::Reached)),
+            "close: {ended:?}; {:?}",
+            events.values().expect("terminal observations")
+        );
+        stream
+    });
     let events = events.values().expect("terminal observations");
     assert!(
         matches!(
@@ -138,7 +104,6 @@ fn wire_failure_wins() {
         ),
         "terminal sequence: {events:?}"
     );
-    let stream = result.expect("wire-failure scenario");
     stream
         .read_to_end(&mut Vec::new())
         .expect("wait for failed connection close");
@@ -155,7 +120,6 @@ fn completion_error_once() {
 }
 
 fn outgoing<const LATE: bool>() {
-    let mut finish = Completion::new();
     peer::TcpScript::with(
         |stream| {
             let mut output = Vec::new();
@@ -170,30 +134,19 @@ fn outgoing<const LATE: bool>() {
                 Duration::from_millis(10),
                 Duration::from_millis(50),
             )
-            .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Outgoing<LATE>, Balanced>>(Value::new(
-                Failure {
-                    events: Rc::clone(&events),
-                    conn: conn.clone(),
-                    recv_drained: Cell::new(true),
-                    closed: closed.clone(),
-                },
-            ))
+            .prepare::<KeyTag<0>, _, Bundle<Tcp, Outgoing<LATE>, Balanced>>(Value::new(Failure {
+                events: Rc::clone(&events),
+                conn: conn.clone(),
+                recv_drained: Cell::new(true),
+                closed: closed.clone(),
+            }))
             .expect("prepare outgoing failure client");
-            let mut reports = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
-            planned
-                .with_run(
-                    &mut finish,
-                    |case| {
-                        assert_eq!(
-                            case.try_wait(&closed, 1).expect("drive close"),
-                            Wait::Reached
-                        );
-                    },
-                    recovery::Policy::new(|event| reports.push(event), recover),
-                    native,
-                )
-                .expect("outgoing failure client");
-            assert!(reports.events().expect("reclaimed events").is_empty());
+            planned.run(|case| {
+                assert_eq!(
+                    case.try_wait(&closed, 1).expect("drive close"),
+                    Wait::Reached
+                );
+            });
             let events = events.values().expect("terminal observations");
             let expected = if LATE {
                 Cause::Completion
@@ -236,13 +189,21 @@ fn app_failure_wins() {
 fn run<W>()
 where
     W: input::Execution,
-    W::Bootstrap: domain::Init<W>,
-    W::Receive: receive::Policy<W, Access = access::Direct, Credit = Disabled>,
-    <W::Receive as receive::Policy<W>>::Reserve: reserve::Choice<W, W::Retained>,
-    for<'d> Reject:
-        Session<'d, Requests = request::Disabled> + policy::Compatible<'d, 'd, W, KeyTag<0>>,
-    for<'d> <Reject as Session<'d>>::Codec: Codec<Staging = Buffered>,
-    for<'d> W::Binding<'d, KeyTag<0>>: Default,
+    W::Receive: receive::Policy<W, Credit = Disabled>,
+    for<'life, 'p, 'd> Value<Reject>: Application<
+            'life,
+            'p,
+            'd,
+            (),
+            KeyTag<0>,
+            1,
+            Bundle<Tcp, W, Balanced>,
+            Input = plan::Local,
+            Session = Reject,
+            Error = Infallible,
+        >,
+    for<'q, 'h, 'p, 'd> ClientHost<'q, 'h, 'p, 'd, KeyTag<0>, 1, Reject, Bundle<Tcp, W, Balanced>>:
+        dope_runtime::executor::raw::App<'d>,
 {
     peer::TcpScript::with(
         |stream| {
@@ -250,7 +211,6 @@ where
             stream.read_to_end(&mut Vec::new())
         },
         |peer| {
-            let mut finish = Completion::new();
             let phase = Rc::new(Cell::new(0));
             let commit = signals::Gate::new();
             let settled = signals::Gate::new();
@@ -262,7 +222,7 @@ where
                 Duration::from_millis(10),
                 Duration::from_millis(50),
             )
-            .prepare_off::<KeyTag<0>, _, Bundle<Tcp, W, Balanced>>(Value::new(Reject {
+            .prepare::<KeyTag<0>, Value<Reject>, Bundle<Tcp, W, Balanced>>(Value::new(Reject {
                 audit: Rc::clone(&audit),
 
                 decode: Decode,
@@ -272,22 +232,14 @@ where
                 closed: closed.clone(),
             }))
             .expect("prepare actual client layout");
-            let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-            let result = planned.with_run(
-                &mut finish,
-                |case| {
-                    for gate in [&commit, &settled, &closed] {
-                        let waited = case.try_wait(gate, 1);
-                        audit.checked((0, 0));
-                        assert!(matches!(waited, Ok(Wait::Reached)), "progress: {waited:?}");
-                    }
-                },
-                recovery::Policy::new(|event| reclaim1.push(event), recover),
-                native,
-            );
-            assert!(result.is_ok(), "application: {result:?}");
-            assert_reclaimed(&reclaim1);
+            planned.run(|case| {
+                for gate in [&commit, &settled, &closed] {
+                    let waited = case.try_wait(gate, 1);
+                    audit.checked((0, 0));
+                    assert!(matches!(waited, Ok(Wait::Reached)), "progress: {waited:?}");
+                }
+            });
 
             audit.checked((0, 0));
             assert_eq!([commit.hits(), settled.hits(), closed.hits()], [1; 3]);

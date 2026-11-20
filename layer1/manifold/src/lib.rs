@@ -39,8 +39,7 @@ type Ingress<W, M> = <M as ingress::Dispatch<W>>::Strategy;
 type Incoming<'input, 'w, 'd, W, M> =
     <Ingress<W, M> as ingress::Strategy<W, M>>::Value<'input, 'w, 'd>;
 
-type Receiving<'w, 'd, W, M> =
-    ingress::Progress<<Ingress<W, M> as ingress::Strategy<W, M>>::Pending<'w, 'd>>;
+type Receiving<W, M> = <Ingress<W, M> as ingress::Strategy<W, M>>::Completion;
 
 /// Preserves a caller's typed factory failure without erasing the framework's
 /// own construction failure.

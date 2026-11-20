@@ -143,7 +143,7 @@ impl<'d> Stored<'d> for Retry<'d> {
     fn decode<S>(
         &mut self,
         _: conn::Id<'d, KeyTag<0>>,
-        storage: &mut <Decode as codec::Stateful>::Storage<S>,
+        storage: &mut decode::Storage<S>,
         state: &mut State,
         budget: &resident::Budget<'d>,
         limit: Limit,
@@ -153,66 +153,54 @@ impl<'d> Stored<'d> for Retry<'d> {
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
         self.decode
-            .decode(storage, state, budget, limit, |preview| {
-                let admit = self.admit(preview);
-                if self.closing && matches!(&admit, codec::Admission::RetryInput) {
+            .decode(storage, state, budget, limit, |result| {
+                let delivery = self.deliver(result);
+                if self.closing && delivery == response::Direct::RetryInput {
                     context.request(close::Directive::cut_final(close::Reason::Protocol));
                 }
-                admit
+                delivery
             })
     }
 
     fn finish<'slot, 'id, S>(
         &mut self,
-        input: Owner<'slot, 'id, <Decode as codec::Stateful>::Storage<S>, State>,
-        budget: &resident::Budget<'d>,
-        limit: Limit,
+        input: Owner<'slot, 'id, decode::Storage<S>, State>,
+        _: &resident::Budget<'d>,
+        _: Limit,
         _: &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
-    ) -> (
-        Owner<'slot, 'id, <Decode as codec::Stateful>::Storage<S>, State>,
-        Result<codec::Finish<Self::Delivery>, Self::Delivery>,
-    )
+    ) -> codec::Finished<Owner<'slot, 'id, decode::Storage<S>, State>, Self::Delivery>
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        self.decode
-            .finish(input, budget, limit, |preview| self.admit(preview))
+        self.decode.finish(input, &self.audit)
     }
 }
 
-impl<'d> Retry<'d> {
-    fn admit<'a>(
-        &'a self,
-        preview: Result<&Head, &decode::Error>,
-    ) -> codec::Admission<impl FnOnce(Result<Head, decode::Error>, &mut State) + use<'a, 'd>> {
-        if let Ok(head) = preview {
-            let attempt = self.tries.get();
-            self.tries.set(attempt + 1);
-            if attempt == 0 {
-                self.suffix.set(head.suffix);
-                self.stages.blocked.hit();
-                return codec::Admission::RetryInput;
+impl Retry<'_> {
+    fn deliver(&self, result: Result<Head, decode::Error>) -> response::Direct {
+        match result {
+            Ok(head) => {
+                let attempt = self.tries.get();
+                self.tries.set(attempt + 1);
+                if attempt == 0 {
+                    self.suffix.set(head.suffix);
+                    self.stages.blocked.hit();
+                    return response::Direct::RetryInput;
+                }
+                if attempt == 1 && head.suffix != self.suffix.get() {
+                    self.audit.faults.record(Switch(Error::Suffix {
+                        actual: head.suffix,
+                        expected: self.suffix.get(),
+                    }));
+                }
+                self.stages.commit.hit();
+                if let Some(terminal) = &self.stages.terminal {
+                    terminal.events.record(queued::Event::Input);
+                }
             }
-            if attempt == 1 && head.suffix != self.suffix.get() {
-                self.audit.faults.record(Switch(Error::Suffix {
-                    actual: head.suffix,
-                    expected: self.suffix.get(),
-                }));
-            }
+            Err(cause) => self.audit.faults.record(error::Error::Decode(cause)),
         }
-        codec::Admission::Ready(
-            |result: Result<Head, decode::Error>, _: &mut State| match result {
-                Ok(_) => {
-                    self.stages.commit.hit();
-                    if let Some(terminal) = &self.stages.terminal {
-                        terminal.events.record(queued::Event::Input);
-                    }
-                }
-                Err(cause) => {
-                    self.audit.faults.record(error::Error::Decode(cause));
-                }
-            },
-        )
+        response::Direct::Committed
     }
 }
 

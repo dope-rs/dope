@@ -72,7 +72,7 @@ pub(crate) trait Policy<'p, 'w, 'd: 'w + 'p, ID: Identity + 'd>: Sized {
         driver: &mut driver::Context<'_, 'd>,
     ) -> (
         Option<ingress::Entry<'a, 'p, 'w, 'd, ID, Self>>,
-        crate::Receiving<'w, 'd, Self::Wire, Self::Input>,
+        crate::Receiving<Self::Wire, Self::Input>,
     )
     where
         Self: 'ctx;

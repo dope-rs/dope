@@ -1,5 +1,5 @@
 use o3::buffer::write::Sink as _;
-use std::{cell::Cell, convert, num, pin::Pin, rc::Rc, time::Duration};
+use std::{cell::Cell, convert, pin::Pin, rc::Rc, time::Duration};
 
 use dope_core::{
     driver::{
@@ -28,7 +28,7 @@ use dope_test::harness::{
 use o3::{
     base::Call,
     buffer::{
-        hold::{limits, scope::Input},
+        hold::limits,
         storage::Shared,
     },
 };
@@ -224,12 +224,13 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CON
         Budget::new(limits::Bound::new(0), 4096)
     }
 
-    fn scoped_chunk(
+    fn scoped_chunk<'s, 'e>(
         self: Pin<&mut Self>,
-        mut conn: conn::Ctx<'_, '_, '_, '_, 'w, 'd, ID, Wire, State, Shared>,
-        chunk: scoped::Input<'_, 'w, 'd, Wire>,
+        mut conn: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Wire, State, Shared>,
+        chunk: scoped::Input<'s, 'w, 'd, Wire>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> Outcome {
+    ) -> Result<Outcome, scoped::Pending<'s>> {
+        let head = chunk.head().expect("scoped data");
         let this = self.get_mut();
         this.ready.hit();
         if matches!(*conn.state(), State::First) {
@@ -241,7 +242,7 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CON
             let (lane, epoch) = conn.id().parts();
             this.events.push(Event::Generation(lane, epoch));
             if !CONTROL {
-                this.events.push(Event::Deferred(chunk.as_ref().to_vec()));
+                this.events.push(Event::Deferred(head.input().as_slice().to_vec()));
                 let mut output_slot = std::mem::MaybeUninit::uninit();
                 let result = match conn.try_prefix(driver, &mut output_slot) {
                     Ok(mut output) => {
@@ -254,25 +255,16 @@ impl<'w, 'd: 'w, ID: Identity, F: for<'v> Fn(Observation<'v>) + Unpin, const CON
                     Err(cause) => Err(cause),
                 };
                 (this.observe)(Observation::Write(result));
-                return Outcome::Continue;
+                return Err(head.defer());
             }
         }
         if !CONTROL && this.release.hits() == 0 {
-            return Outcome::Continue;
+            return Err(head.defer());
         }
-        this.events.push(Event::Chunk(chunk.as_ref().to_vec()));
-        let (chunk, budget) = chunk.into_parts();
-        let replay = Input::consume(chunk, budget, |input| {
-            let Some(len) = num::NonZero::new(input.as_slice().len()) else {
-                return (None, None);
-            };
-            match input.try_prefix::<{ u32::MAX }>(0, len) {
-                Ok((_, end)) => (Some(end), Some(Ok(()))),
-                Err(error) => (None, Some(Err(error))),
-            }
-        });
-        (this.observe)(Observation::Replay(replay));
+        this.events.push(Event::Chunk(head.input().as_slice().to_vec()));
+        head.finish().expect("finish replay").settle()?;
+        (this.observe)(Observation::Replay);
         *conn.state_mut() = State::Consumed;
-        Outcome::Continue
+        Ok(Outcome::Continue)
     }
 }

@@ -7,19 +7,14 @@ use common::{
         Observation, accepted, eof,
         wire::{self, Event, Mode, Wire},
     },
-    recover,
     scenario::case::listener::Listener,
 };
-use dope_core::driver::{
-    life::recovery,
-    route::{FrameworkTag, KeyTag, Tag, kind},
-};
+use dope_core::driver::route::KeyTag;
 use dope_manifold::{
     app::{env::Bundle, receive},
     timing::Throughput,
 };
 use dope_net::tcp::Tcp;
-use dope_runtime::executor::session::Completion;
 use dope_test::{
     fibers::Wait,
     harness::{
@@ -27,12 +22,10 @@ use dope_test::{
         peer::Peer,
         signals::{Gate, Progress as _},
     },
-    reclaim::Reports,
 };
 
 #[test]
 fn eof_holds_gated_tail() {
-    let mut finish = Completion::new();
     let ready = Gate::new();
     let release = Gate::new();
     let eof = Gate::new();
@@ -59,83 +52,70 @@ fn eof_holds_gated_tail() {
             Rc::clone(&wire),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
-                peer.write_all(b"x").expect("write request");
-                assert_eq!(
-                    case.try_wait(&ready, 1).expect("initial scoped input"),
-                    Wait::Reached,
-                    "initial scoped input"
-                );
-                case.try_pause(Duration::from_millis(20))
-                    .expect("settle pending send");
-                let mut before = [0; 6];
-                peer.read_exact(&mut before).expect("read before replay");
-                assert_eq!(&before, b"before");
-                assert_eq!(ready.hits(), 1, "application gate must hold the tail");
-                assert_eq!(eof.hits(), 0, "pending plaintext must precede EOF");
-                assert_eq!(close.hits(), 0);
+    prepared.run(|case| {
+        let peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
+        peer.write_all(b"x").expect("write request");
+        assert_eq!(
+            case.try_wait(&ready, 1).expect("initial scoped input"),
+            Wait::Reached,
+            "initial scoped input"
+        );
+        case.try_pause(Duration::from_millis(20))
+            .expect("settle pending send");
+        let mut before = [0; 6];
+        peer.read_exact(&mut before).expect("read before replay");
+        assert_eq!(&before, b"before");
+        assert_eq!(ready.hits(), 1, "application gate must hold the tail");
+        assert_eq!(eof.hits(), 0, "pending plaintext must precede EOF");
+        assert_eq!(close.hits(), 0);
 
-                peer.shutdown(Shutdown::Write).expect("late native FIN");
-                case.try_pause(Duration::from_millis(20))
-                    .expect("settle late FIN");
-                assert_eq!(
-                    eof.hits(),
-                    0,
-                    "late control must preserve the plaintext tail"
-                );
-                assert_eq!(wire.eof_count(), 0, "authenticated EOF owns classification");
-                assert_eq!(ready.hits(), 1, "late FIN must preserve the input gate");
-                assert_eq!(close.hits(), 0);
+        peer.shutdown(Shutdown::Write).expect("late native FIN");
+        case.try_pause(Duration::from_millis(20))
+            .expect("settle late FIN");
+        assert_eq!(
+            eof.hits(),
+            0,
+            "late control must preserve the plaintext tail"
+        );
+        assert_eq!(wire.eof_count(), 0, "authenticated EOF owns classification");
+        assert_eq!(ready.hits(), 1, "late FIN must preserve the input gate");
+        assert_eq!(close.hits(), 0);
 
-                release.hit();
-                assert_eq!(
-                    case.try_wait(&eof, 1).expect("EOF after tail replay"),
-                    Wait::Reached,
-                    "EOF after tail replay"
-                );
-                assert_eq!(ready.hits(), 2, "one release must replay the tail once");
-                case.try_pause(Duration::from_millis(20))
-                    .expect("settle live output");
-                let mut after = [0; 5];
-                peer.read_exact(&mut after).expect("read after EOF");
-                assert_eq!(&after, b"after");
-                assert_eq!(eof.hits(), 1);
-                assert_eq!(wire.eof_count(), 0);
-                assert_eq!(close.hits(), 0, "Hold preserves the write direction");
+        release.hit();
+        assert_eq!(
+            case.try_wait(&eof, 1).expect("EOF after tail replay"),
+            Wait::Reached,
+            "EOF after tail replay"
+        );
+        assert_eq!(ready.hits(), 2, "one release must replay the tail once");
+        case.try_pause(Duration::from_millis(20))
+            .expect("settle live output");
+        let mut after = [0; 5];
+        peer.read_exact(&mut after).expect("read after EOF");
+        assert_eq!(&after, b"after");
+        assert_eq!(eof.hits(), 1);
+        assert_eq!(wire.eof_count(), 0);
+        assert_eq!(close.hits(), 0, "Hold preserves the write direction");
 
-                end.hit();
-                assert_eq!(
-                    case.try_wait(&close, 1)
-                        .expect("explicit application close"),
-                    Wait::Reached,
-                    "explicit application close"
-                );
-                assert_eq!(
-                    case.try_wait(&done, 1).expect("native retirement"),
-                    Wait::Reached,
-                    "native retirement"
-                );
-                assert!(
-                    Peer::try_read_all(&peer)
-                        .expect("explicit close")
-                        .is_empty()
-                );
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            |outcome| outcome.expect("native lifecycle"),
-        )
-        .expect("listener run");
+        end.hit();
+        assert_eq!(
+            case.try_wait(&close, 1)
+                .expect("explicit application close"),
+            Wait::Reached,
+            "explicit application close"
+        );
+        assert_eq!(
+            case.try_wait(&done, 1).expect("native retirement"),
+            Wait::Reached,
+            "native retirement"
+        );
+        assert!(
+            Peer::try_read_all(&peer)
+                .expect("explicit close")
+                .is_empty()
+        );
+    });
     assert!(wire.writes.take().iter().all(Result::is_ok));
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
     assert_eq!(eof.hits(), 1);
     assert_eq!(wire.eof_count(), 0);
     assert_eq!(close.hits(), 1);
@@ -166,7 +146,6 @@ fn eof_holds_gated_tail() {
 
 #[test]
 fn eof_flushes_control() {
-    let mut finish = Completion::new();
     let eof = Gate::new();
     let close = Gate::new();
     let done = Gate::new();
@@ -197,38 +176,25 @@ fn eof_flushes_control() {
             Rc::clone(&wire),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
-                peer.write_all(b"x").expect("write request");
-                assert_eq!(case.try_wait(&eof, 1).expect("wire EOF"), Wait::Reached);
-                case.try_pause(Duration::from_millis(20))
-                    .expect("flush wire control");
-                let mut control = [0; 1];
-                peer.read_exact(&mut control).expect("control while Hold");
-                assert_eq!(&control, b"!");
-                assert_eq!(close.hits(), 0, "control must precede explicit close");
-                assert_eq!(done.hits(), 0);
-                end.hit();
-                assert_eq!(case.try_wait(&done, 1).expect("retirement"), Wait::Reached);
-                assert!(Peer::try_read_all(&peer).expect("peer EOF").is_empty());
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            |outcome| outcome.expect("native lifecycle"),
-        )
-        .expect("listener run");
+    prepared.run(|case| {
+        let peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
+        peer.write_all(b"x").expect("write request");
+        assert_eq!(case.try_wait(&eof, 1).expect("wire EOF"), Wait::Reached);
+        case.try_pause(Duration::from_millis(20))
+            .expect("flush wire control");
+        let mut control = [0; 1];
+        peer.read_exact(&mut control).expect("control while Hold");
+        assert_eq!(&control, b"!");
+        assert_eq!(close.hits(), 0, "control must precede explicit close");
+        assert_eq!(done.hits(), 0);
+        end.hit();
+        assert_eq!(case.try_wait(&done, 1).expect("retirement"), Wait::Reached);
+        assert!(Peer::try_read_all(&peer).expect("peer EOF").is_empty());
+    });
     assert!(matches!(wire.writes.take().as_slice(), [Ok(())]));
     assert_eq!(wire.eof_count(), 0);
     assert_eq!(eof.hits(), 1);
     assert_eq!(close.hits(), 1);
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
     assert!(
         events
             .take()

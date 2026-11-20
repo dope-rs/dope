@@ -1,9 +1,6 @@
 use std::{marker, ops};
 
-use dope::net::{
-    wire,
-    wire::receive::{Chunk, mode::access::Use},
-};
+use dope::net::{wire, wire::receive::Chunk};
 use o3::buffer::write::consume;
 
 /// A retained cursor that exclusively borrows its `Io` until it is dropped.
@@ -19,11 +16,6 @@ impl<'io, 'w, 'd: 'w, W: wire::Spec + 'w> Lease<'io, 'w, 'd, W> {
             cursor,
             _io: marker::PhantomData,
         }
-    }
-
-    /// Visits the cursor while retaining its connection borrow and receive credit.
-    pub fn drive<T>(&mut self, done: T, use_head: &mut impl Use<'d, T>) -> T {
-        self.cursor.drive(done, use_head)
     }
 }
 

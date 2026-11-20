@@ -20,12 +20,15 @@ use dope_manifold::{
     },
 };
 use dope_net::{
-    link::{egress, pool::change::opening},
+    link::{
+        egress,
+        pool::change::{self, opening},
+    },
     wire::{
-        self, domain,
+        self,
         domain::Limits,
         failure, open,
-        receive::{Policy, batch, eof, mode, mode::access, reserve},
+        receive::{Policy, batch, eof, mode, reserve},
         send, terminal,
     },
 };
@@ -42,7 +45,10 @@ use crate::common::{
     manifold::client::{connect::Error, error},
 };
 
-pub struct Wire;
+pub struct Wire {
+    pub(crate) audit: Rc<Report<error::Error, 16>>,
+    pub(crate) dropped: Rc<Cell<usize>>,
+}
 pub struct Wait;
 pub struct Receive;
 pub enum Reservation {}
@@ -163,7 +169,6 @@ impl Policy<Wire> for Receive {
         = recv::Shared<'d>
     where
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::Clean;
     type Reserve = reserve::Waiting<Self>;
     type Credit = mode::Disabled;
@@ -212,7 +217,7 @@ impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for Runtime 
 impl wire::Spec for Wire {
     type Connection<'d, ID: Identity + 'd> = wire::Identity;
     type Storage<ID: Identity> = ();
-    type Binding<'d, ID: Identity + 'd> = (Rc<Report<error::Error, 16>>, Rc<Cell<usize>>);
+    type Binding<'d, ID: Identity + 'd> = Self;
     type Runtime<'w, 'd, ID: Identity + 'w>
         = Runtime
     where
@@ -227,22 +232,15 @@ impl wire::Spec for Wire {
     type Send = send::Direct;
 }
 
-impl domain::Init<Wire> for Wire {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        limits: Limits,
-        (audit, dropped): <Wire as wire::Spec>::Binding<'w, ID>,
-    ) -> <Wire as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Wire: 'w,
-        'd: 'w,
-    {
-        Runtime {
+impl<'w, 'd: 'w, ID: Identity + 'w> change::Prepare<'w, 'd, ID, Wire> for Wire {
+    fn try_runtime(self, limits: Limits) -> Result<Runtime, dope_net::Resource> {
+        Ok(Runtime {
             limits,
             recv: 0,
             send: 0,
-            audit,
-            dropped,
-        }
+            audit: self.audit,
+            dropped: self.dropped,
+        })
     }
 }
 

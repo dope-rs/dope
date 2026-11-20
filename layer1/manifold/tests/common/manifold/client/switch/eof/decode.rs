@@ -1,15 +1,8 @@
 use std::{cell::Cell, rc::Rc};
 
-use dope_manifold::client::session::{
-    codec::{
-        self, Codec, Parse, Stateful,
-        staging::{Buffered, Limit},
-        storage,
-    },
-    response,
-};
+use dope_manifold::client::session::codec::{Codec, Stateful, staging::Buffered, storage};
 use o3::buffer::{
-    self, hold,
+    self,
     resident::{self, staging},
 };
 
@@ -71,54 +64,7 @@ impl Stateful for Decode {
 }
 
 impl Decode {
-    pub(super) fn decode<'d, S, T, F>(
-        &self,
-        storage: &mut S,
-        state: &mut ParseState,
-        budget: &resident::Budget<'d>,
-        limit: Limit,
-        admit: impl FnOnce(Result<&Head, &switch::Error>) -> codec::Admission<F>,
-    ) -> codec::Step<T>
-    where
-        S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
-        T: response::Outcome,
-        F: FnOnce(Result<Head, switch::Error>, &mut ParseState) -> T::Accepted,
-    {
-        codec::Input::commit(storage, budget, limit, |input| {
-            switch::parsed(self.parse_once(state, input), state, admit)
-        })
-    }
-
-    pub(super) fn finish<'slot, 'id, 'd, S, T, F>(
-        &self,
-        mut input: storage::Owner<'slot, 'id, S, ParseState>,
-        budget: &resident::Budget<'d>,
-        limit: Limit,
-        admit: impl FnOnce(Result<&Head, &switch::Error>) -> codec::Admission<F>,
-    ) -> (
-        storage::Owner<'slot, 'id, S, ParseState>,
-        Result<codec::Finish<T>, T>,
-    )
-    where
-        S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
-        T: response::Outcome,
-        F: FnOnce(Result<Head, switch::Error>, &mut ParseState) -> T::Accepted,
-    {
-        let (storage, state) = input.parts();
-        let result = codec::Input::with(storage, budget, limit, |input| {
-            switch::finished(self.finish_once(state, input), state, admit)
-        });
-        (input, result)
-    }
-
-    fn parse_once<'id, 'input, 'd, R: buffer::Cursor>(
-        &self,
-        state: &mut ParseState,
-        input: codec::Input<'id, 'input, 'd, R>,
-    ) -> Result<Parse<'id, Head>, switch::Error>
-    where
-        'd: 'input,
-    {
+    pub(super) fn parsed(&self, state: &mut ParseState) -> Result<(), switch::Error> {
         state.parses += 1;
         let parses = self.parses.get();
         if state.parses != parses + 1 || parses != 0 {
@@ -128,22 +74,16 @@ impl Decode {
             });
         }
         self.parses.set(parses + 1);
-        Ok(match input.need_more(None) {
-            Some(need) => Parse::More(need),
-            None => Parse::CapacityExhausted,
-        })
+        Ok(())
     }
 
-    fn finish_once<'id, 'input, 'd, R: buffer::Cursor>(
+    pub(super) fn finish(
         &self,
         state: &mut ParseState,
-        input: codec::Input<'id, 'input, 'd, R>,
-    ) -> Result<codec::Finish<Head>, switch::Error>
-    where
-        'd: 'input,
-    {
-        if input.as_slice() != b"T" {
-            return Err(switch::Error::TerminalBytes(input.as_slice().to_vec()));
+        bytes: &[u8],
+    ) -> Result<Head, switch::Error> {
+        if bytes != b"T" {
+            return Err(switch::Error::TerminalBytes(bytes.to_vec()));
         }
         state.finishes += 1;
         let finishes = self.finishes.get();
@@ -154,6 +94,6 @@ impl Decode {
             });
         }
         self.finishes.set(finishes + 1);
-        Ok(codec::Finish::Item(Head))
+        Ok(Head)
     }
 }

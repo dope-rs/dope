@@ -152,7 +152,7 @@ const _: () = {
     assert!(size_of::<Option<Demand>>() == size_of::<bool>());
     assert!(size_of::<Record<u32, u32>>() == size_of::<Health>() + size_of::<[u32; 2]>());
     assert!(
-        size_of::<backoff::Backoff<'static, 'static, u32, u32, true>>()
+        size_of::<backoff::Backoff<'static, 'static, u32, u32>>()
             == size_of::<Unlinked<'static, 'static, u32, u32>>()
     );
     assert!(

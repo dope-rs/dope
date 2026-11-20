@@ -55,11 +55,9 @@ mod record;
 pub(super) use record::Demand;
 use record::{Exhausted, Idle, Ready, Record};
 
-type Records<'h, I, A> = round::Set<Record<I, A>, Member, { u32::MAX }, capacity::Domain<'h>>;
-type Occupied<'a, 'h, I, A, const ROOT: bool = true> =
-    set::Occupied<'a, Record<I, A>, Member, { u32::MAX }, ROOT, capacity::Domain<'h>>;
-type Unlinked<'a, 'h, I, A, const ROOT: bool = true> =
-    set::Occupied<'a, Record<I, A>, Member, { u32::MAX }, ROOT, capacity::Domain<'h>, set::Idle>;
+type Records<'h, I, A> = round::Set<'h, Record<I, A>, Member>;
+type Occupied<'a, 'h, I, A> = set::Occupied<'a, 'h, Record<I, A>, Member>;
+type Unlinked<'a, 'h, I, A> = set::Occupied<'a, 'h, Record<I, A>, Member, set::Idle>;
 
 /// Owns canonical health, scheduled eligibility, and retry membership through every transition.
 pub(super) struct Set<'h, 'd, I, A, R: sync::Policy> {
@@ -75,7 +73,8 @@ impl<'d, I, A, R: sync::Policy> Set<'_, 'd, I, A, R> {
         limit: capacity::Count,
         build: impl for<'h> FnOnce(Set<'h, 'd, I, A, R>) -> O,
     ) -> Result<O, service::Error> {
-        keyed::Min::try_with(limit, |retries, domain| {
+        capacity::Domain::with(limit, |domain| {
+            let retries = keyed::Min::try_in(domain).map_err(service::Error::Heap)?;
             let records = round::Set::try_in(domain).map_err(service::Error::Allocation)?;
             Ok(build(Set {
                 revision: service::Revision::INITIAL,
@@ -85,7 +84,6 @@ impl<'d, I, A, R: sync::Policy> Set<'_, 'd, I, A, R> {
                 policy: PhantomData,
             }))
         })
-        .map_err(service::Error::Heap)?
     }
 }
 

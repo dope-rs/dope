@@ -1,16 +1,10 @@
 pub mod common;
 
-use crate::common::manifold::{
-    client::{assert_reclaimed, reached},
-    native,
-};
+use crate::common::manifold::client::reached;
 
 use std::{cell::Cell, net::Shutdown, rc::Rc, time::Duration};
 
-use dope_core::driver::{
-    life::recovery,
-    route::{Id, KeyTag},
-};
+use dope_core::driver::route::KeyTag;
 use dope_manifold::{
     app::{env::Bundle, receive},
     client::{
@@ -21,12 +15,9 @@ use dope_manifold::{
 };
 use dope_net::{tcp::Tcp, wire};
 use dope_runtime::executor::session::Completion;
-use dope_test::{
-    harness::{
-        GUARD, peer,
-        signals::{self, Progress as _},
-    },
-    reclaim::Reports,
+use dope_test::harness::{
+    GUARD, peer,
+    signals::{self, Progress as _},
 };
 use o3::base::time::Positive;
 
@@ -38,13 +29,12 @@ use crate::common::{
             terminal::eof::{Decode, Eof},
         },
     },
-    recover,
-    scenario::case::{Connector, Value},
+    manifold::root::until_hits,
+    scenario::case::{Connector, Failure, Value},
 };
 
 #[test]
 fn eof_retries_finish() {
-    let mut finish = Completion::new();
 
     peer::TcpScript::with(
         |stream| {
@@ -67,7 +57,7 @@ fn eof_retries_finish() {
                 Duration::from_millis(10),
                 Duration::from_millis(50),
             )
-            .prepare_off::<KeyTag<0>, _, Bundle<Tcp, wire::Identity, Balanced>>(eof::Eof {
+            .prepare::<KeyTag<0>, _, Bundle<Tcp, wire::Identity, Balanced>>(eof::Eof {
                 audit: Rc::clone(&audit),
                 decode: decode::Decode {
                     parses: parses.clone(),
@@ -83,22 +73,13 @@ fn eof_retries_finish() {
                 deferred: None,
             })
             .expect("prepare actual client layout");
-            let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-            planned
-                .with_run(
-                    &mut finish,
-                    |case| {
-                        reached(case.try_wait(&blocked, 1), &audit);
-                        reached(case.try_wait(&commit, 1), &audit);
-                        reached(case.try_wait(&settled, 1), &audit);
-                        reached(case.try_wait(&closed, 1), &audit);
-                    },
-                    recovery::Policy::new(|event| reclaim1.push(event), recover),
-                    native,
-                )
-                .expect("application scenario");
-            assert_reclaimed(&reclaim1);
+            planned.run(|case| {
+                reached(case.try_wait(&blocked, 1), &audit);
+                reached(case.try_wait(&commit, 1), &audit);
+                reached(case.try_wait(&settled, 1), &audit);
+                reached(case.try_wait(&closed, 1), &audit);
+            });
 
             audit.checked((0, 0));
             assert_eq!(
@@ -121,7 +102,6 @@ fn eof_blocked_waits_and_cancels() {
         Some(Reason::Timeout(deadline::Kind::Lifetime)),
         Some(Reason::Local(LocalOrigin::RuntimeShutdown)),
     ] {
-        let mut finish = Completion::new();
         peer::TcpScript::with(
             |stream| {
                 stream.write_all(b"T")?;
@@ -142,13 +122,14 @@ fn eof_blocked_waits_and_cancels() {
                     Duration::from_millis(10),
                     Duration::from_millis(50),
                 );
+                let lifetime = Positive::from_millis::<250>();
                 let connector = if matches!(cancel, Some(Reason::Timeout(_))) {
-                    connector.lifetime(Positive::from_millis::<250>())
+                    connector.lifetime(lifetime)
                 } else {
                     connector
                 };
                 let planned = connector
-                    .prepare_off::<KeyTag<0>, _, Bundle<Tcp, wire::Identity, Balanced>>(eof::Eof {
+                    .prepare::<KeyTag<0>, _, Bundle<Tcp, wire::Identity, Balanced>>(eof::Eof {
                         audit: Rc::clone(&audit),
                         decode: decode::Decode {
                             parses,
@@ -168,29 +149,47 @@ fn eof_blocked_waits_and_cancels() {
                         }),
                     })
                     .expect("prepare blocked EOF client");
-                let mut reclaim = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
-                planned
-                    .with_run(
-                        &mut finish,
-                        |case| {
-                            reached(case.try_wait(&blocked, 1), &audit);
-                            // The application probe is reached only after the connection's
-                            // pending queue becomes empty; a self-requeued close never reaches it.
-                            reached(case.try_wait(&waiting, 1), &audit);
-                            assert_eq!(finishes.get(), 1);
-                            if cancel.is_none() {
-                                release.hit();
-                            }
-                            if cancel != Some(Reason::Local(LocalOrigin::RuntimeShutdown)) {
-                                reached(case.try_wait(&closed, 1), &audit);
-                            }
-                        },
-                        recovery::Policy::new(|event| reclaim.push(event), recover),
-                        native,
-                    )
-                    .expect("blocked EOF lifecycle");
+                let completion = &mut Completion::new();
+                planned.with_worker(|worker| {
+                    worker
+                        .lend(|install, stage| {
+                            install.install(stage, |host, stage| {
+                                let now = stage.driver().driver_ref().clock().now();
+                                let finish = completion;
+                                stage.with_at_for(
+                                    finish,
+                                    host,
+                                    now.into(),
+                                    Duration::from_secs(2),
+                                    |mut app| {
+                                        // The root completes at blocked. The subsequent fixed
+                                        // point must observe the empty connection queue.
+                                        app.drive_for(now.into(), GUARD, until_hits(&blocked, 1))
+                                            .expect("blocked EOF reaches a fixed point")
+                                            .into_output();
+                                        audit.checked((0, 0));
+                                        assert_eq!(waiting.hits(), 1, "blocked connection became idle");
+                                        assert_eq!(finishes.get(), 1);
+                                        assert_eq!(closed.hits(), 0);
+                                        if cancel != Some(Reason::Local(LocalOrigin::RuntimeShutdown)) {
+                                            let at = if cancel.is_none() {
+                                                release.hit();
+                                                now.into()
+                                            } else {
+                                                now.clamp_add(lifetime.get())
+                                            };
+                                            app.drive_for(at, GUARD, until_hits(&closed, 1))
+                                                .expect("blocked EOF connection closed")
+                                                .into_output();
+                                        }
+                                    },
+                                )
+                            })
+                        })
+                        .map_err(Failure::Install)?
+                        .map_err(Failure::Application)
+                });
                 audit.checked((0, 0));
-                assert!(matches!(reclaim.events(), Ok(events) if events.is_empty()));
                 assert_eq!(closed.hits(), 1);
                 assert_eq!(finishes.get(), if cancel.is_none() { 2 } else { 1 });
                 assert_eq!(phase.get(), if cancel.is_none() { 4 } else { 1 });
@@ -204,7 +203,6 @@ fn eof_blocked_waits_and_cancels() {
 #[test]
 fn eof_commits_then_settles() {
     for (split, excess) in [(true, false), (true, true), (false, false), (false, true)] {
-        let mut finish = Completion::new();
         let listener =
             peer::TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind terminal peer");
         let phase = Rc::new(Cell::new(0));
@@ -221,7 +219,7 @@ fn eof_commits_then_settles() {
             Duration::from_millis(10),
             Duration::from_millis(50),
         )
-        .prepare_off::<KeyTag<0>, _, Bundle<Tcp, wire::Identity, Balanced>>(Value::new(Eof {
+        .prepare::<KeyTag<0>, _, Bundle<Tcp, wire::Identity, Balanced>>(Value::new(Eof {
             audit: Rc::clone(&audit),
             decode: Decode {
                 partial: partial.clone(),
@@ -239,50 +237,41 @@ fn eof_commits_then_settles() {
             },
         }))
         .expect("prepare actual client layout");
-        let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-        let stream = planned
-            .with_run(
-                &mut finish,
-                |case| {
-                    reached(case.try_wait(&conn, 1), &audit);
-                    let stream = listener
-                        .accept_for(GUARD)
-                        .expect("accept terminal peer")
-                        .expect("connected terminal peer");
-                    stream.set_nodelay(true).expect("terminal nodelay");
-                    stream
-                        .read_wait(Some(GUARD))
-                        .expect("terminal read deadline");
-                    stream
-                        .write_wait(Some(GUARD))
-                        .expect("terminal write deadline");
-                    if split {
-                        stream.write_all(b"T").expect("write terminal input");
-                        reached(case.try_wait(&partial, 1), &audit);
-                        stream.write_all(b"T").expect("fill terminal input");
-                    } else {
-                        stream.write_all(b"TT").expect("write full terminal input");
-                    }
-                    reached(case.try_wait(&full, 1), &audit);
-                    if !split {
-                        assert_eq!(partial.hits(), 0, "first input fills the limit");
-                    }
-                    if excess {
-                        stream.write_all(b"X").expect("exceed terminal capacity");
-                    } else {
-                        stream.shutdown(Shutdown::Write).expect("terminal EOF");
-                        reached(case.try_wait(&commit, 1), &audit);
-                        reached(case.try_wait(&settled, 1), &audit);
-                    }
-                    reached(case.try_wait(&closed, 1), &audit);
-                    stream
-                },
-                recovery::Policy::new(|event| reclaim1.push(event), recover),
-                native,
-            )
-            .expect("application scenario");
-        assert_reclaimed(&reclaim1);
+        let stream = planned.run(|case| {
+            reached(case.try_wait(&conn, 1), &audit);
+            let stream = listener
+                .accept_for(GUARD)
+                .expect("accept terminal peer")
+                .expect("connected terminal peer");
+            stream.set_nodelay(true).expect("terminal nodelay");
+            stream
+                .read_wait(Some(GUARD))
+                .expect("terminal read deadline");
+            stream
+                .write_wait(Some(GUARD))
+                .expect("terminal write deadline");
+            if split {
+                stream.write_all(b"T").expect("write terminal input");
+                reached(case.try_wait(&partial, 1), &audit);
+                stream.write_all(b"T").expect("fill terminal input");
+            } else {
+                stream.write_all(b"TT").expect("write full terminal input");
+            }
+            reached(case.try_wait(&full, 1), &audit);
+            if !split {
+                assert_eq!(partial.hits(), 0, "first input fills the limit");
+            }
+            if excess {
+                stream.write_all(b"X").expect("exceed terminal capacity");
+            } else {
+                stream.shutdown(Shutdown::Write).expect("terminal EOF");
+                reached(case.try_wait(&commit, 1), &audit);
+                reached(case.try_wait(&settled, 1), &audit);
+            }
+            reached(case.try_wait(&closed, 1), &audit);
+            stream
+        });
 
         audit.checked((0, 0));
         let accepted = u32::from(!excess);

@@ -6,8 +6,6 @@ use dope::{
     net::{
         wire,
         wire::{
-            domain,
-            domain::Limits,
             failure, open,
             open::Outcome,
             receive,
@@ -76,6 +74,8 @@ impl Drop for Cursor<'_> {
     }
 }
 
+impl<'d> access::Cursor<'d> for Cursor<'d> {}
+
 impl transfer::Length for Cursor<'_> {
     fn len(&self) -> transfer::Len {
         Length::len(&self.view)
@@ -139,21 +139,6 @@ impl consume::Consume for Cursor<'_> {
     }
 }
 
-pub struct Bootstrap;
-
-impl domain::Init<Wire> for Bootstrap {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: Limits,
-        config: <Wire as wire::Spec>::Binding<'w, ID>,
-    ) -> <Wire as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Wire: 'w,
-        'd: 'w,
-    {
-        config
-    }
-}
-
 pub struct Recv;
 
 impl receive::Policy<Wire> for Recv {
@@ -165,7 +150,6 @@ impl receive::Policy<Wire> for Recv {
         = Cursor<'d>
     where
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::State;
     type Reserve = reserve::Borrowed;
     type Credit = mode::Enabled;
@@ -327,7 +311,7 @@ impl wire::Spec for Wire {
     type OpenFailure = failure::Never;
     type TerminalFailure = failure::Never;
 
-    type Bootstrap = Bootstrap;
+    type Bootstrap = Self;
     type Receive = Recv;
     type Send = Send;
 }

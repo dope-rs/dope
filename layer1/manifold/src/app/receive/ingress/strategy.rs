@@ -44,10 +44,7 @@ pub(crate) trait Strategy<W: wire::Spec, M: Mode<W>> {
         'w: 'input,
         W: 'w + 'd;
 
-    type Pending<'w, 'd>
-    where
-        'd: 'w,
-        W: 'w + 'd;
+    type Completion: From<crate::app::receive::Outcome>;
 
     type Admission<'a, 'c, 'd>: Admission<'a, 'c, 'd>
     where

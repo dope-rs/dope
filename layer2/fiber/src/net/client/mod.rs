@@ -106,8 +106,7 @@ impl<'w, 'd: 'w, T: net::Transport, W: wire::Spec, ID: Identity> Port<'w, 'd, T,
     where
         ID: 'd,
         W: input::Execution + 'd,
-        W::Bootstrap: domain::Init<W>,
-        W::Binding<'w, ID>: Default,
+        W::Runtime<'w, 'd, ID>: Default,
     {
         self.machine_in(
             domain::Local::new(Default::default()),

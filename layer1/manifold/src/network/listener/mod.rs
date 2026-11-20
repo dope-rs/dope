@@ -198,8 +198,7 @@ where
     ) -> Result<O, creation::Error>
     where
         E::Transport: Listen,
-        <A::Wire as wire::Spec>::Bootstrap: domain::Init<A::Wire>,
-        <A::Wire as wire::Spec>::Binding<'w, ID>: Default,
+        <A::Wire as wire::Spec>::Runtime<'w, 'd, ID>: Default,
     {
         Install::<ID, E, _>::new(config, domain::Local::new(Default::default()))
             .with_bound(Some(bound))

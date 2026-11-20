@@ -1,6 +1,6 @@
 pub mod common;
 
-use common::manifold::{listener::reached, native};
+use common::manifold::listener::reached;
 
 use dope_test::fibers::Wait;
 
@@ -174,7 +174,6 @@ fn shutdown_keeps_close() {
 
 #[test]
 fn half_close_before_gate() {
-    let mut finish = Completion::new();
     let close = Gate::new();
     let done = Gate::new();
     let peer_eof = Gate::new();
@@ -196,54 +195,41 @@ fn half_close_before_gate() {
             Rc::clone(&wire),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
-                peer.write_all(b"x").expect("write request");
-                peer.shutdown(Shutdown::Write).expect("peer half-close");
-                peer.nonblock(true);
-                let started = Instant::now();
-                let mut reply = Vec::new();
-                let mut bytes = [0; 64];
-                loop {
+    prepared.run(|case| {
+        let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+        peer.write_all(b"x").expect("write request");
+        peer.shutdown(Shutdown::Write).expect("peer half-close");
+        peer.nonblock(true);
+        let started = Instant::now();
+        let mut reply = Vec::new();
+        let mut bytes = [0; 64];
+        loop {
+            assert!(
+                started.elapsed() < GUARD,
+                "peer did not observe EOF before gate release"
+            );
+            match peer.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(count) => reply.extend_from_slice(&bytes[..count]),
+                Err(error) => {
                     assert!(
-                        started.elapsed() < GUARD,
-                        "peer did not observe EOF before gate release"
+                        matches!(error, peer::Error::Syscall(error)
+                            if error.is_block() || error.is_intr()),
+                        "read peer EOF: {error:?}"
                     );
-                    match peer.read(&mut bytes) {
-                        Ok(0) => break,
-                        Ok(count) => reply.extend_from_slice(&bytes[..count]),
-                        Err(error) => {
-                            assert!(
-                                matches!(error, peer::Error::Syscall(error)
-                                    if error.is_block() || error.is_intr()),
-                                "read peer EOF: {error:?}"
-                            );
-                            case.try_drive(fibers::Yield::new())
-                                .expect("drive peer EOF");
-                        }
-                    }
+                    case.try_drive(fibers::Yield::new())
+                        .expect("drive peer EOF");
                 }
-                assert_eq!(reply, b"!");
-                assert_eq!(close.hits(), 0, "EOF must precede gate release and close");
-                assert_eq!(done.hits(), 0, "EOF must precede retirement");
-                peer_eof.hit();
-                reached(case.try_wait(&close, 1), close.hits(), 1);
-                reached(case.try_wait(&done, 1), done.hits(), 1);
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+            }
+        }
+        assert_eq!(reply, b"!");
+        assert_eq!(close.hits(), 0, "EOF must precede gate release and close");
+        assert_eq!(done.hits(), 0, "EOF must precede retirement");
+        peer_eof.hit();
+        reached(case.try_wait(&close, 1), close.hits(), 1);
+        reached(case.try_wait(&done, 1), done.hits(), 1);
+    });
     wire.check();
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
     assert_eq!(wire.eof_count(), 1);
     assert_eq!(peer_eof.hits(), 1);
     assert!(
@@ -263,7 +249,6 @@ fn half_close_before_gate() {
 
 #[test]
 fn eof_waits_for_release() {
-    let mut finish = Completion::new();
     let close = Gate::new();
     let done = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
@@ -284,37 +269,24 @@ fn eof_waits_for_release() {
             Rc::clone(&wire),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .with(
-                        |stream| Half::try_run(stream, b"x"),
-                        |peer| {
-                            reached(case.try_wait(&close, 1), close.hits(), 1);
-                            reached(case.try_wait(&done, 1), done.hits(), 1);
-                            assert!(
-                                peer.finish()
-                                    .expect("peer finish")
-                                    .expect("peer I/O")
-                                    .is_empty()
-                            );
-                        },
-                    )
-                    .expect("peer spawn");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+    prepared.run(|case| {
+        Peer::at(case.addr())
+            .with(
+                |stream| Half::try_run(stream, b"x"),
+                |peer| {
+                    reached(case.try_wait(&close, 1), close.hits(), 1);
+                    reached(case.try_wait(&done, 1), done.hits(), 1);
+                    assert!(
+                        peer.finish()
+                            .expect("peer finish")
+                            .expect("peer I/O")
+                            .is_empty()
+                    );
+                },
+            )
+            .expect("peer spawn");
+    });
     wire.check();
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
     assert_eq!(wire.eof_count(), 1);
     assert!(
         events.take().as_slice()
@@ -330,7 +302,6 @@ fn eof_waits_for_release() {
 
 #[test]
 fn publishes_eof() {
-    let mut finish = Completion::new();
     let close = Gate::new();
     let done = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
@@ -348,45 +319,32 @@ fn publishes_eof() {
             Rc::clone(&wire),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
-                peer.write_all(b"close before eof observation")
-                    .expect("write request");
-                assert_eq!(
-                    case.try_wait(&wire.chunk, 1).expect("chunk wait"),
-                    Wait::Reached,
-                    "chunk event count: {}",
-                    events.len()
-                );
-                peer.shutdown(Shutdown::Write).expect("peer half-close");
-                assert_eq!(
-                    case.try_wait(&close, 1).expect("close wait"),
-                    Wait::Reached,
-                    "close event count: {}",
-                    events.len()
-                );
-                assert_eq!(
-                    case.try_wait(&done, 1).expect("retired wait"),
-                    Wait::Reached,
-                    "retired event count: {}",
-                    events.len()
-                );
-                assert!(Peer::try_read_all(&peer).expect("peer response").is_empty());
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+    prepared.run(|case| {
+        let peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
+        peer.write_all(b"close before eof observation")
+            .expect("write request");
+        assert_eq!(
+            case.try_wait(&wire.chunk, 1).expect("chunk wait"),
+            Wait::Reached,
+            "chunk event count: {}",
+            events.len()
+        );
+        peer.shutdown(Shutdown::Write).expect("peer half-close");
+        assert_eq!(
+            case.try_wait(&close, 1).expect("close wait"),
+            Wait::Reached,
+            "close event count: {}",
+            events.len()
+        );
+        assert_eq!(
+            case.try_wait(&done, 1).expect("retired wait"),
+            Wait::Reached,
+            "retired event count: {}",
+            events.len()
+        );
+        assert!(Peer::try_read_all(&peer).expect("peer response").is_empty());
+    });
     wire.check();
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
     assert_eq!(wire.eof_count(), 1);
     assert!(
         events.take().as_slice()

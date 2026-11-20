@@ -47,9 +47,6 @@ pub trait Spec: Sized {
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Identity;
 
-/// Stateless runtime for the transparent wire.
-pub struct Runtime;
-
 impl Spec for Identity {
     type Connection<'d, ID: route::Identity + 'd>
         = Self
@@ -61,7 +58,7 @@ impl Spec for Identity {
     where
         Self: 'd;
     type Runtime<'w, 'd, ID: route::Identity + 'w>
-        = Runtime
+        = Self
     where
         Self: 'w,
         'd: 'w;
@@ -77,17 +74,7 @@ impl Spec for Identity {
     type Send = send::Direct;
 }
 
-impl domain::Init<Identity> for Identity {
-    fn runtime<'w, 'd, ID: route::Identity + 'w>(_: domain::Limits, _: Identity) -> Runtime
-    where
-        Identity: 'w,
-        'd: 'w,
-    {
-        Runtime
-    }
-}
-
-impl<'w, 'd: 'w, ID: route::Identity + 'w> open::Runtime<'w, 'd, Identity, ID> for Runtime {
+impl<'w, 'd: 'w, ID: route::Identity + 'w> open::Runtime<'w, 'd, Identity, ID> for Identity {
     fn open<C, T>(
         &mut self,
         context: C,

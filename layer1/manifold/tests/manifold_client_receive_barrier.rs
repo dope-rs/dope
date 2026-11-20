@@ -29,11 +29,11 @@ use dope_net::{
     tcp::Tcp,
     wire::{
         self,
-        domain::{self, Local},
+        domain::Local,
         failure,
         receive::{
             self,
-            mode::{Disabled, access},
+            mode::Disabled,
         },
     },
 };
@@ -309,10 +309,9 @@ fn run<W>(
     W: input::Execution
         + wire::Spec<OpenFailure = failure::Never, TerminalFailure = failure::Never>
         + 'static,
-    W::Bootstrap: domain::Init<W>,
-    W::Receive: receive::Policy<W, Access = access::Direct, Credit = Disabled>,
+    W::Receive: receive::Policy<W, Credit = Disabled>,
     <W::Receive as receive::Policy<W>>::Reserve: reserve::Choice<W, W::Retained>,
-    for<'d> W::Binding<'d, KeyTag<0>>: Default,
+    for<'d> W::Runtime<'d, 'd, KeyTag<0>>: Default,
 {
     let mut finish = Completion::new();
     let want = (NonZero::<u32>::try_from(count)).expect("input count must fit the completion gate");
@@ -369,7 +368,7 @@ fn run<W>(
             let backoff = runtime.hash_state(Domain::DEFAULT);
             let setup = session::Setup::new(app, ingress::Plan::none());
             let result = plan
-                .bind(Local::<W, KeyTag<0>>::new(Default::default()), backoff)
+                .bind(Local::new(Default::default()), backoff)
                 .install::<_, _, sync::Preserve, _, Bundle<Tcp, W, Balanced>, 1, _, _>(
                     setup,
                     source,

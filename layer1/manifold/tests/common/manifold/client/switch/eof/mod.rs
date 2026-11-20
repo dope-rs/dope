@@ -20,13 +20,12 @@ use dope_manifold::{
             Output, Parser, Resume, Retirement, Scheduling, Session, Stored, Target,
             app::{admit, drain::Ready},
             codec::{self, mode, staging::Limit, storage},
-            policy,
-            response,
+            policy, response,
             response::work,
             turns,
         },
     },
-    network::client::topology::{factory::disabled, plan},
+    network::client::topology::{factory::Application, plan},
     timing::Balanced,
 };
 use dope_net::{
@@ -129,75 +128,66 @@ impl<'d> Stored<'d> for State<'d> {
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        self.decode
-            .decode(storage, state, budget, limit, |preview| self.admit(preview))
+        codec::Input::commit(storage, budget, limit, |input| {
+            self.decode
+                .parsed(state)
+                .map_err(|cause| self.reject(cause))?;
+            Ok(match input.need_more(None) {
+                Some(need) => codec::Parse::More(need),
+                None => codec::Parse::CapacityExhausted,
+            })
+        })
     }
 
     fn finish<'slot, 'id, S>(
         &mut self,
-        input: storage::Owner<'slot, 'id, <Decode as codec::Stateful>::Storage<S>, ParseState>,
+        mut input: storage::Owner<'slot, 'id, S, ParseState>,
         budget: &resident::Budget<'d>,
         limit: Limit,
         _: &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
-    ) -> (
-        storage::Owner<'slot, 'id, <Decode as codec::Stateful>::Storage<S>, ParseState>,
-        Result<codec::Finish<Self::Delivery>, Self::Delivery>,
-    )
+    ) -> codec::Finished<storage::Owner<'slot, 'id, S, ParseState>, Self::Delivery>
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        self.decode
-            .finish(input, budget, limit, |preview| self.admit(preview))
+        let (storage, state) = input.parts();
+        let result = codec::Input::with(storage, budget, limit, |input| {
+            let head = self
+                .decode
+                .finish(state, input.as_slice())
+                .map_err(|cause| self.reject(cause))?;
+            Ok(codec::Finish::Item(self.prepare(head)))
+        });
+        (input, result)
     }
 }
 
-impl<'d> State<'d> {
-    fn admit<'a>(
-        &'a self,
-        preview: Result<&Head, &Error>,
-    ) -> codec::Admission<
-        impl FnOnce(Result<Head, Error>, &mut ParseState) -> Option<Head> + use<'a, 'd>,
-    > {
-        let mut accepted = true;
-        if preview.is_ok() && self.phase.get() == 0 {
+impl State<'_> {
+    fn reject(&self, cause: Error) -> response::Delivery<Head> {
+        self.audit.faults.record(Switch(cause));
+        response::Delivery::Committed
+    }
+
+    fn prepare(&self, head: Head) -> response::Delivery<Head> {
+        let phase = self.phase.get();
+        if phase == 0 {
             self.phase.set(1);
             self.stages.blocked.hit();
             if let Some(target) = self.target.get() {
                 if self.deferred.is_none() {
                     target.wake();
                 }
-                return codec::Admission::RetryInput;
+                return response::Delivery::RetryInput;
             }
-            self.audit.faults.record(Switch(Error::Unregistered));
-            accepted = false;
+            return self.reject(Error::Unregistered);
         }
-        codec::Admission::Ready(move |result: Result<Head, Error>, state: &mut ParseState| {
-            if accepted {
-                self.deliver(result, state)
-            } else {
-                None
-            }
-        })
-    }
-
-    fn deliver(&self, result: Result<Head, Error>, _state: &mut ParseState) -> Option<Head> {
-        let head = match result {
-            Ok(head) => head,
-            Err(cause) => {
-                self.audit.faults.record(Switch(cause));
-                return None;
-            }
-        };
-        let phase = self.phase.get();
         if phase != 1 {
-            self.audit.faults.record(Switch(Error::Phase {
+            return self.reject(Error::Phase {
                 actual: phase,
                 expected: 1,
-            }));
-            return None;
+            });
         }
         self.phase.set(2);
-        Some(head)
+        response::Delivery::Prepared(head)
     }
 }
 
@@ -267,11 +257,7 @@ impl<'d> Output<'d> for State<'d> {
         self.audit.record_sent();
     }
 
-    fn cancel(
-        &mut self,
-        payload: Self::Send,
-        _: &mut region::Token<region::Identity<'d, 1>>,
-    ) {
+    fn cancel(&mut self, payload: Self::Send, _: &mut region::Token<region::Identity<'d, 1>>) {
         drop(payload);
         self.audit.cancelled();
     }
@@ -425,54 +411,23 @@ impl settings::Resource for Eof {
     }
 }
 
-impl disabled::Application<(), KeyTag<0>, 1, Bundle<Tcp, wire::Identity, Balanced>> for Eof {
+impl<'life, 'p, 'd>
+    Application<'life, 'p, 'd, (), KeyTag<0>, 1, Bundle<Tcp, wire::Identity, Balanced>> for Eof
+{
     type Input = plan::Local;
-    type Session<'life, 'p, 'd>
-        = State<'d>
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        (): 'd,
-        wire::Identity: 'd;
-    type Source<'life, 'p, 'd>
-        = ingress::None
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        (): 'd,
-        wire::Identity: 'd;
-    type Wire<'life, 'p, 'd>
-        = domain::Local<'d, wire::Identity, KeyTag<0>>
-    where
-        'd: 'p,
-        'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        (): 'd,
-        wire::Identity: 'd;
+    type Session = State<'d>;
+    type Source = ingress::None;
+    type Wire = domain::Local<wire::Identity>;
     type Error = Infallible;
 
-    fn build<'life, 'p, 'd>(
+    fn build(
         self,
         _: &'life (),
-    ) -> Result<
-        (
-            session::Setup<'d, Self::Session<'life, 'p, 'd>, Self::Source<'life, 'p, 'd>>,
-            Self::Wire<'life, 'p, 'd>,
-        ),
-        Self::Error,
-    >
+    ) -> Result<(session::Setup<'d, Self::Session, Self::Source>, Self::Wire), Self::Error>
     where
+        Self: 'd,
         'd: 'p,
         'p: 'life,
-        'd: 'life,
-        Self: 'd,
-        (): 'd,
-        wire::Identity: 'd,
     {
         let state = State {
             audit: self.audit,

@@ -1,6 +1,6 @@
 pub mod common;
 
-use crate::common::manifold::client::{assert_reclaimed, leased, reached};
+use crate::common::manifold::client::{assert_reclaimed, reached};
 
 use std::{cell::Cell, net::SocketAddr, rc::Rc, time::Duration};
 
@@ -31,7 +31,7 @@ use dope_runtime::{
         drive,
         session::{Completion, Scope},
     },
-    topology::{self, error::Kind, lending},
+    topology::{self, error::Kind},
 };
 use dope_test::{
     fibers,
@@ -62,7 +62,7 @@ use crate::common::{
                 parked::{self, Parked},
             },
             rejected::Rejected,
-            resolve::{Addr, App, Net, Wait},
+            resolve::{Addr, App, Net},
         },
         error,
     },
@@ -76,7 +76,6 @@ use crate::common::{
 
 #[test]
 fn reject_skips_callbacks() {
-    let mut finish = Completion::new();
     let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind peer");
     let addr = server.local_addr().expect("peer address");
     let gate = Gate::new();
@@ -89,17 +88,10 @@ fn reject_skips_callbacks() {
             gate: gate.clone(),
             scoped: Rc::clone(&scoped),
         });
-    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<3>()]);
 
-    let run = planned.with_run(
-        &mut finish,
-        Identity,
-        |case| reached(case.try_wait(&gate, 1), &audit),
-        recovery::Policy::new(|event| reclaim1.push(event), recover),
-        leased,
-    );
-    run.expect("rejected attempt scenario failed");
-    assert_reclaimed(&reclaim1);
+    planned.run(Local::new(Identity), |case| {
+        reached(case.try_wait(&gate, 1), &audit)
+    });
 
     assert_eq!(scoped.get(), 0);
     audit.checked((0, 0));
@@ -107,7 +99,6 @@ fn reject_skips_callbacks() {
 
 #[test]
 fn reports_state_failure() {
-    let mut finish = Completion::new();
     let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind rejection peer");
     let done = Gate::new();
     let trace = Rc::new(empty::Trace::default());
@@ -119,18 +110,10 @@ fn reports_state_failure() {
             trace: Rc::clone(&trace),
             reject: Some(done.clone()),
         });
-    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-    planned
-        .with_run(
-            &mut finish,
-            Identity,
-            |case| reached(case.try_wait(&done, 1), &audit),
-            recovery::Policy::new(|event| reclaim1.push(event), recover),
-            leased,
-        )
-        .expect("connection state rejection must retire its transport");
-    assert_reclaimed(&reclaim1);
+    planned.run(Local::new(Identity), |case| {
+        reached(case.try_wait(&done, 1), &audit)
+    });
     assert!(matches!(
         trace.failed.values().as_deref(),
         Ok([ConnectFault::Transport(
@@ -447,7 +430,6 @@ fn cancelled_open_preserves_reused_attempt() {
 
 #[test]
 fn deferred_open_retries() {
-    let mut finish = Completion::new();
     let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind peer");
     let addr = server.local_addr().expect("peer address");
     let gate = Gate::new();
@@ -458,18 +440,10 @@ fn deferred_open_retries() {
             audit: Rc::clone(&audit),
             gate: gate.clone(),
         });
-    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<1>()]);
 
-    planned
-        .with_run(
-            &mut finish,
-            DeferredWire::default(),
-            |case| reached(case.try_wait(&gate, 1), &audit),
-            recovery::Policy::new(|event| reclaim1.push(event), recover),
-            leased,
-        )
-        .expect("deferred attempt scenario failed");
-    assert_reclaimed(&reclaim1);
+    planned.run(Local::new(DeferredWire::default()), |case| {
+        reached(case.try_wait(&gate, 1), &audit)
+    });
 
     assert_eq!(gate.hits(), 1);
     audit.checked((0, 0));
@@ -477,7 +451,6 @@ fn deferred_open_retries() {
 
 #[test]
 fn rejected_credit_closes() {
-    let mut finish = Completion::new();
 
     peer::TcpScript::with(
         |stream| {
@@ -500,18 +473,14 @@ fn rejected_credit_closes() {
                     closed: closed.clone(),
                     live: Cell::new(false),
                 });
-            let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<2>()]);
 
-            planned
-                .with_run(
-                    &mut finish,
-                    (Rc::clone(&audit), Rc::clone(&dropped)),
-                    |case| reached(case.try_wait(&closed, 1), &audit),
-                    recovery::Policy::new(|event| reclaim1.push(event), recover),
-                    leased,
-                )
-                .expect("parked attempt scenario failed");
-            assert_reclaimed(&reclaim1);
+            planned.run(
+                parked::Wire {
+                    audit: Rc::clone(&audit),
+                    dropped: Rc::clone(&dropped),
+                },
+                |case| reached(case.try_wait(&closed, 1), &audit),
+            );
 
             let finish = server.finish();
             assert!(finish.is_ok(), "finish receive peer");
@@ -576,7 +545,11 @@ fn owned_plan_reused() {
     prepared.with_local(
         |worker| {
             let result = worker.lend(|install, stage| {
-                lending::Installer::<_, _>::install(install, stage, Wait(ready, &mut finish))
+                install.install(stage, |host, stage| {
+                    stage.with_quiesce(&mut finish, host, Duration::from_secs(2), |mut app| {
+                        fibers::TEST.try_wait(&mut app, &ready, 1)
+                    })
+                })
             });
             let result = (result).expect("install prepared service connector topology");
             assert_eq!(

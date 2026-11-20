@@ -1,29 +1,101 @@
 use crate::state::{direct, staged};
+use o3::base::num::bounded;
 use o3::buffer::pool::owners;
 use std::num;
 
-use crate::state::direct::source::Head;
-use crate::tls::receive::stream::{Backing, Current, HeadBacking, Retained};
+use crate::tls::receive::stream::{Backing, Retained, Staged};
 use dope::core::driver::route::Identity;
-use dope::core::io::recv;
+use dope::core::io::{recv, transfer};
 use dope::net::wire;
 use dope::net::wire::receive::{self, batch};
+use o3::buffer::write::consume::{self, Consume};
 use o3::buffer::{self, bytes, hold, pool, resident, storage};
 
-// SAFETY: Retained's shared projection and next select the same current head.
-// Its exclusive head loan preserves that range until the prefix is committed.
-unsafe impl buffer::raw::Consume for stream::Retained<'_, '_> {
-    fn consume<const MAX: u32>(prefix: buffer::raw::Consumed<'_, '_, Self, MAX>) {
-        use receive::mode::access;
-
-        let (cursor, end) = prefix.into_parts();
-        if let Some(mut head) = access::Sequence::next(cursor) {
-            // SAFETY: next borrows the same initialized head that admitted end.
-            <stream::Current<'_, '_, '_> as buffer::raw::Consume>::consume(unsafe {
-                buffer::raw::Consumed::from_parts(&mut head, end)
-            });
-            access::Head::commit(head);
+impl<'w, 'd> Retained<'w, 'd> {
+    pub(in crate::tls::receive) fn try_new(
+        staged: Option<Staged<'w>>,
+        plain: direct::source::Cursor<'d>,
+    ) -> Result<Option<Self>, error::Error> {
+        let staged = staged.filter(|chunk| !buffer::Source::is_empty(chunk));
+        let body = plain.remaining();
+        let plain = (body != 0).then_some(plain);
+        let stage = staged.as_ref().map_or(0, buffer::Source::remaining);
+        let len = bounded::Usize::<{ transfer::MAX_BYTES }>::ZERO
+            .try_add(stage)
+            .map_err(error::Error::Staged)?
+            .try_add(body)
+            .map_err(error::Error::Retained)?;
+        if len.get() == 0 {
+            return Ok(None);
         }
+        let staged = staged.map(|chunk| {
+            // SAFETY: the first addition admitted this stable owner's exact length within MAX_BYTES.
+            bytes::bounded::Value::from_raw(unsafe { bytes::bounded::raw::Input::new(chunk) })
+        });
+        Ok(Some(Self {
+            staged,
+            plain,
+            remaining: transfer::Len::from_count(len),
+        }))
+    }
+
+    // `used` must be the exact byte count just consumed from this cursor's head.
+    unsafe fn advance(&mut self, used: usize) {
+        let left = self.remaining.into_raw() - used;
+        // SAFETY: the consumed head prefix fit the admitted total, so left also fits MAX_BYTES.
+        self.remaining = transfer::Len::from(unsafe { bounded::raw::u32(left as u32) });
+        if self.staged.as_ref().is_some_and(buffer::Source::is_empty) {
+            self.staged = None;
+        }
+    }
+}
+
+impl Consume for Retained<'_, '_> {
+    fn remaining(&self) -> usize {
+        self.as_ref().len()
+    }
+
+    fn try_consume(&mut self, amount: usize) -> Result<(), consume::Error> {
+        if let Some(staged) = &mut self.staged {
+            staged.try_consume(amount)?;
+        } else if let Some(plain) = &mut self.plain {
+            plain.try_consume(amount)?;
+        } else {
+            return consume::Error::check(amount, 0);
+        }
+        // SAFETY: the selected head successfully consumed exactly amount.
+        unsafe { self.advance(amount) };
+        Ok(())
+    }
+
+    fn consume_max(&mut self, max: usize) -> usize {
+        let used = if let Some(staged) = &mut self.staged {
+            staged.consume_max(max)
+        } else {
+            self.plain.as_mut().map_or(0, |plain| plain.consume_max(max))
+        };
+        // SAFETY: the selected head returned the count it consumed, or there was no head.
+        unsafe { self.advance(used) };
+        used
+    }
+}
+
+// SAFETY: the admitted prefix, view and slice select the same exclusive head.
+unsafe impl buffer::raw::Consume for Retained<'_, '_> {
+    fn consume<const MAX: u32>(prefix: buffer::raw::Consumed<'_, '_, Self, MAX>) {
+        let (cursor, end) = prefix.into_parts();
+        let used = end.count().get() as usize;
+        if let Some(staged) = &mut cursor.staged {
+            // SAFETY: a present staged owner is the exact current head.
+            buffer::raw::Consume::consume(unsafe { buffer::raw::Consumed::from_parts(staged, end) });
+        } else if let Some(plain) = &mut cursor.plain {
+            // SAFETY: the current view is this cursor's authenticated plaintext suffix.
+            buffer::raw::Consume::consume(unsafe { buffer::raw::Consumed::from_parts(plain, end) });
+        } else {
+            unreachable!("head");
+        }
+        // SAFETY: the exclusive head consumed the prefix identified by this same end.
+        unsafe { cursor.advance(used) };
     }
 }
 
@@ -31,7 +103,7 @@ use crate::{
     error,
     tls::{
         self,
-        receive::{Batch, Ingress, stream},
+        receive::{Batch, Ingress},
         roles,
     },
 };
@@ -88,55 +160,8 @@ const _: () = {
     }
 };
 
-// SAFETY: The current immutable view delegates retention to its unchanged backing variant.
-unsafe impl<'w, 'd> hold::raw::Retain<'d> for Retained<'w, 'd> {
-    fn try_copy<'a>(
-        plan: &Self::View<'a>,
-        budget: &resident::Budget<'d>,
-    ) -> Result<storage::Owned<resident::Budget<'d>>, hold::Error>
-    where
-        Self: 'a,
-    {
-        <Current<'a, 'w, 'd> as hold::raw::Retain<'d>>::try_copy(plan, budget)
-    }
-
-    fn resident<'a>(plan: &Self::View<'a>) -> usize
-    where
-        Self: 'a,
-    {
-        <Current<'a, 'w, 'd> as hold::raw::Retain<'d>>::resident(plan)
-    }
-
-    fn try_retain<'a>(
-        plan: &Self::View<'a>,
-        budget: &resident::Budget<'d>,
-    ) -> Result<hold::Retained<'d>, hold::Error>
-    where
-        Self: 'a,
-    {
-        <Current<'a, 'w, 'd> as hold::raw::Retain<'d>>::try_retain(plan, budget)
-    }
-}
-
-// SAFETY: each variant exclusively borrows one stable plaintext head.
-unsafe impl buffer::raw::Consume for Current<'_, '_, '_> {
-    fn consume<const MAX: u32>(prefix: buffer::raw::Consumed<'_, '_, Self, MAX>) {
-        let (current, end) = prefix.into_parts();
-        match &mut current.backing {
-            HeadBacking::Staged(head) => {
-                // SAFETY: the matched head exposes exactly Current's byte range.
-                bytes::Cursor::consume(unsafe { buffer::raw::Consumed::from_parts(head, end) });
-            }
-            HeadBacking::Plain(head) => {
-                // SAFETY: the matched head exposes exactly Current's byte range.
-                Head::consume(unsafe { buffer::raw::Consumed::from_parts(head, end) });
-            }
-        }
-    }
-}
-
 // SAFETY: Each immutable backing view retains its exact range or copies those exact bytes.
-unsafe impl<'w, 'd> hold::raw::Retain<'d> for Current<'_, 'w, 'd> {
+unsafe impl<'w, 'd> hold::raw::Retain<'d> for Retained<'w, 'd> {
     fn try_copy<'a>(
         plan: &Self::View<'a>,
         budget: &resident::Budget<'d>,

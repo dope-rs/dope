@@ -5,7 +5,7 @@ use dope_core::{
     io::{event::{batch::Flow, net::recv}, recv::Lease},
 };
 use dope_net::wire::{
-    self, domain, failure, open, receive,
+    self, failure, open, receive,
     receive::{batch, eof, mode, reserve},
     send, terminal,
 };
@@ -88,7 +88,6 @@ impl Drop for Items<'_> {
 impl receive::Policy<Wire> for Receive {
     type Batch<'a> = Items<'a>;
     type Cursor<'w, 'd> = dope_core::io::recv::Shared<'d> where 'd: 'w;
-    type Access = mode::access::Direct;
     type Eof = eof::Clean;
     type Reserve = reserve::Borrowed;
     type Credit = mode::Disabled;
@@ -142,13 +141,5 @@ impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for State {
     ) -> open::Outcome<C, T, open::Error<'w, Wire>> {
         let output = consume(context, self.clone(), ()).into_output(|_, ()| ());
         open::Outcome::Opened(output)
-    }
-}
-
-impl domain::Init<Wire> for Wire {
-    fn runtime<'w, 'd, ID: Identity + 'w>(_: domain::Limits, state: State) -> State
-    where 'd: 'w,
-    {
-        state
     }
 }

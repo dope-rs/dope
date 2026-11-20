@@ -94,69 +94,6 @@ impl Stateful for Decode {
     }
 }
 
-impl Decode {
-    fn decode<'d, S, T, F>(
-        &self,
-        storage: &mut S,
-        state: &mut ParseState,
-        budget: &resident::Budget<'d>,
-        limit: Limit,
-        _: impl FnOnce(Result<&Head, &switch::Error>) -> codec::Admission<F>,
-    ) -> codec::Step<T>
-    where
-        S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
-        T: response::Outcome,
-        F: FnOnce(Result<Head, switch::Error>, &mut ParseState) -> T::Accepted,
-    {
-        state.parsed = true;
-        match storage.as_ref().len() {
-            1 => self.partial.hit(),
-            2 => self.full.hit(),
-            _ => {}
-        }
-        codec::Input::wait_eof(storage, budget, limit)
-    }
-
-    fn finish<'slot, 'id, 'd, S, T, F>(
-        &self,
-        mut input: storage::Owner<'slot, 'id, S, ParseState>,
-        budget: &resident::Budget<'d>,
-        limit: Limit,
-        admit: impl FnOnce(Result<&Head, &switch::Error>) -> codec::Admission<F>,
-    ) -> (
-        storage::Owner<'slot, 'id, S, ParseState>,
-        Result<codec::Finish<T>, T>,
-    )
-    where
-        S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
-        T: response::Outcome,
-        F: FnOnce(Result<Head, switch::Error>, &mut ParseState) -> T::Accepted,
-    {
-        let (storage, state) = input.parts();
-        let result = codec::Input::with(storage, budget, limit, |input| {
-            switch::finished(self.finish_once(state, input), state, admit)
-        });
-        (input, result)
-    }
-
-    fn finish_once<'id, 'input, 'd, R: buffer::Cursor>(
-        &self,
-        state: &mut ParseState,
-        input: codec::Input<'id, 'input, 'd, R>,
-    ) -> Result<codec::Finish<Head>, switch::Error>
-    where
-        'd: 'input,
-    {
-        if !state.parsed {
-            return Err(switch::Error::UnparsedEof);
-        }
-        if input.as_slice() != b"TT" {
-            return Err(switch::Error::TerminalBytes(input.as_slice().to_vec()));
-        }
-        Ok(codec::Finish::Item(Head))
-    }
-}
-
 pub struct Eof {
     pub(crate) audit: Rc<Report<error::Error, 16>>,
 
@@ -232,51 +169,45 @@ impl<'d> Stored<'d> for Eof {
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        self.decode.decode(storage, state, budget, limit, |_| {
-            codec::Admission::Ready(|result, state: &mut ParseState| self.deliver(result, state))
-        })
+        state.parsed = true;
+        match storage.as_ref().len() {
+            1 => self.decode.partial.hit(),
+            2 => self.decode.full.hit(),
+            _ => {}
+        }
+        codec::Input::wait_eof(storage, budget, limit)
     }
 
     fn finish<'slot, 'id, S>(
         &mut self,
-        input: storage::Owner<'slot, 'id, <Decode as codec::Stateful>::Storage<S>, ParseState>,
+        mut input: storage::Owner<'slot, 'id, S, ParseState>,
         budget: &resident::Budget<'d>,
         limit: Limit,
         _: &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
-    ) -> (
-        storage::Owner<'slot, 'id, <Decode as codec::Stateful>::Storage<S>, ParseState>,
-        Result<codec::Finish<Self::Delivery>, Self::Delivery>,
-    )
+    ) -> codec::Finished<storage::Owner<'slot, 'id, S, ParseState>, Self::Delivery>
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        self.decode.finish(input, budget, limit, |_| {
-            codec::Admission::Ready(|result, state: &mut ParseState| self.deliver(result, state))
-        })
-    }
-}
-
-impl Eof {
-    fn deliver(
-        &self,
-        result: Result<Head, switch::Error>,
-        _state: &mut ParseState,
-    ) -> Option<Head> {
-        let head = match result {
-            Ok(head) => head,
-            Err(cause) => {
-                self.audit.faults.record(Switch(cause));
-                return None;
-            }
-        };
-        let actual = self.phase.replace(1);
-        if actual != 0 {
-            self.audit.faults.record(Switch(switch::Error::Phase {
-                actual,
-                expected: 0,
-            }));
-        }
-        Some(head)
+        let (storage, state) = input.parts();
+        let result = codec::Input::with(storage, budget, limit, |input| {
+            let cause = if !state.parsed {
+                switch::Error::UnparsedEof
+            } else if input.as_slice() != b"TT" {
+                switch::Error::TerminalBytes(input.as_slice().to_vec())
+            } else {
+                let actual = self.phase.replace(1);
+                if actual != 0 {
+                    self.audit.faults.record(Switch(switch::Error::Phase {
+                        actual,
+                        expected: 0,
+                    }));
+                }
+                return Ok(codec::Finish::Item(response::Delivery::Prepared(Head)));
+            };
+            self.audit.faults.record(Switch(cause));
+            Err(response::Delivery::Committed)
+        });
+        (input, result)
     }
 }
 

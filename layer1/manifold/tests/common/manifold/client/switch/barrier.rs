@@ -186,7 +186,7 @@ impl<'d> Stored<'d> for Barrier<'d> {
     fn decode<S>(
         &mut self,
         _: conn::Id<'d, KeyTag<0>>,
-        storage: &mut <Decode as codec::Stateful>::Storage<S>,
+        storage: &mut decode::Storage<S>,
         state: &mut State,
         budget: &resident::Budget<'d>,
         limit: Limit,
@@ -195,40 +195,33 @@ impl<'d> Stored<'d> for Barrier<'d> {
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        self.decode.decode(storage, state, budget, limit, |_| {
-            codec::Admission::Ready(|result, state: &mut State| self.deliver(result, state))
-        })
+        self.decode
+            .decode(storage, state, budget, limit, |result| self.deliver(result))
     }
 
     fn finish<'slot, 'id, S>(
         &mut self,
-        input: Owner<'slot, 'id, <Decode as codec::Stateful>::Storage<S>, State>,
-        budget: &resident::Budget<'d>,
-        limit: Limit,
+        input: Owner<'slot, 'id, decode::Storage<S>, State>,
+        _: &resident::Budget<'d>,
+        _: Limit,
         _: &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
-    ) -> (
-        Owner<'slot, 'id, <Decode as codec::Stateful>::Storage<S>, State>,
-        Result<codec::Finish<Self::Delivery>, Self::Delivery>,
-    )
+    ) -> codec::Finished<Owner<'slot, 'id, decode::Storage<S>, State>, Self::Delivery>
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        self.decode.finish(input, budget, limit, |_| {
-            codec::Admission::Ready(|result, state: &mut State| self.deliver(result, state))
-        })
+        self.decode.finish(input, &self.audit)
     }
 }
 
 impl Barrier<'_> {
-    fn deliver(&self, result: Result<Head, decode::Error>, _state: &mut State) -> Option<Head> {
-        let head = match result {
-            Ok(head) => head,
+    fn deliver(&self, result: Result<Head, decode::Error>) -> response::Delivery<Head> {
+        match result {
+            Ok(head) => response::Delivery::Prepared(head),
             Err(cause) => {
                 self.audit.faults.record(error::Error::Decode(cause));
-                return None;
+                response::Delivery::Committed
             }
-        };
-        Some(head)
+        }
     }
 }
 

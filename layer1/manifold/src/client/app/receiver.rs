@@ -1,12 +1,10 @@
-use std::convert;
-
 use dope_core::driver::{self, route::Identity, schedule};
 use dope_net::{
     link::pool::recv::input,
     wire::receive::{Chunk, batch},
 };
 
-use crate::{app::receive::ingress, client::app};
+use crate::{app::receive::Outcome, client::app};
 
 pub(in crate::client) trait Receiver<'w, 'd: 'w, ID: Identity, A>
 where
@@ -19,7 +17,7 @@ where
         batch: batch::Items<'input, A::Wire>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
-    ) -> (Self::Remaining, ingress::Progress<convert::Infallible>)
+    ) -> (Self::Remaining, Outcome)
     where
         'd: 'input,
         A: app::Borrowed<'d, ID>;
@@ -30,7 +28,7 @@ where
         receipt: input::Receipt<A::Wire, crate::app::receive::Owned<R>>,
         turn: schedule::Turn<'turn, 'd>,
         driver: &'driver mut driver::Context<'context, 'd>,
-    ) -> (Self::Remaining, ingress::Progress<convert::Infallible>)
+    ) -> (Self::Remaining, Outcome)
     where
         A: app::Owned<'w, 'd, ID, R>;
 }

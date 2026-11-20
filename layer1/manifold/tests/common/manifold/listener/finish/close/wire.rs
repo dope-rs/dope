@@ -1,6 +1,6 @@
 use dope_core::driver::route::Identity;
 use dope_net::wire::{
-    self, domain, failure, open, receive, receive::mode, send, send::reclaim, terminal,
+    self, failure, open, receive, receive::mode, send, send::reclaim, terminal,
 };
 use dope_test::harness::signals::{Gate, Progress as _};
 use o3::buffer::write::Sink as _;
@@ -185,17 +185,4 @@ impl wire::Spec for Wire {
     type Bootstrap = Wire;
     type Receive = receive::Transparent<mode::Disabled>;
     type Send = Send;
-}
-
-impl domain::Init<Wire> for Wire {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: domain::Limits,
-        faults: <Wire as wire::Spec>::Binding<'w, ID>,
-    ) -> <Wire as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Wire: 'w,
-        'd: 'w,
-    {
-        faults
-    }
 }

@@ -4,14 +4,14 @@ use dope_core::{
 };
 use dope_manifold::timing;
 use dope_net::wire::{
-    self, domain, failure, open, receive,
+    self, failure, open, receive,
     receive::{batch, mode},
     send,
     send::{Completion, Context, Payload, Plain, Prepared, Storage, Transition, Vectored, reclaim},
     terminal,
 };
 use o3::base::time::Positive;
-use wire::receive::{eof, mode::access, reserve};
+use wire::receive::{eof, reserve};
 
 #[derive(Default)]
 pub struct Wire {
@@ -53,7 +53,6 @@ impl receive::Policy<Wire> for Recv {
         = recv::Shared<'d>
     where
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::Clean;
     type Reserve = reserve::Borrowed;
     type Credit = mode::Disabled;
@@ -192,17 +191,4 @@ impl wire::Spec for Wire {
     type Bootstrap = Self;
     type Receive = Recv;
     type Send = Send;
-}
-
-impl domain::Init<Wire> for Wire {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: domain::Limits,
-        _: <Wire as wire::Spec>::Binding<'w, ID>,
-    ) -> <Wire as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Wire: 'w,
-        'd: 'w,
-    {
-        Runtime
-    }
 }

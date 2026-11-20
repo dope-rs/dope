@@ -3,7 +3,6 @@ pub mod common;
 use std::sync::Arc;
 
 use common::{
-    Read,
     fiber::client::Client,
     native, state,
     state::{name, signing_key},
@@ -32,7 +31,7 @@ use dope_tls::{
     config,
     tls::{Tls, client::Plan, endpoint, roles},
 };
-use o3::buffer::Source as _;
+use o3::buffer::{Source as _, write::consume::Consume as _};
 use rustls::{
     AlertDescription, HandshakeKind, client::Resumption, server::ServerSessionMemoryCache,
 };
@@ -144,10 +143,10 @@ fn cloned_plan_policy() {
                                             .map_err(|cause| format!("{:?}", cause.map_ref(terminal::Error::causes)))
                                             .expect("authenticated TLS read") else { break };
                                         while !lease.is_empty() {
-                                            lease.drive(Ok(()), &mut Read(|head: &[u8]| {
-                                                received.extend_from_slice(head);
-                                                head.len()
-                                            })).expect("consume response");
+                                            let head = lease.as_ref();
+                                            let count = head.len();
+                                            received.extend_from_slice(head);
+                                            lease.try_consume(count).expect("consume response");
                                         }
                                     }
                                     assert_eq!(received, b"x");

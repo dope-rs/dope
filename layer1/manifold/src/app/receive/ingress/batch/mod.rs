@@ -1,11 +1,9 @@
-use std::convert;
-
 use dope_net::wire::{
     self,
     receive::{self, batch::Items},
 };
 
-use crate::app::receive::{Outcome, ingress::Progress};
+use crate::app::receive::Outcome;
 
 mod grant;
 
@@ -15,7 +13,7 @@ pub(crate) fn drive<'input, W, S, F>(
     mut items: Items<'input, W>,
     mut state: S,
     mut recv: F,
-) -> (Option<S>, Progress<convert::Infallible>)
+) -> (Option<S>, Outcome)
 where
     W: wire::Spec,
     F: FnMut(
@@ -25,14 +23,14 @@ where
 {
     for item in &mut items {
         let (next, outcome) = recv(state, item);
-        let Some(next) = next else { return (None, Progress::Done(outcome)) };
+        let Some(next) = next else { return (None, outcome) };
         state = next;
         match outcome {
             Outcome::Continue => {}
             done @ (Outcome::CloseAfter | Outcome::Failed(_)) => {
-                return (Some(state), Progress::Done(done));
+                return (Some(state), done);
             }
         }
     }
-    (Some(state), Progress::Done(Outcome::Continue))
+    (Some(state), Outcome::Continue)
 }

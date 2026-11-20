@@ -13,7 +13,7 @@ use dope_manifold::{
     },
 };
 use dope_net::wire::{
-    self, Identity, domain, domain::Limits, failure, open, receive, receive::mode, send, terminal,
+    self, Identity, failure, open, receive, receive::mode, send, terminal,
 };
 use dope_test::harness::{observe::Trace, signals::Gate};
 use o3::{
@@ -25,8 +25,6 @@ use o3::{
 pub struct Open;
 
 pub struct Wire;
-
-pub struct Bootstrap;
 
 impl failure::Errors<failure::Open> for Wire {
     type Error<'d>
@@ -56,19 +54,6 @@ impl<'w, 'd: 'w, ID: route::Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for R
     }
 }
 
-impl domain::Init<Wire> for Bootstrap {
-    fn runtime<'w, 'd, ID: route::Identity + 'w>(
-        _: Limits,
-        _: <Wire as wire::Spec>::Binding<'w, ID>,
-    ) -> <Wire as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Wire: 'w,
-        'd: 'w,
-    {
-        Runtime(Cell::new(true))
-    }
-}
-
 impl wire::Spec for Wire {
     type Connection<'d, ID: route::Identity + 'd> = Identity;
     type Storage<ID: route::Identity> = ();
@@ -82,7 +67,7 @@ impl wire::Spec for Wire {
     type OpenFailure = failure::Possible;
     type TerminalFailure = failure::Never;
 
-    type Bootstrap = Bootstrap;
+    type Bootstrap = Self;
     type Receive = receive::Transparent<mode::Disabled>;
     type Send = send::Direct;
 }

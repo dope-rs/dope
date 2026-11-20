@@ -27,8 +27,7 @@ use dope_tls::tls::{Tls, endpoint::layout::Staged, roles::Server};
 use o3::buffer::{self, Source as _, write::consume::Consume};
 
 use crate::common::{
-    Read,
-    fiber::{App, Bound, FIRST, MAX_CONNECTIONS, Peer, credit, retain::Retain},
+    fiber::{App, Bound, FIRST, MAX_CONNECTIONS, Peer, credit, retain::retain},
     state,
 };
 
@@ -235,15 +234,7 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                                                 });
                                                 assert_eq!(alloc, (0, 0));
                                             }
-                                            first
-                                                .drive(
-                                                    Ok(()),
-                                                    &mut Read(|head: &[u8]| {
-                                                        assert_eq!(head, body);
-                                                        0
-                                                    }),
-                                                )
-                                                .expect("observe held plaintext");
+                                            assert_eq!(first.as_ref(), body);
 
                                             let result = match warm {
                                                 Some(warm) => {
@@ -260,9 +251,7 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                                                         Ok(Ok(()))
                                                     ));
                                                     if escaped {
-                                                        let saved = first
-                                                            .drive(None, &mut Retain(&budget))
-                                                            .expect("staged head")
+                                                        let saved = retain(&mut first, &budget)
                                                             .expect("retain staged backing")
                                                             .try_owned()
                                                             .expect(
@@ -302,14 +291,9 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                                                         })
                                                         .expect("receive after final owner drop")
                                                         .expect("peer record");
-                                                            next.drive(
-                                                                Ok(()),
-                                                                &mut Read(|head: &[u8]| {
-                                                                    assert_eq!(head, expected);
-                                                                    head.len()
-                                                                }),
-                                                            )
-                                                            .expect("consume resumed peer record");
+                                                            assert_eq!(next.as_ref(), expected);
+                                                            next.try_consume(expected.len())
+                                                                .expect("consume resumed peer record");
                                                         }
                                                         return;
                                                     }
@@ -347,14 +331,8 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                                                     .expect("peer must supply independent record");
                                                 let ((), alloc) = Tracker::usage(move || {
                                                     let mut probe = probe;
-                                                    probe
-                                                        .drive(
-                                                            Ok(()),
-                                                            &mut Read(|head: &[u8]| {
-                                                                assert_eq!(head, INDEPENDENT);
-                                                                head.len()
-                                                            }),
-                                                        )
+                                                    assert_eq!(probe.as_ref(), INDEPENDENT);
+                                                    probe.try_consume(INDEPENDENT.len())
                                                         .expect("consume independent plaintext");
                                                     assert!(probe.is_empty());
                                                 });
@@ -387,7 +365,7 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                                                     ),
                                                     &body[2..],
                                                 );
-                                                let saved = first.drive(None, &mut Retain(&budget));
+                                                let saved = retain(&mut first, &budget);
                                                 assert!(first.is_empty());
                                                 assert!(
                                                     buffer::Read::as_slice(
@@ -403,9 +381,7 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                                                 saved
                                             });
                                             assert_eq!(alloc, (0, 0));
-                                            let saved = (saved)
-                                                .expect("the nonempty suffix retains its owner")
-                                                .expect("retain admitted plaintext owner");
+                                            let saved = saved.expect("retain admitted plaintext owner");
                                             assert_eq!(saved.as_slice(), &body[2..]);
                                             if fail {
                                                 assert!(matches!(
@@ -439,14 +415,9 @@ fn run_credit(body: &'static [u8], recv: Receive, joined: bool, fail: bool, esca
                                                 .expect("peer must supply resumed record");
                                             let ((), alloc) = Tracker::usage(move || {
                                                 let mut next = next;
-                                                next.drive(
-                                                    Ok(()),
-                                                    &mut Read(|head: &[u8]| {
-                                                        assert_eq!(head, AFTER_RELEASE);
-                                                        head.len()
-                                                    }),
-                                                )
-                                                .expect("consume resumed plaintext");
+                                                assert_eq!(next.as_ref(), AFTER_RELEASE);
+                                                next.try_consume(AFTER_RELEASE.len())
+                                                    .expect("consume resumed plaintext");
                                                 assert!(next.is_empty());
                                             });
                                             assert_eq!(alloc, (0, 0));

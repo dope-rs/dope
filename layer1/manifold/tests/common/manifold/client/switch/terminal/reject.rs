@@ -8,7 +8,7 @@ use dope_manifold::client::{
         self, Output, Parser, Resume, Retirement, Scheduling, Session, Stored, Target,
         app::drain::Ready,
         codec::{
-            self, Codec, Parse, Stateful, mode,
+            self, Codec, Stateful, mode,
             staging::{Buffered, Limit},
             storage,
         },
@@ -96,74 +96,13 @@ impl Stateful for Decode {
     }
 }
 
-impl Decode {
-    fn decode<'d, S, T, F>(
-        &self,
-        storage: &mut S,
-        state: &mut ParseState,
-        budget: &resident::Budget<'d>,
-        limit: Limit,
-        admit: impl FnOnce(Result<&Infallible, &Fault>) -> codec::Admission<F>,
-    ) -> codec::Step<T>
-    where
-        S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
-        T: response::Outcome,
-        F: FnOnce(Result<Infallible, Fault>, &mut ParseState) -> T::Accepted,
-    {
-        codec::Input::commit(storage, budget, limit, |input| {
-            switch::parsed(self.parse_once(state, input), state, admit)
-        })
-    }
-
-    fn finish<'slot, 'id, 'd, S, T, F>(
-        &self,
-        mut input: storage::Owner<'slot, 'id, S, ParseState>,
-        budget: &resident::Budget<'d>,
-        limit: Limit,
-        admit: impl FnOnce(Result<&Infallible, &Fault>) -> codec::Admission<F>,
-    ) -> (
-        storage::Owner<'slot, 'id, S, ParseState>,
-        Result<codec::Finish<T>, T>,
-    )
-    where
-        S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
-        T: response::Outcome,
-        F: FnOnce(Result<Infallible, Fault>, &mut ParseState) -> T::Accepted,
-    {
-        let (storage, state) = input.parts();
-        let result = codec::Input::with(storage, budget, limit, |input| {
-            switch::finished(self.finish_once(state, input), state, admit)
-        });
-        (input, result)
-    }
-
-    fn parse_once<'id, 'input, 'd, R: buffer::Cursor>(
-        &self,
-        state: &mut ParseState,
-        _: codec::Input<'id, 'input, 'd, R>,
-    ) -> Result<Parse<'id, Infallible>, Fault>
-    where
-        'd: 'input,
-    {
-        if state.rejected {
-            return Err(Fault::Invalid(switch::Error::RepeatedReject));
+impl ParseState {
+    fn reject(&mut self) -> Fault {
+        if self.rejected {
+            return Fault::Invalid(switch::Error::RepeatedReject);
         }
-        state.rejected = true;
-        Err(Fault::Rejected)
-    }
-
-    fn finish_once<'id, 'input, 'd, R: buffer::Cursor>(
-        &self,
-        state: &mut ParseState,
-        _: codec::Input<'id, 'input, 'd, R>,
-    ) -> Result<codec::Finish<Infallible>, Fault>
-    where
-        'd: 'input,
-    {
-        if state.rejected {
-            return Err(Fault::Invalid(switch::Error::RejectedEof));
-        }
-        Ok(codec::Finish::Empty)
+        self.rejected = true;
+        Fault::Rejected
     }
 }
 
@@ -231,43 +170,42 @@ impl<'d> Stored<'d> for Reject {
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        self.decode.decode(storage, state, budget, limit, |_| {
-            codec::Admission::Ready(|result, state: &mut ParseState| self.deliver(result, state))
+        codec::Input::commit(storage, budget, limit, |_| {
+            let fault = state.reject();
+            Err(self.rejection(fault, state))
         })
     }
 
     fn finish<'slot, 'id, S>(
         &mut self,
-        input: storage::Owner<'slot, 'id, <Decode as codec::Stateful>::Storage<S>, ParseState>,
+        mut input: storage::Owner<'slot, 'id, S, ParseState>,
         budget: &resident::Budget<'d>,
         limit: Limit,
         _: &mut turns::Context<'_, '_, 'd, Self::ConnState, Self::Send>,
-    ) -> (
-        storage::Owner<'slot, 'id, <Decode as codec::Stateful>::Storage<S>, ParseState>,
-        Result<codec::Finish<Self::Delivery>, Self::Delivery>,
-    )
+    ) -> codec::Finished<storage::Owner<'slot, 'id, S, ParseState>, Self::Delivery>
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
     {
-        self.decode.finish(input, budget, limit, |_| {
-            codec::Admission::Ready(|result, state: &mut ParseState| self.deliver(result, state))
-        })
+        let (storage, state) = input.parts();
+        let result = codec::Input::with(storage, budget, limit, |_| {
+            if state.rejected {
+                Err(self.rejection(Fault::Invalid(switch::Error::RejectedEof), state))
+            } else {
+                Ok(codec::Finish::Empty)
+            }
+        });
+        (input, result)
     }
 }
 
 impl Reject {
-    fn deliver(
-        &self,
-        result: Result<Infallible, Fault>,
-        state: &mut ParseState,
-    ) -> Option<Prepared> {
-        match result {
-            Ok(head) => match head {},
-            Err(Fault::Invalid(cause)) => {
+    fn rejection(&self, fault: Fault, state: &ParseState) -> response::Delivery<Prepared> {
+        match fault {
+            Fault::Invalid(cause) => {
                 self.audit.faults.record(Switch(cause));
-                None
+                response::Delivery::Committed
             }
-            Err(Fault::Rejected) => {
+            Fault::Rejected => {
                 if !state.rejected {
                     self.audit
                         .faults
@@ -280,7 +218,7 @@ impl Reject {
                         expected: 0,
                     }));
                 }
-                Some(Prepared)
+                response::Delivery::Prepared(Prepared)
             }
         }
     }

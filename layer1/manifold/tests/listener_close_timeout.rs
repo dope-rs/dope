@@ -1,20 +1,13 @@
 pub mod common;
 
 use common::manifold::listener::finish::close::{script, wire::Wire};
-use common::recover;
-use dope_core::driver::{
-    life::recovery,
-    route::{FrameworkTag, KeyTag, Tag, kind},
-};
+use dope_core::driver::route::KeyTag;
 use dope_manifold::{app::env::Bundle, network::listener::conn::deadline::Kind};
 use dope_net::tcp::Tcp;
 use dope_runtime::executor::session::Completion;
-use dope_test::{
-    harness::{
-        peer::Peer,
-        signals::{Gate, Progress as _},
-    },
-    reclaim::Reports,
+use dope_test::harness::{
+    peer::Peer,
+    signals::{Gate, Progress as _},
 };
 
 #[test]
@@ -52,22 +45,15 @@ fn shutdown_keeps_deadline() {
             Wire::waiting(entered.clone(), release.clone()),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    let result = prepared.with_run(
-        &mut finish,
-        |case| {
-            let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
-            peer.write_all(b"REQ").expect("write request");
-            assert_eq!(
-                case.try_wait(&received, 1).expect("receive request"),
-                Wait::Reached,
-            );
-            peer
-        },
-        recovery::Policy::new(|event| reports.push(event), recover),
-        |result| result.expect("listener lifecycle"),
-    );
+    let (result, _reports) = prepared.observe(&mut finish, |case| {
+        let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+        peer.write_all(b"REQ").expect("write request");
+        assert_eq!(
+            case.try_wait(&received, 1).expect("receive request"),
+            Wait::Reached,
+        );
+        peer
+    });
     assert_ne!(entered.hits(), 0, "shutdown reaches the held wire");
     assert_eq!(release.hits(), 0);
     let _peer = result.expect("shutdown keeps send deadline");

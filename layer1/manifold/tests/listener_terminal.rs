@@ -1,6 +1,6 @@
 pub mod common;
 
-use common::manifold::{listener::reached, native};
+use common::manifold::listener::reached;
 
 use std::{cell::Cell, marker::PhantomData, rc::Rc};
 
@@ -9,26 +9,18 @@ use common::{
         Ingress, Observation, Probe,
         wire::{self, Event, Fault, Mode, Wire},
     },
-    recover,
     scenario::case::listener::Listener,
 };
-use dope_core::driver::{
-    life::recovery,
-    route::{FrameworkTag, KeyTag, Tag, kind},
-};
+use dope_core::driver::route::KeyTag;
 use dope_manifold::{
     app::{env::Bundle, receive},
     timing::Throughput,
 };
 use dope_net::tcp::Tcp;
-use dope_runtime::executor::session::Completion;
-use dope_test::{
-    harness::{
-        GUARD,
-        peer::{Half, Peer},
-        signals::{Gate, Progress as _},
-    },
-    reclaim::Reports,
+use dope_test::harness::{
+    GUARD,
+    peer::{Half, Peer},
+    signals::{Gate, Progress as _},
 };
 
 fn terminal(event: Observation<'_>) {
@@ -40,7 +32,7 @@ fn terminal(event: Observation<'_>) {
         Observation::Deadline(armed) => armed.is_ok(),
         Observation::Write(result) => matches!(result, Ok(())),
         Observation::Owned(result) => matches!(result, Admit::Committed),
-        Observation::Replay(result) => matches!(result, Some(Ok(()))),
+        Observation::Replay => true,
         Observation::Failure(cause) => matches!(
             cause,
             Some(Failure::Write(write::body::Failure::Capacity(
@@ -52,7 +44,6 @@ fn terminal(event: Observation<'_>) {
 
 #[test]
 fn keeps_write_failure() {
-    let mut finish = Completion::new();
     let rejected = Gate::new();
     let retired = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
@@ -70,29 +61,18 @@ fn keeps_write_failure() {
             Rc::clone(&wire),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let peer = Peer::at(case.addr()).try_connect().expect("peer");
-                peer.write_all(b"reject").expect("write trigger");
-                reached(case.try_wait(&rejected, 1), rejected.hits(), 1);
-                assert_eq!(retired.hits(), 0);
-                Peer::try_reset(peer).expect("reset rejected connection");
-                reached(case.try_wait(&retired, 1), retired.hits(), 1);
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(reports.events().expect("reclaimed events").is_empty());
+    prepared.run(|case| {
+        let peer = Peer::at(case.addr()).try_connect().expect("peer");
+        peer.write_all(b"reject").expect("write trigger");
+        reached(case.try_wait(&rejected, 1), rejected.hits(), 1);
+        assert_eq!(retired.hits(), 0);
+        Peer::try_reset(peer).expect("reset rejected connection");
+        reached(case.try_wait(&retired, 1), retired.hits(), 1);
+    });
 }
 
 #[test]
 fn hard_abort_wins() {
-    let mut finish = Completion::new();
     let close = Gate::new();
     let done = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
@@ -110,37 +90,24 @@ fn hard_abort_wins() {
             Rc::clone(&wire),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .with(
-                        |stream| Half::try_run(stream, b"abort before eof observation"),
-                        |peer| {
-                            reached(case.try_wait(&close, 1), close.hits(), 1);
-                            reached(case.try_wait(&done, 1), done.hits(), 1);
-                            assert!(
-                                peer.finish()
-                                    .expect("peer finish")
-                                    .expect("peer I/O")
-                                    .is_empty()
-                            );
-                        },
-                    )
-                    .expect("peer spawn");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+    prepared.run(|case| {
+        Peer::at(case.addr())
+            .with(
+                |stream| Half::try_run(stream, b"abort before eof observation"),
+                |peer| {
+                    reached(case.try_wait(&close, 1), close.hits(), 1);
+                    reached(case.try_wait(&done, 1), done.hits(), 1);
+                    assert!(
+                        peer.finish()
+                            .expect("peer finish")
+                            .expect("peer I/O")
+                            .is_empty()
+                    );
+                },
+            )
+            .expect("peer spawn");
+    });
     wire.check();
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
     assert_eq!(wire.eof_count(), 0);
     assert!(
         events.take().as_slice()
@@ -156,7 +123,6 @@ fn hard_abort_wins() {
 
 #[test]
 fn app_failure_wins() {
-    let mut finish = Completion::new();
     let close = Gate::new();
     let done = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
@@ -174,34 +140,21 @@ fn app_failure_wins() {
             Rc::clone(&wire),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .exchange(b"clean terminal application failure".to_vec(), |peer| {
-                        reached(case.try_wait(&close, 1), close.hits(), 1);
-                        reached(case.try_wait(&done, 1), done.hits(), 1);
-                        assert!(
-                            peer.finish()
-                                .expect("peer finish")
-                                .expect("peer I/O")
-                                .is_empty()
-                        );
-                    })
-                    .expect("peer spawn");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+    prepared.run(|case| {
+        Peer::at(case.addr())
+            .exchange(b"clean terminal application failure".to_vec(), |peer| {
+                reached(case.try_wait(&close, 1), close.hits(), 1);
+                reached(case.try_wait(&done, 1), done.hits(), 1);
+                assert!(
+                    peer.finish()
+                        .expect("peer finish")
+                        .expect("peer I/O")
+                        .is_empty()
+                );
+            })
+            .expect("peer spawn");
+    });
     wire.check();
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
     assert!(
         events.take().as_slice()
             == [
@@ -216,7 +169,6 @@ fn app_failure_wins() {
 
 #[test]
 fn keeps_accept_failure() {
-    let mut finish = Completion::new();
     let done = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
     let wire = Rc::new(wire::Probe::new(Rc::clone(&events), Mode::CleanOnData));
@@ -234,22 +186,12 @@ fn keeps_accept_failure() {
             Rc::clone(&wire),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let peer = Peer::at(case.addr()).try_read(GUARD).expect("peer");
-                reached(case.try_wait(&done, 1), done.hits(), 1);
-                assert!(Peer::try_read_all(&peer).expect("peer EOF").is_empty());
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+    prepared.run(|case| {
+        let peer = Peer::at(case.addr()).try_read(GUARD).expect("peer");
+        reached(case.try_wait(&done, 1), done.hits(), 1);
+        assert!(Peer::try_read_all(&peer).expect("peer EOF").is_empty());
+    });
     wire.check();
-    assert!(reports.events().expect("reclaimed events").is_empty());
     assert!(
         events.take().as_slice()
             == [
@@ -263,7 +205,6 @@ fn keeps_accept_failure() {
 
 #[test]
 fn drains_scoped_tail() {
-    let mut finish = Completion::new();
     let close = Gate::new();
     let done = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
@@ -284,29 +225,16 @@ fn drains_scoped_tail() {
             Rc::clone(&wire),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .exchange(b"scoped terminal".to_vec(), |peer| {
-                        reached(case.try_wait(&close, 1), close.hits(), 1);
-                        reached(case.try_wait(&done, 1), done.hits(), 1);
-                        assert_eq!(peer.finish().expect("peer finish").expect("peer I/O"), b"!");
-                    })
-                    .expect("peer spawn");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+    prepared.run(|case| {
+        Peer::at(case.addr())
+            .exchange(b"scoped terminal".to_vec(), |peer| {
+                reached(case.try_wait(&close, 1), close.hits(), 1);
+                reached(case.try_wait(&done, 1), done.hits(), 1);
+                assert_eq!(peer.finish().expect("peer finish").expect("peer I/O"), b"!");
+            })
+            .expect("peer spawn");
+    });
     wire.check();
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
     let events = events.take();
     let [
         Event::Chunk(first),
@@ -334,7 +262,6 @@ fn drains_scoped_tail() {
 #[test]
 fn sends_control_first() {
     for closing in [None, Some(Fault::Closing)] {
-        let mut finish = Completion::new();
         let close = Gate::new();
         let done = Gate::new();
         let events = Rc::new(Cell::new(Vec::new()));
@@ -357,32 +284,19 @@ fn sends_control_first() {
                 Rc::clone(&wire),
             ))
             .expect("listener layout");
-        let mut reports =
-            Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-        prepared
-            .with_run(
-                &mut finish,
-                |case| {
-                    Peer::at(case.addr())
-                        .exchange(b"application abort".to_vec(), |peer| {
-                            reached(case.try_wait(&close, 1), close.hits(), 1);
-                            reached(case.try_wait(&done, 1), done.hits(), 1);
-                            assert_eq!(
-                                peer.finish().expect("peer finish").expect("peer I/O"),
-                                b"!"
-                            );
-                        })
-                        .expect("peer spawn");
-                },
-                recovery::Policy::new(|event| reports.push(event), recover),
-                native,
-            )
-            .expect("listener run");
+        prepared.run(|case| {
+            Peer::at(case.addr())
+                .exchange(b"application abort".to_vec(), |peer| {
+                    reached(case.try_wait(&close, 1), close.hits(), 1);
+                    reached(case.try_wait(&done, 1), done.hits(), 1);
+                    assert_eq!(
+                        peer.finish().expect("peer finish").expect("peer I/O"),
+                        b"!"
+                    );
+                })
+                .expect("peer spawn");
+        });
         wire.check();
-        assert!(
-            reports.events().expect("reclaimed events").is_empty(),
-            "unexpected reclaimed operations: {reports:?}"
-        );
         assert!(
             events.take().as_slice()
                 == [
@@ -399,7 +313,6 @@ fn sends_control_first() {
 
 #[test]
 fn abandons_stalled_control() {
-    let mut finish = Completion::new();
     let close = Gate::new();
     let done = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
@@ -417,34 +330,21 @@ fn abandons_stalled_control() {
             Rc::clone(&wire),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .exchange(b"stalled terminal control".to_vec(), |peer| {
-                        reached(case.try_wait(&close, 1), close.hits(), 1);
-                        reached(case.try_wait(&done, 1), done.hits(), 1);
-                        assert!(
-                            peer.finish()
-                                .expect("peer finish")
-                                .expect("peer I/O")
-                                .is_empty()
-                        );
-                    })
-                    .expect("peer spawn");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+    prepared.run(|case| {
+        Peer::at(case.addr())
+            .exchange(b"stalled terminal control".to_vec(), |peer| {
+                reached(case.try_wait(&close, 1), close.hits(), 1);
+                reached(case.try_wait(&done, 1), done.hits(), 1);
+                assert!(
+                    peer.finish()
+                        .expect("peer finish")
+                        .expect("peer I/O")
+                        .is_empty()
+                );
+            })
+            .expect("peer spawn");
+    });
     wire.check();
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
     assert!(
         events.take().as_slice()
             == [

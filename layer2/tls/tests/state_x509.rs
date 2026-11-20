@@ -2,7 +2,8 @@ pub mod common;
 
 use std::{io::Write as _, sync::Arc, time::Duration};
 
-use common::{Read, Signer, fiber::client::Client, native, state, times::Fixed};
+use common::{Signer, fiber::client::Client, native, state, times::Fixed};
+use o3::buffer::write::consume::Consume as _;
 use dope::core::driver::{
     life::{creation::Attempt, recovery},
     route::{Id, table::conn::Capacity},
@@ -122,10 +123,10 @@ fn clones_resume() {
                                                     .expect("read TLS sentinel and clean EOF")
                                                 {
                                                     while !lease.is_empty() {
-                                                        lease.drive(Ok(()), &mut Read(|head: &[u8]| {
-                                                            bytes.extend_from_slice(head);
-                                                            head.len()
-                                                        })).expect("consume sentinel");
+                                                        let head = lease.as_ref();
+                                                        let count = head.len();
+                                                        bytes.extend_from_slice(head);
+                                                        lease.try_consume(count).expect("consume sentinel");
                                                     }
                                                 }
                                                 assert_eq!(bytes, b"x");

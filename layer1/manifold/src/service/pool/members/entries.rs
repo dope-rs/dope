@@ -1,25 +1,18 @@
-use o3::depot::{capacity, queue::round::set};
+use o3::depot::queue::round::set;
 
 use crate::service::{
     self, pool,
-    pool::members::{Record, Records, queues},
+    pool::members::{Occupied, Record, Records, queues},
 };
 
 enum Vacant<'a, 'h, I, A> {
-    Free(set::Vacant<'a, Record<I, A>, pool::Member, { u32::MAX }, false, capacity::Domain<'h>>),
-    Reuse(set::Reuse<'a, Record<I, A>, pool::Member, { u32::MAX }, false, capacity::Domain<'h>>),
+    Free(set::Vacant<'a, 'h, Record<I, A>, pool::Member>),
+    Reuse(set::Reuse<'a, 'h, Record<I, A>, pool::Member>),
 }
 
 enum Entry<'a, 'h, I, A> {
     Keep {
-        entry: set::Occupied<
-            'a,
-            Record<I, A>,
-            pool::Member,
-            { u32::MAX },
-            false,
-            capacity::Domain<'h>,
-        >,
+        entry: Occupied<'a, 'h, I, A>,
         value: service::Endpoint<I, A>,
     },
     New {

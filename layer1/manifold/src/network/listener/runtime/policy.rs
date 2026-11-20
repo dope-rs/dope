@@ -93,7 +93,7 @@ where
         input: crate::Incoming<'input, 'w, 'd, Self::Wire, Self::Input>,
         turn: schedule::Turn<'_, 'd>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> (Option<ingress::Entry<'a, 'n, 'w, 'd, ID, Self>>, crate::Receiving<'w, 'd, Self::Wire, Self::Input>)
+    ) -> (Option<ingress::Entry<'a, 'n, 'w, 'd, ID, Self>>, crate::Receiving<Self::Wire, Self::Input>)
     where
         Self: 'ctx,
     {
@@ -105,7 +105,7 @@ where
                     app.as_mut(), &mut egress, authority, input, turn, driver,
                 )
             }
-            None => ingress::Progress::Done(receive::Outcome::Continue),
+            None => receive::Outcome::Continue.into(),
         };
         (Some(entry), progress)
     }
@@ -131,10 +131,12 @@ where
                 phase::Wake::Progress
             }
             ingress::Finish::Empty(ingress::Empty::NoChunk) | ingress::Finish::Chunk => {
-                phase::Wake::Ingress
+                phase::Wake::Io
             }
             ingress::Finish::CloseAfter => {
-                return if phase::finish(&mut entry, context.closing.0.as_ref()) {
+                return if phase::current::<ID, A>(entry.get(), entry.egress(), context.closing.0.as_ref())
+                    .is_some_and(|action| action.apply::<ID, A, _>(&mut entry))
+                {
                     writer::close(Ok(entry), context.writes, &mut context.closing, turn, driver)
                 } else {
                     Some(entry)
@@ -200,7 +202,7 @@ where
             A::eof(app.as_mut(), conn, end, driver);
         }
         phase::advance_entry(
-            entry, context.writes, &mut context.closing, phase::Wake::Ingress, turn, driver,
+            entry, context.writes, &mut context.closing, phase::Wake::Io, turn, driver,
         )
     }
 

@@ -319,14 +319,11 @@ where
         Some((sender, queued))
     }
 
-    pub fn update_target(
+    pub fn by_target(
         &mut self,
         target: route::Target<'d, ID>,
-        update: impl FnOnce(&mut types::Connection<'w, 'd, ID, W, S>),
-    ) -> Option<Key<'d, ID>> {
-        let key = Key::from_target(target);
-        update(self.prepared.slab.access().get(key.parts())?);
-        Some(key)
+    ) -> Option<Entry<'_, 'p, 'w, 'd, ID, T, W, S, M, B, IOV, D>> {
+        self.entry(Key::from_target(target)).ok()
     }
 }
 

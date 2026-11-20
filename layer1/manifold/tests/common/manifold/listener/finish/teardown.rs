@@ -26,13 +26,13 @@ use dope_manifold::{
     timing::Throughput,
 };
 use dope_net::wire::{
-    self, Identity, domain, failure, open, receive,
+    self, Identity, failure, open, receive,
     receive::{Chunk, batch, eof, mode, reserve},
     send::Direct,
     terminal,
 };
 use o3::buffer::resident;
-use wire::receive::{mode::access, reserve::Completion as _};
+use wire::receive::reserve::Completion as _;
 
 pub struct Teardown;
 
@@ -48,7 +48,6 @@ impl receive::Policy<Teardown> for Recv {
     where
         Teardown: 'w,
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::Clean;
     type Reserve = reserve::Direct;
     type Credit = mode::Enabled;
@@ -125,19 +124,6 @@ impl wire::Spec for Teardown {
     type Bootstrap = Teardown;
     type Receive = Recv;
     type Send = Direct;
-}
-
-impl domain::Init<Teardown> for Teardown {
-    fn runtime<'w, 'd, ID: route::Identity + 'w>(
-        _: domain::Limits,
-        _: <Teardown as wire::Spec>::Binding<'w, ID>,
-    ) -> <Teardown as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Teardown: 'w,
-        'd: 'w,
-    {
-        Teardown
-    }
 }
 
 pub struct App<'w, 'd: 'w, F> {

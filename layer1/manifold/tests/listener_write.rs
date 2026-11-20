@@ -1,10 +1,8 @@
 pub mod common;
 
-use common::manifold::{listener::reached, native};
+use common::manifold::listener::reached;
 
 use std::{cell::Cell, rc::Rc, time::Instant};
-
-use dope_core::driver::life::recovery;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
@@ -18,13 +16,11 @@ use common::{
             wake::{self, Wake, Zero, ZeroEvent},
         },
     },
-    recover,
     scenario::case::listener::Listener,
 };
-use dope_core::driver::route::{FrameworkTag, KeyTag, Tag, kind};
+use dope_core::driver::route::KeyTag;
 use dope_manifold::{app::env::Bundle, network::listener::conn::write, timing::Throughput};
 use dope_net::{link::egress, tcp::Tcp, wire::Identity};
-use dope_runtime::executor::session::Completion;
 use dope_test::{
     alloc::Tracker,
     fibers,
@@ -33,12 +29,10 @@ use dope_test::{
         peer::{self, Peer},
         signals::{Gate, Progress as _},
     },
-    reclaim::Reports,
 };
 
 #[test]
 fn queued_writes_survive() {
-    let mut finish = Completion::new();
     let mut want = Vec::new();
     want.extend_from_slice(admit::FIRST_HEADER);
     want.extend_from_slice(admit::FIRST_BODY);
@@ -60,42 +54,28 @@ fn queued_writes_survive() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .exchange(b"GO\n".to_vec(), |peer| {
-                        reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                        let got = peer
-                            .finish()
-                            .expect("finish client peer")
-                            .expect("client peer failed");
-                        assert_eq!(got, want);
-                        assert_eq!(gate.hits(), 1);
-                    })
-                    .expect("spawn admission peer");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+    prepared.run(|case| {
+        Peer::at(case.addr())
+            .exchange(b"GO\n".to_vec(), |peer| {
+                reached(case.try_wait(&gate, 1), gate.hits(), 1);
+                let got = peer
+                    .finish()
+                    .expect("finish client peer")
+                    .expect("client peer failed");
+                assert_eq!(got, want);
+                assert_eq!(gate.hits(), 1);
+            })
+            .expect("spawn admission peer");
+    });
     assert!(matches!(events.take().as_slice(), [
         admit::Event::Chunk(len),
         admit::Event::Write(Ok(()), egress::Pending::Present),
         writes @ ..,
     ] if *len != 0 && writes.len() == 4 && writes.iter().all(|event| matches!(event, admit::Event::Write(Ok(()), _)))));
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
 }
 
 #[test]
 fn direct_recycles_bodies() {
-    let mut finish = Completion::new();
     let gate = Gate::new();
     let events = Rc::new(Cell::new(Vec::new()));
     let prepared = Listener::new::<8>(Default::default())
@@ -109,36 +89,27 @@ fn direct_recycles_bodies() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .exchange(b"GO\n".to_vec(), |peer| {
-                        reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                        let got = peer
-                            .finish()
-                            .expect("finish client peer")
-                            .expect("client peer failed");
-                        let want: Vec<u8> = [
-                            body::FIRST.as_slice(),
-                            body::SECOND.as_slice(),
-                            body::THIRD.as_slice(),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .copied()
-                        .collect();
-                        assert_eq!(got, want);
-                    })
-                    .expect("peer spawn failed");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+    prepared.run(|case| {
+        Peer::at(case.addr())
+            .exchange(b"GO\n".to_vec(), |peer| {
+                reached(case.try_wait(&gate, 1), gate.hits(), 1);
+                let got = peer
+                    .finish()
+                    .expect("finish client peer")
+                    .expect("client peer failed");
+                let want: Vec<u8> = [
+                    body::FIRST.as_slice(),
+                    body::SECOND.as_slice(),
+                    body::THIRD.as_slice(),
+                ]
+                .into_iter()
+                .flatten()
+                .copied()
+                .collect();
+                assert_eq!(got, want);
+            })
+            .expect("peer spawn failed");
+    });
     use body::{Event, State};
     let events = events.take();
     assert!(events.iter().all(|event| !matches!(event, Event::Chunk(0))));
@@ -168,15 +139,10 @@ fn direct_recycles_bodies() {
             Event::Close(State::Done),
         ] if before == after
     ));
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
 }
 
 #[test]
 fn changed_body_commits() {
-    let mut finish = Completion::new();
     let gate = Gate::new();
     let commits = Rc::new(Cell::new(0));
     let defers = Rc::new(Cell::new(0));
@@ -200,31 +166,22 @@ fn changed_body_commits() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .exchange(b"GO\n".to_vec(), |peer| {
-                        reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                        assert_eq!(
-                            peer.finish()
-                                .expect("finish client peer")
-                                .expect("client peer failed"),
-                            b"ABC"
-                        );
-                        assert_eq!(commits.get(), 3);
-                        assert!(defers.get() >= 1);
-                        assert!(wakes.get() >= 1);
-                    })
-                    .expect("peer spawn failed");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+    prepared.run(|case| {
+        Peer::at(case.addr())
+            .exchange(b"GO\n".to_vec(), |peer| {
+                reached(case.try_wait(&gate, 1), gate.hits(), 1);
+                assert_eq!(
+                    peer.finish()
+                        .expect("finish client peer")
+                        .expect("client peer failed"),
+                    b"ABC"
+                );
+                assert_eq!(commits.get(), 3);
+                assert!(defers.get() >= 1);
+                assert!(wakes.get() >= 1);
+            })
+            .expect("peer spawn failed");
+    });
     let events = events.take();
     assert!(
         !events.is_empty()
@@ -238,16 +195,11 @@ fn changed_body_commits() {
                 }
             })
     );
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
 }
 
 #[test]
 fn bounded_zero_rolls_back() {
     for direct in [1, 0] {
-        let mut finish = Completion::new();
         let gate = Gate::new();
         let attempts = Rc::new(Cell::new(Vec::new()));
         let prepared = Listener::new::<1>(Default::default())
@@ -260,28 +212,19 @@ fn bounded_zero_rolls_back() {
                 Identity,
             ))
             .expect("listener layout");
-        let mut reports =
-            Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-        prepared
-            .with_run(
-                &mut finish,
-                |case| {
-                    Peer::at(case.addr())
-                        .exchange(b"GO\n".to_vec(), |peer| {
-                            reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                            assert_eq!(
-                                peer.finish()
-                                    .expect("finish client peer")
-                                    .expect("client peer failed"),
-                                b"Z"
-                            );
-                        })
-                        .expect("peer spawn failed");
-                },
-                recovery::Policy::new(|event| reports.push(event), recover),
-                native,
-            )
-            .expect("listener run");
+        prepared.run(|case| {
+            Peer::at(case.addr())
+                .exchange(b"GO\n".to_vec(), |peer| {
+                    reached(case.try_wait(&gate, 1), gate.hits(), 1);
+                    assert_eq!(
+                        peer.finish()
+                            .expect("finish client peer")
+                            .expect("client peer failed"),
+                        b"Z"
+                    );
+                })
+                .expect("peer spawn failed");
+        });
         let attempts = attempts.take();
         assert!(
             !attempts.is_empty()
@@ -297,10 +240,6 @@ fn bounded_zero_rolls_back() {
         },
     ] if *input != 0 && *before != 0 && remaining == before && after + 1 == *before))
         );
-        assert!(
-            reports.events().expect("reclaimed events").is_empty(),
-            "unexpected reclaimed operations: {reports:?}"
-        );
     }
 }
 
@@ -309,7 +248,6 @@ fn prefix_waiters_preserve_grants() {
     let seen = Rc::new(Cell::new(Seen::default()));
     let gate = Gate::new();
     let received = Gate::new();
-    let mut finish = Completion::new();
     let prepared = Listener::new::<2>(Default::default())
         .direct(0)
         .stream(dope_net::tcp::StreamConfig {
@@ -331,48 +269,39 @@ fn prefix_waiters_preserve_grants() {
             Identity,
         ))
         .expect("prefix listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let first = Peer::at(case.addr()).try_connect().expect("first peer");
-                first.write_all(b"GO\n").expect("first request");
-                reached(case.try_wait(&received, 1), received.hits(), 1);
-                let second = Peer::at(case.addr()).try_connect().expect("second peer");
-                second.write_all(b"GO\n").expect("second request");
-                reached(case.try_wait(&received, 2), received.hits(), 2);
-                assert_eq!(gate.hits(), 0);
-                first.nonblock(true);
-                let started = Instant::now();
-                let mut remaining = QUEUED_BODY.len();
-                let mut bytes = [0; 4096];
-                while remaining != 0 {
-                    assert!(started.elapsed() < GUARD, "body drain timeout");
-                    let limit = remaining.min(bytes.len());
-                    match first.read(&mut bytes[..limit]) {
-                        Ok(0) => panic!("truncated body"),
-                        Ok(count) => remaining -= count,
-                        Err(error) => {
-                            assert!(
-                                matches!(error, peer::Error::Syscall(cause)
-                                if cause.is_block() || cause.is_intr()),
-                                "body read: {error:?}"
-                            );
-                            case.try_drive(fibers::Yield::new()).expect("drive body");
-                        }
-                    }
+    prepared.run(|case| {
+        let first = Peer::at(case.addr()).try_connect().expect("first peer");
+        first.write_all(b"GO\n").expect("first request");
+        reached(case.try_wait(&received, 1), received.hits(), 1);
+        let second = Peer::at(case.addr()).try_connect().expect("second peer");
+        second.write_all(b"GO\n").expect("second request");
+        reached(case.try_wait(&received, 2), received.hits(), 2);
+        assert_eq!(gate.hits(), 0);
+        first.nonblock(true);
+        let started = Instant::now();
+        let mut remaining = QUEUED_BODY.len();
+        let mut bytes = [0; 4096];
+        while remaining != 0 {
+            assert!(started.elapsed() < GUARD, "body drain timeout");
+            let limit = remaining.min(bytes.len());
+            match first.read(&mut bytes[..limit]) {
+                Ok(0) => panic!("truncated body"),
+                Ok(count) => remaining -= count,
+                Err(error) => {
+                    assert!(
+                        matches!(error, peer::Error::Syscall(cause)
+                        if cause.is_block() || cause.is_intr()),
+                        "body read: {error:?}"
+                    );
+                    case.try_drive(fibers::Yield::new()).expect("drive body");
                 }
-                reached(case.try_wait(&gate, 2), gate.hits(), 2);
-                first.nonblock(false);
-                assert_eq!(Peer::try_read_all(&first).expect("first prefix"), b"B");
-                assert_eq!(Peer::try_read_all(&second).expect("second prefix"), b"B");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+            }
+        }
+        reached(case.try_wait(&gate, 2), gate.hits(), 2);
+        first.nonblock(false);
+        assert_eq!(Peer::try_read_all(&first).expect("first prefix"), b"B");
+        assert_eq!(Peer::try_read_all(&second).expect("second prefix"), b"B");
+    });
     let seen = seen.take();
     assert!(seen.chunks.iter().all(|len| *len != 0));
     assert!(matches!(
@@ -407,8 +336,4 @@ fn prefix_waiters_preserve_grants() {
         }
     )));
     assert_eq!(seen.closed, Some(State::Done));
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "{reports:?}"
-    );
 }

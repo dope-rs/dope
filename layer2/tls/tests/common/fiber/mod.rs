@@ -56,12 +56,7 @@ impl<'socket> Peer<'socket> {
             .map_err(Connect::Peer)?;
         let mut peer = Self {
             socket,
-            tls: rustls::ClientConnection::new(
-                Arc::new(config::raw::Identity::client(pubkey).map_err(Connect::Config)?),
-                name(),
-            )
-            .map(rustls::Connection::Client)
-            .map_err(Connect::Tls)?,
+            tls: Self::client(pubkey)?,
         };
 
         for _ in 0..64 {
@@ -78,9 +73,17 @@ impl<'socket> Peer<'socket> {
         Ok(peer)
     }
 
+    pub(super) fn client(pubkey: [u8; 32]) -> Result<rustls::Connection, Connect> {
+        rustls::ClientConnection::new(
+            Arc::new(config::raw::Identity::client(pubkey).map_err(Connect::Config)?),
+            name(),
+        )
+        .map(rustls::Connection::Client)
+        .map_err(Connect::Tls)
+    }
+
     pub fn seal(&mut self, body: &[u8]) -> Result<Vec<u8>, Connect> {
-        self.tls.writer().write_all(body).map_err(Connect::Io)?;
-        native::output(&mut self.tls)
+        native::seal(&mut self.tls, body)
     }
 
     pub fn try_send(&mut self, body: &[u8]) -> Result<(), Connect> {

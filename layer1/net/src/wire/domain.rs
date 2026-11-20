@@ -46,23 +46,15 @@ pub trait Plan<W: wire::Spec, ID: Identity> {
         ID: 'd;
 }
 
-/// Storage-independent binding for a static wire runtime.
+/// A prepared storage-independent wire runtime.
 #[repr(transparent)]
-pub struct Local<'w, W: wire::Spec + 'w, ID: Identity + 'w> {
-    binding: W::Binding<'w, ID>,
+pub struct Local<R> {
+    pub(crate) runtime: R,
 }
 
-impl<'w, W: wire::Spec + 'w, ID: Identity + 'w> Local<'w, W, ID> {
-    pub const fn new(binding: W::Binding<'w, ID>) -> Self {
-        Self { binding }
-    }
-
-    pub(crate) fn init<'d>(self, limits: Limits) -> W::Runtime<'w, 'd, ID>
-    where
-        W::Bootstrap: Init<W>,
-        'd: 'w,
-    {
-        <W::Bootstrap as Init<W>>::runtime::<'w, 'd, ID>(limits, self.binding)
+impl<R> Local<R> {
+    pub const fn new(runtime: R) -> Self {
+        Self { runtime }
     }
 }
 
@@ -101,17 +93,6 @@ pub trait Bootstrap<W: wire::Spec> {
         limits: Limits,
         binding: W::Binding<'w, ID>,
     ) -> crate::Result<W::Runtime<'w, 'd, ID>>
-    where
-        W: 'w,
-        'd: 'w;
-}
-
-/// Infallible runtime construction from an exact wire binding.
-pub trait Init<W: wire::Spec> {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        limits: Limits,
-        binding: W::Binding<'w, ID>,
-    ) -> W::Runtime<'w, 'd, ID>
     where
         W: 'w,
         'd: 'w;

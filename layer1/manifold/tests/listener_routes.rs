@@ -338,39 +338,27 @@ fn burst_recovers() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let held = Peer::at(case.addr()).try_connect().expect("first peer");
-                let extra = Peer::at(case.addr()).try_connect().expect("burst peer");
-                assert_eq!(
-                    case.try_wait(&gate, 1).expect("first accept"),
-                    Wait::Reached
-                );
-                Peer::try_reset(extra).expect("surplus reset");
-                drop(held);
-                assert_eq!(
-                    case.try_wait(&trace.closed, 1).expect("first close"),
-                    Wait::Reached
-                );
-                let peer = Peer::at(case.addr()).try_connect().expect("recovery peer");
-                peer.write_all(b"recovered").expect("recovery data");
-                assert_eq!(
-                    case.try_wait(&trace.received, 1).expect("recovery receive"),
-                    Wait::Reached
-                );
-            },
-            recovery::Policy::new(
-                |event| reports.push(event),
-                |error: recovery::Recovery<'_, '_>| -> Infallible {
-                    panic!("recovery: {:?}", error.cause())
-                },
-            ),
-            |outcome| outcome.expect("native lifecycle"),
-        )
+    let (result, reports) = prepared.observe(&mut finish, |case| {
+        let held = Peer::at(case.addr()).try_connect().expect("first peer");
+        let extra = Peer::at(case.addr()).try_connect().expect("burst peer");
+        assert_eq!(
+            case.try_wait(&gate, 1).expect("first accept"),
+            Wait::Reached
+        );
+        Peer::try_reset(extra).expect("surplus reset");
+        drop(held);
+        assert_eq!(
+            case.try_wait(&trace.closed, 1).expect("first close"),
+            Wait::Reached
+        );
+        let peer = Peer::at(case.addr()).try_connect().expect("recovery peer");
+        peer.write_all(b"recovered").expect("recovery data");
+        assert_eq!(
+            case.try_wait(&trace.received, 1).expect("recovery receive"),
+            Wait::Reached
+        );
+    });
+    result
         .expect("listener run");
     assert!(
         reports.events().expect("reclamation").iter().all(|event| {

@@ -1,9 +1,8 @@
-use std::{convert::Infallible, marker, net, time::Duration};
+use std::{convert::Infallible, fmt::Debug, marker, net, time::Duration};
 
 use dope_core::{
     driver::{
-        life::recovery,
-        route::{Identity, table::conn},
+        route::{FrameworkTag, Identity, Tag, kind, table::conn},
         settings::{self, errors},
     },
     io::socket,
@@ -13,14 +12,15 @@ use dope_manifold::{
     network::listener::{self, config, handler, topology::Direct},
 };
 use dope_net::{
-    link::egress,
+    link::{egress, pool::change},
     tcp,
-    wire::{self, domain},
+    wire::domain,
 };
 use dope_runtime::{
     executor::{self, session, session::Completion},
-    topology::{self, Plan, error::Kind, lending, ops},
+    topology::{self, Plan, lending, ops},
 };
+use dope_test::reclaim::Reports;
 
 use crate::common::scenario::{
     TcpCase,
@@ -192,27 +192,26 @@ impl<ID: Identity, A, W, E, I> Prepared<ID, E, (A, W), I>
 where
     E: env::Spec<Transport = tcp::Tcp>,
     I: receive::Mode<E::Wire> + receive::Resources,
-    <E::Wire as wire::Spec>::Bootstrap: domain::Init<E::Wire>,
-    for<'d> <E::Wire as wire::Spec>::Binding<'d, ID>: From<W>,
+    for<'d> domain::Local<W>: change::Prepare<'d, 'd, ID, E::Wire>,
     for<'d> A:
         handler::Application<'d, ID, Wire = E::Wire, Input = I> + handler::Runtime<'d, 'd, ID>,
 {
-    pub fn layout(&self) -> settings::Config {
-        self.0.layout()
+    pub fn run<R: Debug, B>(self, body: B) -> R
+    where
+        B: for<'n, 'p, 's, 'app, 'life, 'd> FnOnce(
+            &mut TcpCase<
+                'app, 'life, 'd, app::Host<listener::Listener<'n, 'p, 's, 'd, 'd, ID, A, E>>,
+            >,
+        ) -> R,
+    {
+        super::checked(self.observe(&mut Completion::new(), body))
     }
 
-    pub fn with_run<'report, R, B, Done>(
+    pub fn observe<'report, R: Debug, B>(
         self,
         complete: &'report mut Completion,
         body: B,
-        policy: impl recovery::Observe,
-        finish: impl for<'owner> FnOnce(
-            Result<
-                Result<R, Failure<'report, Infallible, R>>,
-                Kind<'owner, Infallible, &'owner Result<R, Failure<'report, Infallible, R>>>,
-            >,
-        ) -> Done,
-    ) -> Done
+    ) -> (Result<R, Failure<'report, Infallible, R>>, Reports<1>)
     where
         B: for<'n, 'p, 's, 'app, 'life, 'd> FnOnce(
             &mut TcpCase<
@@ -223,11 +222,7 @@ where
             >,
         ) -> R,
     {
-        self.0
-            .enter_local(Listen(body, complete), policy, |outcome| match outcome {
-                Ok(output) => finish(Ok(output)),
-                Err(error) => finish(Err(error.kind())),
-            })
+        super::enter(self.0, FrameworkTag::<kind::Any>::ROUTE, Listen(body, complete))
     }
 }
 
@@ -247,8 +242,7 @@ impl<'report, 'worker, 'owner, 'storage, 'driver, ID: Identity, A, W, E, I, B, R
 where
     E: env::Spec<Transport = tcp::Tcp>,
     I: receive::Mode<E::Wire> + receive::Resources,
-    <E::Wire as wire::Spec>::Bootstrap: domain::Init<E::Wire>,
-    for<'d> <E::Wire as wire::Spec>::Binding<'d, ID>: From<W>,
+    for<'d> domain::Local<W>: change::Prepare<'d, 'd, ID, E::Wire>,
     for<'d> A:
         handler::Application<'d, ID, Wire = E::Wire, Input = I> + handler::Runtime<'d, 'd, ID>,
     B: for<'n, 'p, 's, 'app, 'life, 'd> FnOnce(

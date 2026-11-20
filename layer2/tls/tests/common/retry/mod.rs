@@ -51,6 +51,7 @@ use crate::common::{
 
 mod hello;
 pub mod native;
+pub mod sibling;
 use hello::establish;
 use native::{commit, next};
 

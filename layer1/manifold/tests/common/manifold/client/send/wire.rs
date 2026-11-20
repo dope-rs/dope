@@ -3,13 +3,13 @@ use dope_core::{
     io::recv::{Lease, Shared},
 };
 use dope_net::wire::{
-    self, domain, failure, open, receive,
+    self, failure, open, receive,
     receive::{batch, eof, mode},
     send,
     send::reclaim,
     terminal,
 };
-use wire::receive::{mode::access, reserve};
+use wire::receive::reserve;
 
 #[derive(Default)]
 pub struct Wire {
@@ -18,6 +18,7 @@ pub struct Wire {
 
 pub struct Recv;
 
+#[derive(Default)]
 pub struct Runtime;
 
 impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, Wire, ID> for Runtime {
@@ -39,7 +40,6 @@ impl receive::Policy<Wire> for Recv {
         = Shared<'d>
     where
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::Clean;
     type Reserve = reserve::Borrowed;
     type Credit = mode::Disabled;
@@ -197,18 +197,5 @@ impl wire::Spec for Wire {
             Some(protocol) => std::task::Poll::Ready(protocol),
             None => std::task::Poll::Pending,
         }
-    }
-}
-
-impl domain::Init<Wire> for Wire {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: domain::Limits,
-        _: <Wire as wire::Spec>::Binding<'w, ID>,
-    ) -> <Wire as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Wire: 'w,
-        'd: 'w,
-    {
-        Runtime
     }
 }

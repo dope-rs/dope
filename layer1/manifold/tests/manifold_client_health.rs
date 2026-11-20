@@ -182,7 +182,6 @@ fn due_backoff_survives_exhausted_maintenance() {
 
 #[test]
 fn stale_epoch_is_ignored() {
-    let mut finish = Completion::new();
     const BACKOFF: Duration = Duration::from_secs(3);
 
     let server = TcpAcceptor::bind(([127, 0, 0, 1], 0).into()).expect("bind health endpoint");
@@ -192,65 +191,57 @@ fn stale_epoch_is_ignored() {
     let audit = Rc::new(Report::default());
 
     let planned = Connector::<2>::new(addr, BACKOFF, BACKOFF)
-        .prepare_off::<KeyTag<0>, _, Bundle<Tcp, Identity, Balanced>>(Value::new(Epoch {
+        .prepare::<KeyTag<0>, _, Bundle<Tcp, Identity, Balanced>>(Value::new(Epoch {
             audit: audit.clone(),
 
             conn: conn.clone(),
             closed: closed.clone(),
         }))
         .expect("prepare actual client layout");
-    let mut reclaim1 = Reports::<_>::new(planned.layout(), [Id::fixed::<0>()]);
 
-    let peers = planned.with_run(
-        &mut finish,
-        |case| {
-            assert_eq!(
-                case.try_wait(&conn, 2).expect("progress wait"),
-                fibers::Wait::Reached
-            );
-            let [first, second] = [(); 2].map(|()| {
-                server
-                    .accept_for(GUARD)
-                    .expect("accept initial peer")
-                    .expect("initial peer")
-            });
-            drop(first);
-            assert_eq!(
-                case.try_wait(&closed, 1).expect("progress wait"),
-                fibers::Wait::Reached
-            );
-            assert_eq!(
-                case.try_wait(&conn, 3).expect("progress wait"),
-                fibers::Wait::Reached
-            );
-            let probe = server
+    let (_probe, _next) = planned.run(|case| {
+        assert_eq!(
+            case.try_wait(&conn, 2).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        let [first, second] = [(); 2].map(|()| {
+            server
                 .accept_for(GUARD)
-                .expect("accept probe peer")
-                .expect("probe peer");
-            let start = Instant::now();
-            drop(second);
-            assert_eq!(
-                case.try_wait(&closed, 2).expect("progress wait"),
-                fibers::Wait::Reached
-            );
-            assert_eq!(
-                case.try_wait(&conn, 4).expect("progress wait"),
-                fibers::Wait::Reached
-            );
-            let latency = start.elapsed();
-            let next = server
-                .accept_for(GUARD)
-                .expect("accept next peer")
-                .expect("next peer");
-            assert!(latency < BACKOFF / 2);
-            (probe, next)
-        },
-        recovery::Policy::new(|event| reclaim1.push(event), recover),
-        |result| result.expect("native lifecycle"),
-    );
-    assert_reclaimed(&reclaim1);
+                .expect("accept initial peer")
+                .expect("initial peer")
+        });
+        drop(first);
+        assert_eq!(
+            case.try_wait(&closed, 1).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        assert_eq!(
+            case.try_wait(&conn, 3).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        let probe = server
+            .accept_for(GUARD)
+            .expect("accept probe peer")
+            .expect("probe peer");
+        let start = Instant::now();
+        drop(second);
+        assert_eq!(
+            case.try_wait(&closed, 2).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        assert_eq!(
+            case.try_wait(&conn, 4).expect("progress wait"),
+            fibers::Wait::Reached
+        );
+        let latency = start.elapsed();
+        let next = server
+            .accept_for(GUARD)
+            .expect("accept next peer")
+            .expect("next peer");
+        assert!(latency < BACKOFF / 2);
+        (probe, next)
+    });
 
-    let (_probe, _next) = peers.expect("health epoch scenario");
     audit.checked((0, 0));
     assert_eq!(conn.hits(), closed.hits());
 }

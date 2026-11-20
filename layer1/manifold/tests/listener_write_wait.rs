@@ -1,6 +1,6 @@
 pub mod common;
 
-use common::manifold::{listener::reached, native};
+use common::manifold::listener::reached;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker::new();
@@ -16,7 +16,7 @@ use common::{
         app,
         preamble::{self, FRAMES, HANDSHAKE, PREFIX},
         script::{self, BODY_LEN, Payload},
-        wire::{Profile, Wire},
+        wire::{Profile, Runtime as WireRuntime, Wire},
     },
     manifold::root::until_hits,
     recover,
@@ -107,7 +107,6 @@ fn preamble(event: preamble::Event<'_>) {
 
 #[test]
 fn predecessor_wakes() {
-    let mut finish = Completion::new();
     let done = Gate::new();
     let ordered = Gate::new();
     let closed = Gate::new();
@@ -121,38 +120,24 @@ fn predecessor_wakes() {
                 closed: closed.clone(),
                 observe: predecessor,
             },
-            (),
+            WireRuntime,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                let peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
-                reached(case.try_wait(&ordered, 1), ordered.hits(), 1);
-                assert_eq!(done.hits(), 1);
-                peer.write_wait(Some(GUARD)).expect("peer write timeout");
-                peer.write_all(b"open").expect("open wire");
-                peer.shutdown(Shutdown::Write).expect("peer write shutdown");
-                reached(case.try_wait(&done, 2), done.hits(), 2);
-                reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                assert_eq!(Peer::try_read_all(&peer).expect("peer I/O"), b"AbodyBbody");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    prepared.run(|case| {
+        let peer = Peer::at(case.addr()).try_read(GUARD).expect("connect peer");
+        reached(case.try_wait(&ordered, 1), ordered.hits(), 1);
+        assert_eq!(done.hits(), 1);
+        peer.write_wait(Some(GUARD)).expect("peer write timeout");
+        peer.write_all(b"open").expect("open wire");
+        peer.shutdown(Shutdown::Write).expect("peer write shutdown");
+        reached(case.try_wait(&done, 2), done.hits(), 2);
+        reached(case.try_wait(&closed, 1), closed.hits(), 1);
+        assert_eq!(Peer::try_read_all(&peer).expect("peer I/O"), b"AbodyBbody");
+    });
 }
 
 #[test]
 fn reports_early_frames() {
-    let mut finish = session::Completion::new();
     let gate = Gate::new();
     let prepared = Listener::new::<16>(Default::default())
         .direct(1)
@@ -162,49 +147,35 @@ fn reports_early_frames() {
                 gate: gate.clone(),
                 observe: preamble,
             },
-            (preamble, false),
+            preamble::Runtime(preamble, false),
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .with(
-                        |stream| {
-                            stream.write_all(HANDSHAKE)?;
-                            Peer::try_read_all(stream)
-                        },
-                        |peer| {
-                            reached(case.try_wait(&gate, 1), gate.hits(), 1);
-                            let got = peer
-                                .finish()
-                                .expect("finish client peer")
-                                .expect("client peer failed");
-                            let want: Vec<u8> = FRAMES
-                                .iter()
-                                .flat_map(|frame| iter::once(PREFIX).chain(frame.iter().copied()))
-                                .collect();
-                            assert_eq!(got, want);
-                        },
-                    )
-                    .expect("spawn handshake peer");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+    prepared.run(|case| {
+        Peer::at(case.addr())
+            .with(
+                |stream| {
+                    stream.write_all(HANDSHAKE)?;
+                    Peer::try_read_all(stream)
+                },
+                |peer| {
+                    reached(case.try_wait(&gate, 1), gate.hits(), 1);
+                    let got = peer
+                        .finish()
+                        .expect("finish client peer")
+                        .expect("client peer failed");
+                    let want: Vec<u8> = FRAMES
+                        .iter()
+                        .flat_map(|frame| iter::once(PREFIX).chain(frame.iter().copied()))
+                        .collect();
+                    assert_eq!(got, want);
+                },
+            )
+            .expect("spawn handshake peer");
+    });
 }
 
 #[test]
 fn recycle_resumes_waiter() {
-    let mut finish = Completion::new();
     let setting = option::Buffer::try_from(1024_usize);
     let setting = setting.expect("socket buffer size");
     let done = Gate::new();
@@ -226,95 +197,82 @@ fn recycle_resumes_waiter() {
                 payload: Payload::Body,
                 observe: direct,
             },
-            (),
+            WireRuntime,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            move |case| {
-                let peers = [(); 2].map(|()| {
-                    let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
-                    peer.set_nodelay(true).expect("peer nodelay");
-                    peer.write_wait(Some(GUARD)).expect("peer write timeout");
-                    peer.write_all(b"open").expect("open wire");
-                    peer.shutdown(Shutdown::Write).expect("peer half-close");
-                    peer.nonblock(true);
-                    peer
-                });
-                reached(case.try_wait(&done, 2), done.hits(), 2);
-                let third = Peer::at(case.addr()).try_connect().expect("third peer");
-                third.set_nodelay(true).expect("peer nodelay");
-                third.write_wait(Some(GUARD)).expect("peer write timeout");
-                third.write_all(b"open").expect("open wire");
-                third.shutdown(Shutdown::Write).expect("peer half-close");
-                third.nonblock(true);
-                reached(case.try_wait(&deferred, 1), deferred.hits(), 1);
-                assert_eq!(done.hits(), 2);
-                for peer in peers {
-                    let started = time::Instant::now();
-                    let mut received = 0;
-                    let mut bytes = [0; 4096];
-                    loop {
-                        assert!(started.elapsed() < GUARD, "peer drain timeout");
-                        match peer.read(&mut bytes) {
-                            Ok(0) => break,
-                            Ok(count) => received += count,
-                            Err(error) => {
-                                assert!(
-                                    matches!(error, peer::Error::Syscall(error)
-                                        if error.is_block() || error.is_intr()),
-                                    "read peer: {error:?}"
-                                );
-                                case.try_drive(fibers::Yield::new()).expect("drive peer");
-                            }
-                        }
+    prepared.run(move |case| {
+        let peers = [(); 2].map(|()| {
+            let peer = Peer::at(case.addr()).try_connect().expect("connect peer");
+            peer.set_nodelay(true).expect("peer nodelay");
+            peer.write_wait(Some(GUARD)).expect("peer write timeout");
+            peer.write_all(b"open").expect("open wire");
+            peer.shutdown(Shutdown::Write).expect("peer half-close");
+            peer.nonblock(true);
+            peer
+        });
+        reached(case.try_wait(&done, 2), done.hits(), 2);
+        let third = Peer::at(case.addr()).try_connect().expect("third peer");
+        third.set_nodelay(true).expect("peer nodelay");
+        third.write_wait(Some(GUARD)).expect("peer write timeout");
+        third.write_all(b"open").expect("open wire");
+        third.shutdown(Shutdown::Write).expect("peer half-close");
+        third.nonblock(true);
+        reached(case.try_wait(&deferred, 1), deferred.hits(), 1);
+        assert_eq!(done.hits(), 2);
+        for peer in peers {
+            let started = time::Instant::now();
+            let mut received = 0;
+            let mut bytes = [0; 4096];
+            loop {
+                assert!(started.elapsed() < GUARD, "peer drain timeout");
+                match peer.read(&mut bytes) {
+                    Ok(0) => break,
+                    Ok(count) => received += count,
+                    Err(error) => {
+                        assert!(
+                            matches!(error, peer::Error::Syscall(error)
+                                if error.is_block() || error.is_intr()),
+                            "read peer: {error:?}"
+                        );
+                        case.try_drive(fibers::Yield::new()).expect("drive peer");
                     }
-                    assert_eq!(received, BODY_LEN + 1);
                 }
-                reached(case.try_wait(&done, 3), done.hits(), 3);
-                reached(case.try_wait(&closed, 2), closed.hits(), 2);
-                let fourth = Peer::at(case.addr()).try_connect().expect("fourth peer");
-                fourth.set_nodelay(true).expect("peer nodelay");
-                fourth.write_wait(Some(GUARD)).expect("peer write timeout");
-                fourth.write_all(b"open").expect("open wire");
-                fourth.shutdown(Shutdown::Write).expect("peer half-close");
-                fourth.nonblock(true);
-                reached(case.try_wait(&done, 4), done.hits(), 4);
-                assert_eq!(deferred.hits(), 1);
-                for peer in [third, fourth] {
-                    let started = time::Instant::now();
-                    let mut received = 0;
-                    let mut bytes = [0; 4096];
-                    loop {
-                        assert!(started.elapsed() < GUARD, "peer drain timeout");
-                        match peer.read(&mut bytes) {
-                            Ok(0) => break,
-                            Ok(count) => received += count,
-                            Err(error) => {
-                                assert!(
-                                    matches!(error, peer::Error::Syscall(error)
-                                        if error.is_block() || error.is_intr()),
-                                    "read peer: {error:?}"
-                                );
-                                case.try_drive(fibers::Yield::new()).expect("drive peer");
-                            }
-                        }
+            }
+            assert_eq!(received, BODY_LEN + 1);
+        }
+        reached(case.try_wait(&done, 3), done.hits(), 3);
+        reached(case.try_wait(&closed, 2), closed.hits(), 2);
+        let fourth = Peer::at(case.addr()).try_connect().expect("fourth peer");
+        fourth.set_nodelay(true).expect("peer nodelay");
+        fourth.write_wait(Some(GUARD)).expect("peer write timeout");
+        fourth.write_all(b"open").expect("open wire");
+        fourth.shutdown(Shutdown::Write).expect("peer half-close");
+        fourth.nonblock(true);
+        reached(case.try_wait(&done, 4), done.hits(), 4);
+        assert_eq!(deferred.hits(), 1);
+        for peer in [third, fourth] {
+            let started = time::Instant::now();
+            let mut received = 0;
+            let mut bytes = [0; 4096];
+            loop {
+                assert!(started.elapsed() < GUARD, "peer drain timeout");
+                match peer.read(&mut bytes) {
+                    Ok(0) => break,
+                    Ok(count) => received += count,
+                    Err(error) => {
+                        assert!(
+                            matches!(error, peer::Error::Syscall(error)
+                                if error.is_block() || error.is_intr()),
+                            "read peer: {error:?}"
+                        );
+                        case.try_drive(fibers::Yield::new()).expect("drive peer");
                     }
-                    assert_eq!(received, BODY_LEN + 1);
                 }
-                reached(case.try_wait(&closed, 4), closed.hits(), 4);
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
-    );
+            }
+            assert_eq!(received, BODY_LEN + 1);
+        }
+        reached(case.try_wait(&closed, 4), closed.hits(), 4);
+    });
 }
 
 #[test]
@@ -355,7 +313,7 @@ fn deadline_resumes_waiter() {
         };
         let hash = session.hash_state(listener::Domain::DEFAULT);
         let result = listener::Install::<KeyTag<0>, Bundle<Tcp, Wire, Profile>, _>::new(
-            config, domain::Local::new(()),
+            config, domain::Local::new(WireRuntime),
         ).with_driver(
             script::App {
                 done: done.clone(),

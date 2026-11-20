@@ -19,7 +19,7 @@ use dope_manifold::client::{
 use dope_net::{
     link::{egress, pool::change::opening},
     wire::{
-        self, domain, failure, open, receive,
+        self, failure, open, receive,
         receive::{batch, eof, mode::Disabled},
         send, terminal,
     },
@@ -30,7 +30,7 @@ use o3::{
     buffer,
     buffer::storage::Shared,
 };
-use wire::receive::{mode::access, reserve};
+use wire::receive::reserve;
 
 use crate::common::{
     contract::codec::{Pending, errors},
@@ -46,6 +46,7 @@ pub enum Cause {
     Completion,
 }
 
+#[derive(Default)]
 pub struct Fault;
 
 pub struct State {
@@ -60,7 +61,6 @@ impl receive::Policy<Fault> for Ingress {
         = recv::Shared<'d>
     where
         'd: 'w;
-    type Access = access::Direct;
     type Eof = eof::State;
     type Reserve = reserve::Borrowed;
     type Credit = Disabled;
@@ -156,19 +156,6 @@ impl wire::Spec for Fault {
     type Bootstrap = Self;
     type Receive = Ingress;
     type Send = send::Direct;
-}
-
-impl domain::Init<Fault> for Fault {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: domain::Limits,
-        _: <Self as wire::Spec>::Binding<'w, ID>,
-    ) -> <Self as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Self: 'w,
-        'd: 'w,
-    {
-        Self
-    }
 }
 
 pub struct Failure {

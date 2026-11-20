@@ -15,7 +15,7 @@ use dope_test::reclaim::Reports;
 use std::io;
 use std::net::Shutdown;
 
-use crate::common::Read;
+use o3::buffer::write::consume::Consume as _;
 use dope::core::{
     driver::{route::table::conn::Capacity, storage},
     io::socket,
@@ -151,13 +151,9 @@ fn assert_end(input: Input) {
                                             .expect(
                                                 "wire failure overtook authenticated plaintext",
                                             );
-                                        plain.drive(
-                                            Ok(()),
-                                            &mut Read(|head: &[u8]| {
-                                                assert_eq!(head, BEFORE_FAILURE);
-                                                head.len()
-                                            }),
-                                        ).expect("consume authenticated plaintext");
+                                        assert_eq!(plain.as_ref(), BEFORE_FAILURE);
+                                        plain.try_consume(BEFORE_FAILURE.len())
+                                            .expect("consume authenticated plaintext");
                                         assert!(plain.is_empty());
                                     }
 

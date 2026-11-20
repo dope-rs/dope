@@ -1,6 +1,6 @@
 pub mod common;
 
-use common::manifold::{listener::reached, native};
+use common::manifold::listener::reached;
 
 use std::{io::Write as _, net::TcpStream, rc::Rc, time::Duration};
 
@@ -42,7 +42,6 @@ use dope_test::{
 
 #[test]
 fn replays_owner() {
-    let mut finish = Completion::new();
     let closed = Gate::new();
     let done = Gate::new();
     let seen = Rc::new(Trace::new());
@@ -56,35 +55,22 @@ fn replays_owner() {
             Identity,
         ))
         .expect("listener layout");
-    let mut reports =
-        Reports::<_>::new(prepared.layout(), [<FrameworkTag<kind::Any> as Tag>::ROUTE]);
-    prepared
-        .with_run(
-            &mut finish,
-            |case| {
-                Peer::at(case.addr())
-                    .exchange(b"one receive owner".to_vec(), |peer| {
-                        reached(case.try_wait(&closed, 1), closed.hits(), 1);
-                        reached(case.try_wait(&done, 1), done.hits(), 1);
-                        let reply = peer.finish().expect("peer finish").expect("peer I/O");
-                        assert!(reply.is_empty());
-                    })
-                    .expect("peer spawn");
-            },
-            recovery::Policy::new(|event| reports.push(event), recover),
-            native,
-        )
-        .expect("listener run");
+    prepared.run(|case| {
+        Peer::at(case.addr())
+            .exchange(b"one receive owner".to_vec(), |peer| {
+                reached(case.try_wait(&closed, 1), closed.hits(), 1);
+                reached(case.try_wait(&done, 1), done.hits(), 1);
+                let reply = peer.finish().expect("peer finish").expect("peer I/O");
+                assert!(reply.is_empty());
+            })
+            .expect("peer spawn");
+    });
     let seen = seen.values().expect("scoped observations");
     assert!(
         matches!(&*seen, [
-        scoped::Event::Chunk(first), scoped::Event::Chunk(replay), scoped::Event::Consumed(Ok(())),
+        scoped::Event::Chunk(first), scoped::Event::Chunk(replay), scoped::Event::Consumed,
     ] if first == replay && first == b"one receive owner"),
         "scoped receive events: {seen:?}"
-    );
-    assert!(
-        reports.events().expect("reclaimed events").is_empty(),
-        "unexpected reclaimed operations: {reports:?}"
     );
 }
 

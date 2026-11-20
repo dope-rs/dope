@@ -29,7 +29,7 @@ use dope_manifold::{
 };
 use dope_net::{
     link::{egress, pool::change::opening},
-    wire::{self, domain::Limits, terminal},
+    wire::{self, terminal},
 };
 use dope_test::harness::signals::Gate;
 use o3::{
@@ -50,7 +50,7 @@ pub struct Runtime<'w>(pub(crate) Option<&'w mut dyn FnMut() -> bool>);
 
 pub struct First;
 
-pub struct Opening(bool);
+pub struct Opening(pub(crate) bool);
 
 impl failure::Errors<failure::Open> for First {
     type Error<'d> = Cause;
@@ -70,15 +70,6 @@ impl wire::Spec for First {
     type Bootstrap = Self;
     type Receive = Transparent;
     type Send = send::Direct;
-}
-
-impl domain::Init<First> for First {
-    fn runtime<'w, 'd, ID: Identity + 'w>(_: Limits, _: ()) -> Opening
-    where
-        'd: 'w,
-    {
-        Opening(true)
-    }
 }
 
 impl<'w, 'd: 'w, ID: Identity + 'w> open::Runtime<'w, 'd, First, ID> for Opening {
@@ -148,19 +139,6 @@ impl wire::Spec for Wire {
     type Send = send::Direct;
 }
 
-impl domain::Init<Wire> for Wire {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: Limits,
-        binding: <Wire as wire::Spec>::Binding<'w, ID>,
-    ) -> <Wire as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        Wire: 'w,
-        'd: 'w,
-    {
-        binding
-    }
-}
-
 pub(crate) struct Delay {
     pub(crate) first: Cell<bool>,
     pub(crate) blocked: Cell<bool>,
@@ -192,21 +170,6 @@ impl Default for DeferredWire {
     }
 }
 
-pub struct Bootstrap;
-
-impl domain::Init<DeferredWire> for Bootstrap {
-    fn runtime<'w, 'd, ID: Identity + 'w>(
-        _: Limits,
-        wire: <DeferredWire as wire::Spec>::Binding<'w, ID>,
-    ) -> <DeferredWire as wire::Spec>::Runtime<'w, 'd, ID>
-    where
-        DeferredWire: 'w,
-        'd: 'w,
-    {
-        wire
-    }
-}
-
 impl wire::Spec for DeferredWire {
     type Connection<'d, ID: Identity + 'd> = wire::Identity;
     type Storage<ID: Identity> = ();
@@ -220,7 +183,7 @@ impl wire::Spec for DeferredWire {
     type OpenFailure = failure::Never;
     type TerminalFailure = failure::Never;
 
-    type Bootstrap = Bootstrap;
+    type Bootstrap = Self;
     type Receive = Transparent;
     type Send = send::Direct;
 }

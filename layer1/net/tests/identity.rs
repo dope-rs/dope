@@ -1,11 +1,11 @@
 use dope_core::driver::route::KeyTag;
-use dope_net::wire::{self, Identity, domain, domain::Init as _, open};
+use dope_net::wire::{Identity, open};
 
 #[test]
 fn identity_exact_parts() {
-    assert_eq!(std::mem::size_of::<wire::Runtime>(), 0);
-    let mut rt = Identity::runtime::<KeyTag<0>>(domain::Limits::fixed::<1, 0, 0, 1>(), Identity);
-    let opened = <wire::Runtime as open::Runtime<'_, '_, Identity, KeyTag<0>>>::open(
+    assert_eq!(std::mem::size_of::<Identity>(), 0);
+    let mut rt = Identity;
+    let opened = <Identity as open::Runtime<'_, '_, Identity, KeyTag<0>>>::open(
         &mut rt,
         (),
         |(), wire, send| open::Disposition::Commit((wire, send)),

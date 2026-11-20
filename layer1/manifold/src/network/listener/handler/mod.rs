@@ -191,12 +191,12 @@ pub trait Scoped<'w, 'd: 'w, ID: Identity>: Application<'d, ID> {
     /// exact listener-wide budget without a parallel hard-coded constant.
     fn retention(&self) -> limits::Budget;
 
-    fn scoped_chunk<'e>(
+    fn scoped_chunk<'s, 'e>(
         self: pin::Pin<&mut Self>,
         conn: conn::Ctx<'e, '_, '_, '_, 'w, 'd, ID, Self::Wire, Self::Conn, Self::Egress>,
-        chunk: scoped::Input<'_, 'w, 'd, Self::Wire>,
+        chunk: scoped::Input<'s, 'w, 'd, Self::Wire>,
         driver: &mut driver::Context<'_, 'd>,
-    ) -> receive::Outcome;
+    ) -> Result<receive::Outcome, scoped::Pending<'s>>;
 }
 
 pub trait Owned<'w, 'd: 'w, ID: Identity>: Application<'d, ID, Input = receive::Owned> {
