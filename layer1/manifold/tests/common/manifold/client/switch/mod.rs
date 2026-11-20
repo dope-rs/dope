@@ -1,10 +1,4 @@
-use dope_manifold::client::{
-    close::Reason,
-    session::{
-        codec::{self, Finish, Parse},
-        response,
-    },
-};
+use dope_manifold::client::close::Reason;
 
 pub mod barrier;
 pub mod decode;
@@ -59,57 +53,4 @@ pub enum Error {
         settlements: usize,
     },
     Close(Reason),
-}
-
-pub fn accepted<H, E, S, T, F>(
-    result: Result<H, E>,
-    state: &mut S,
-    admit: impl FnOnce(Result<&H, &E>) -> codec::Admission<F>,
-) -> T
-where
-    T: response::Outcome,
-    F: FnOnce(Result<H, E>, &mut S) -> T::Accepted,
-{
-    match admit(result.as_ref()) {
-        codec::Admission::RetryInput => T::retry_input(),
-        codec::Admission::Ready(emit) => T::accept(emit(result, state)),
-    }
-}
-
-pub fn parsed<'id, H, E, S, T, F>(
-    result: Result<Parse<'id, H>, E>,
-    state: &mut S,
-    admit: impl FnOnce(Result<&H, &E>) -> codec::Admission<F>,
-) -> Result<Parse<'id, T>, T>
-where
-    T: response::Outcome,
-    F: FnOnce(Result<H, E>, &mut S) -> T::Accepted,
-{
-    match result {
-        Ok(Parse::Item { head, consumed }) => Ok(Parse::Item {
-            head: accepted(Ok(head), state, admit),
-            consumed,
-        }),
-        Ok(Parse::More(need)) => Ok(Parse::More(need)),
-        Ok(Parse::Blocked) => Ok(Parse::Blocked),
-        Ok(Parse::CapacityExhausted) => Ok(Parse::CapacityExhausted),
-        Err(error) => Err(accepted(Err(error), state, admit)),
-    }
-}
-
-pub fn finished<H, E, S, T, F>(
-    result: Result<Finish<H>, E>,
-    state: &mut S,
-    admit: impl FnOnce(Result<&H, &E>) -> codec::Admission<F>,
-) -> Result<Finish<T>, T>
-where
-    T: response::Outcome,
-    F: FnOnce(Result<H, E>, &mut S) -> T::Accepted,
-{
-    match result {
-        Ok(Finish::Item(head)) => Ok(Finish::Item(accepted(Ok(head), state, admit))),
-        Ok(Finish::Empty) => Ok(Finish::Empty),
-        Ok(Finish::CapacityExhausted) => Ok(Finish::CapacityExhausted),
-        Err(error) => Err(accepted(Err(error), state, admit)),
-    }
 }

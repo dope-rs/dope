@@ -14,6 +14,7 @@ use dope_manifold::{
     timing::Balanced,
 };
 use dope_net::{tcp::Tcp, wire};
+use dope_runtime::executor::session::Completion;
 use dope_test::harness::{
     GUARD, peer,
     signals::{self, Progress as _},
@@ -28,7 +29,8 @@ use crate::common::{
             terminal::eof::{Decode, Eof},
         },
     },
-    scenario::case::{Connector, Value},
+    manifold::root::until_hits,
+    scenario::case::{Connector, Failure, Value},
 };
 
 #[test]
@@ -120,8 +122,9 @@ fn eof_blocked_waits_and_cancels() {
                     Duration::from_millis(10),
                     Duration::from_millis(50),
                 );
+                let lifetime = Positive::from_millis::<250>();
                 let connector = if matches!(cancel, Some(Reason::Timeout(_))) {
-                    connector.lifetime(Positive::from_millis::<250>())
+                    connector.lifetime(lifetime)
                 } else {
                     connector
                 };
@@ -146,18 +149,45 @@ fn eof_blocked_waits_and_cancels() {
                         }),
                     })
                     .expect("prepare blocked EOF client");
-                planned.run(|case| {
-                    reached(case.try_wait(&blocked, 1), &audit);
-                    // The application probe is reached only after the connection's
-                    // pending queue becomes empty; a self-requeued close never reaches it.
-                    reached(case.try_wait(&waiting, 1), &audit);
-                    assert_eq!(finishes.get(), 1);
-                    if cancel.is_none() {
-                        release.hit();
-                    }
-                    if cancel != Some(Reason::Local(LocalOrigin::RuntimeShutdown)) {
-                        reached(case.try_wait(&closed, 1), &audit);
-                    }
+                let completion = &mut Completion::new();
+                planned.with_worker(|worker| {
+                    worker
+                        .lend(|install, stage| {
+                            install.install(stage, |host, stage| {
+                                let now = stage.driver().driver_ref().clock().now();
+                                let finish = completion;
+                                stage.with_at_for(
+                                    finish,
+                                    host,
+                                    now.into(),
+                                    Duration::from_secs(2),
+                                    |mut app| {
+                                        // The root completes at blocked. The subsequent fixed
+                                        // point must observe the empty connection queue.
+                                        app.drive_for(now.into(), GUARD, until_hits(&blocked, 1))
+                                            .expect("blocked EOF reaches a fixed point")
+                                            .into_output();
+                                        audit.checked((0, 0));
+                                        assert_eq!(waiting.hits(), 1, "blocked connection became idle");
+                                        assert_eq!(finishes.get(), 1);
+                                        assert_eq!(closed.hits(), 0);
+                                        if cancel != Some(Reason::Local(LocalOrigin::RuntimeShutdown)) {
+                                            let at = if cancel.is_none() {
+                                                release.hit();
+                                                now.into()
+                                            } else {
+                                                now.clamp_add(lifetime.get())
+                                            };
+                                            app.drive_for(at, GUARD, until_hits(&closed, 1))
+                                                .expect("blocked EOF connection closed")
+                                                .into_output();
+                                        }
+                                    },
+                                )
+                            })
+                        })
+                        .map_err(Failure::Install)?
+                        .map_err(Failure::Application)
                 });
                 audit.checked((0, 0));
                 assert_eq!(closed.hits(), 1);

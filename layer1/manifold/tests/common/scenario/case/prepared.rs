@@ -22,6 +22,15 @@ impl<ID: Identity, const MAX: usize, E: env::Spec, F> Prepared<ID, MAX, E, F> {
         Self { plan }
     }
 
+    pub fn with_worker<R: Debug, K: Debug>(
+        self,
+        run: impl for<'scope, 'life, 'p, 'd> FnOnce(
+            topology::Worker<'scope, 'life, 'p, 'd, (), Client<ID, MAX, E, F>, ()>,
+        ) -> Result<R, K>,
+    ) -> R {
+        super::checked(super::enter(self.plan, ID::ROUTE, run))
+    }
+
     pub fn run<B, R: Debug, K: Debug>(self, body: B) -> R
     where
         B: FnOnce(&mut dyn RuntimeCase) -> R,

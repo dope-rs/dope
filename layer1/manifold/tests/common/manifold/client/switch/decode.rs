@@ -18,6 +18,8 @@ use o3::{
     },
 };
 
+use crate::common::{contract::Report, manifold::client::error};
+
 pub struct Decode {
     pub(crate) attempts: NonZero<usize>,
     pub(crate) prefix: Gate,
@@ -96,30 +98,28 @@ impl Stateful for Decode {
 }
 
 impl Decode {
-    pub(super) fn decode<'d, S, T, F>(
+    pub(super) fn decode<'d, S, T>(
         &self,
         storage: &mut Storage<S>,
         state: &mut State,
         budget: &resident::Budget<'d>,
         limit: Limit,
-        admit: impl FnOnce(Result<&Head, &Error>) -> codec::Admission<F>,
+        deliver: impl FnOnce(Result<Head, Error>) -> T,
     ) -> codec::Step<T>
     where
         S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
         T: response::Outcome,
-        F: FnOnce(Result<Head, Error>, &mut State) -> T::Accepted,
     {
-        let emit = |result, state| super::accepted(result, state, admit);
         codec::Input::commit(&mut storage.source, budget, limit, |input| {
             if input.as_slice() == b"P" || input.as_slice() == b"Q" {
                 if storage.partials != 0 {
-                    return Err(emit(Err(Error::Prefix(storage.partials)), state));
+                    return Err(deliver(Err(Error::Prefix(storage.partials))));
                 }
                 storage.partials += 1;
                 let used = if input.as_slice() == b"P" {
                     match input.try_consumed(NonZero::<usize>::MIN) {
                         Ok(used) => Some(used),
-                        Err(cause) => return Err(emit(Err(Error::Consume(cause)), state)),
+                        Err(cause) => return Err(deliver(Err(Error::Consume(cause)))),
                     }
                 } else {
                     None
@@ -135,23 +135,17 @@ impl Decode {
             }
             let prefixes = self.prefix.hits();
             if storage.partials != prefixes as usize {
-                return Err(emit(
-                    Err(Error::Rebound {
-                        partials: storage.partials,
-                        prefixes,
-                    }),
-                    state,
-                ));
+                return Err(deliver(Err(Error::Rebound {
+                    partials: storage.partials,
+                    prefixes,
+                })));
             }
             state.parses += 1;
             if state.parses > self.attempts.get() {
-                return Err(emit(
-                    Err(Error::Parses {
-                        actual: state.parses,
-                        allowed: self.attempts,
-                    }),
-                    state,
-                ));
+                return Err(deliver(Err(Error::Parses {
+                    actual: state.parses,
+                    allowed: self.attempts,
+                })));
             }
             let Some(&byte) = input.first() else {
                 return Ok(match input.need_more(None) {
@@ -162,47 +156,34 @@ impl Decode {
             let count = match byte {
                 b'H' => NonZero::<usize>::MIN,
                 b'Q' if input.as_slice() == b"QQ" => NonZero::<usize>::MIN.saturating_add(1),
-                _ => return Err(emit(Err(Error::Head(byte)), state)),
+                _ => return Err(deliver(Err(Error::Head(byte)))),
             };
             let consumed = match input.try_consumed(count) {
                 Ok(consumed) => consumed,
-                Err(cause) => return Err(emit(Err(Error::Consume(cause)), state)),
+                Err(cause) => return Err(deliver(Err(Error::Consume(cause)))),
             };
             let head = Head {
                 suffix: input.as_ptr().wrapping_add(count.get()),
             };
             Ok(Parse::Item {
-                head: emit(Ok(head), state),
+                head: deliver(Ok(head)),
                 consumed,
             })
         })
     }
 
-    pub(super) fn finish<'slot, 'id, 'd, S, T, F>(
+    pub(super) fn finish<'slot, 'id, S, T: response::Outcome>(
         &self,
         mut input: storage::Owner<'slot, 'id, Storage<S>, State>,
-        _: &resident::Budget<'d>,
-        _: Limit,
-        admit: impl FnOnce(Result<&Head, &Error>) -> codec::Admission<F>,
-    ) -> (
-        storage::Owner<'slot, 'id, Storage<S>, State>,
-        Result<codec::Finish<T>, T>,
-    )
-    where
-        S: buffer::Cursor + hold::raw::Retain<'d> + buffer::raw::Consume,
-        T: response::Outcome,
-        F: FnOnce(Result<Head, Error>, &mut State) -> T::Accepted,
-    {
+        audit: &Report<error::Error, 16>,
+    ) -> codec::Finished<storage::Owner<'slot, 'id, Storage<S>, State>, T> {
         let (_, state) = input.parts();
-        let emit = |result, state| super::accepted(result, state, admit);
         let result = if state.parses > self.attempts.get() {
-            Err(emit(
-                Err(Error::Parses {
-                    actual: state.parses,
-                    allowed: self.attempts,
-                }),
-                state,
-            ))
+            audit.faults.record(error::Error::Decode(Error::Parses {
+                actual: state.parses,
+                allowed: self.attempts,
+            }));
+            Err(T::committed())
         } else {
             Ok(codec::Finish::Empty)
         };
