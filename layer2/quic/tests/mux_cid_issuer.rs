@@ -44,21 +44,21 @@ fn issues_distinct_entropy() {
                     .connect_with(addr, &auth, Options::default(), Plain),
             })
             .expect("each distinct fixture peer must open a mux connection");
-        let original = Pin::new(&mut mux)
-            .observe(now, |mut turn| {
-                turn.output()
-                    .drive()
-                    .expect("fresh client connection must admit its Initial");
-                for mut outgoing in turn.output().drain() {
-                    for segment in outgoing.segments_mut() {
-                        if let Ok(header) = initial::Prefix::decode(segment) {
-                            return Some(header.dcid.into_slice().to_vec());
-                        }
+        let original = 'initial: {
+            for mut outgoing in Pin::new(&mut mux)
+                .output()
+                .try_drain(now)
+                .expect("fresh client connection must admit its Initial")
+            {
+                for segment in outgoing.segments_mut() {
+                    if let Ok(header) = initial::Prefix::decode(segment) {
+                        break 'initial Some(header.dcid.into_slice().to_vec());
                     }
                 }
-                None
-            })
-            .expect("client must emit an Initial packet");
+            }
+            None
+        }
+        .expect("client must emit an Initial packet");
         let path = mux
             .conn(handle)
             .expect("the newly opened handle must resolve to its mux connection")

@@ -386,11 +386,13 @@ impl Wire {
             .ok_or(Error::Runtime(runtime::Error::Deadline(now)))?;
         let deadline = client_deadline.max(server_deadline);
         Pin::new(&mut retiring)
-            .observe(deadline, |mut turn| turn.output().drive())
+            .output()
+            .drive_at(deadline)
             .map_err(runtime::Error::Output)
             .map_err(Error::Runtime)?;
         Pin::new(&mut self.server.router)
-            .observe(deadline, |mut turn| turn.output().drive())
+            .output()
+            .drive_at(deadline)
             .map_err(runtime::Error::Output)
             .map_err(Error::Runtime)?;
         self.now = deadline;

@@ -95,9 +95,7 @@ impl<
         config::Config::new(self)
     }
 
-    pub fn output<'a, 'tls>(
-        self: pin::Pin<&'a mut Self>,
-    ) -> output::Queue<'a, 'tls, H, DOMAIN, B, A> {
+    pub fn output(self: pin::Pin<&mut Self>) -> output::Queue<'_, H, DOMAIN, B, A> {
         output::Queue::new(self)
     }
 

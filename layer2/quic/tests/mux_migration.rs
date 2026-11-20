@@ -410,7 +410,9 @@ fn new_peer_cid_resumes_pending_path_validation() {
             };
             let (_, body) = peer.open(&mut wire).expect("open resumed output");
             for record in frame::Frame::decode_all(&body).expect("resumed frames") {
-                if let frame::View::Datagram { data, .. } = record.view() {
+                if let frame::View::Datagram { data } | frame::View::DatagramLen { data, .. } =
+                    record.view()
+                {
                     payloads.push(data.to_vec());
                 }
             }

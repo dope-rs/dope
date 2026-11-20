@@ -1,4 +1,5 @@
 pub mod common;
+use common::suite::mux::dispatch;
 
 use common::peer::Config;
 use common::runtime::gso::{self, Capture, Pair};
@@ -175,7 +176,7 @@ fn close_reclaims_retry() {
     now = deadline;
     let (key, config) = Count::try_keys().expect("next peer TLS configuration");
     let mut server = Capture::server(Capture::default(), config, options()).expect("next peer");
-    let next = Capture::connect(
+    let next = dispatch::Capture::connect(
         &mut client,
         gso::SERVER,
         key,

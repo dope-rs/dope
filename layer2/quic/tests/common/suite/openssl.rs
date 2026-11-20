@@ -172,11 +172,11 @@ impl Server {
             Err(cause) => return Err(Error::Socket(cause)),
         }
         pin::Pin::new(&mut self.router)
-            .observe(now, |mut turn| turn.output().drive())
+            .output()
+            .drive_at(now)
             .map_err(runtime::Error::Output)
             .map_err(Error::Runtime)?;
-        let outgoing: Vec<_> = pin::Pin::new(&mut self.router)
-            .observe(now, |mut turn| turn.output().drain().collect());
+        let outgoing: Vec<_> = pin::Pin::new(&mut self.router).output().drain().collect();
         for mut outgoing in outgoing {
             let address = outgoing.addr();
             for segment in outgoing.segments_mut() {

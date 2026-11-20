@@ -29,7 +29,6 @@ fn mux_controls_no_alloc() {
     Pin::new(&mut owned).observe(now, |mut turn| {
         black_box(turn.deadline());
         black_box(turn.protocol());
-        black_box(turn.output());
         black_box(turn.lifecycle());
         let mut rotation = turn.plan_cid(cid::Rotation::disabled());
         black_box(turn.maintain_cid(&mut rotation));
@@ -39,7 +38,6 @@ fn mux_controls_no_alloc() {
     Pin::new(&mut pooled).observe(now, |mut turn| {
         black_box(turn.deadline());
         black_box(turn.protocol());
-        black_box(turn.output());
         black_box(turn.lifecycle());
         let mut rotation = turn.plan_cid(cid::Rotation::disabled());
         black_box(turn.maintain_cid(&mut rotation));
@@ -124,31 +122,31 @@ fn bookkeeping_no_alloc() {
             .is_ok(),
         "the fixed peer, key, options, and CID must open a connection"
     );
-    Pin::new(&mut mux).observe(Instant::now(), |mut turn| {
+    {
+        let mut output = Pin::new(&mut mux).output();
         assert!(
-            turn.output().drive().is_ok(),
+            output.drive_at(Instant::now()).is_ok(),
             "fixture mux connection must admit its initial output"
         );
-        black_box(turn.output().drain().count());
-    });
+        black_box(output.drain().count());
+    };
     let deadline = (Pin::new(&mut mux).observe(now, |turn| turn.deadline()))
         .expect("opened connection deadline");
 
     let span = Tracker::begin();
     for _ in 0..4096 {
         black_box(Pin::new(&mut mux).observe(now, |turn| turn.deadline()));
-        Pin::new(&mut mux).observe(now, |mut turn| {
-            let count = (turn.output().drive())
-                .expect("fixture mux connection must admit bookkeeping output");
-            black_box(count);
-        });
+        let count = (Pin::new(&mut mux).output().drive_at(now))
+            .expect("fixture mux connection must admit bookkeeping output");
+        black_box(count);
     }
-    Pin::new(&mut mux).observe(deadline + Duration::from_secs(5), |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "expired fixture connection must close without admission failure"
-        )
-    });
+    assert!(
+        Pin::new(&mut mux)
+            .output()
+            .drive_at(deadline + Duration::from_secs(5))
+            .is_ok(),
+        "expired fixture connection must close without admission failure"
+    );
     let activity = span.finish();
 
     assert_eq!(mux.active_conns(), 0);
@@ -178,13 +176,14 @@ fn deadline_advances_due() {
             .is_ok(),
         "the first fixed peer and CID must open a connection"
     );
-    Pin::new(&mut mux).observe(now, |mut turn| {
+    {
+        let mut output = Pin::new(&mut mux).output();
         assert!(
-            turn.output().drive().is_ok(),
+            output.drive_at(now).is_ok(),
             "first fixture connection must admit initial output"
         );
-        black_box(turn.output().drain().count());
-    });
+        black_box(output.drain().count());
+    };
     let result = Pin::new(&mut mux).observe(now + Duration::from_millis(100), |mut turn| {
         turn.protocol().connect(
             second,
@@ -198,26 +197,28 @@ fn deadline_advances_due() {
         "the second fixed peer and CID must open a connection"
     );
     let driven = now + Duration::from_millis(100);
-    Pin::new(&mut mux).observe(driven, |mut turn| {
+    {
+        let mut output = Pin::new(&mut mux).output();
         assert!(
-            turn.output().drive().is_ok(),
+            output.drive_at(driven).is_ok(),
             "second fixture connection must admit initial output"
         );
-        black_box(turn.output().drain().count());
-    });
+        black_box(output.drain().count());
+    };
 
     let deadline = (Pin::new(&mut mux).observe(now, |turn| turn.deadline()))
         .expect("two opened connections must have a deadline");
-    let dests = Pin::new(&mut mux).observe(deadline + Duration::from_micros(1), |mut turn| {
+    let dests = {
+        let mut output = Pin::new(&mut mux).output();
         assert!(
-            turn.output().drive().is_ok(),
+            output.drive_at(deadline + Duration::from_micros(1)).is_ok(),
             "due fixture connection must admit deadline output"
         );
-        turn.output()
+        output
             .drain()
             .map(|outgoing| outgoing.addr())
             .collect::<Vec<_>>()
-    });
+    };
 
     assert!(!dests.is_empty());
     assert!(dests.iter().all(|addr| *addr == first));

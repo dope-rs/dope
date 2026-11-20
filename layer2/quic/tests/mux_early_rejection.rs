@@ -56,8 +56,10 @@ fn notifies_rejected_resume() {
     }
     assert!(early, "the mux client must send an actual 0-RTT packet");
     for _ in 0..4 {
-        Capture::relay(&mut server, &mut client, SERVER, now).expect("server relay");
-        Capture::relay(&mut client, &mut server, CLIENT, now).expect("client relay");
+        Capture::relay(Pin::new(&mut server), Pin::new(&mut client), SERVER, now)
+            .expect("server relay");
+        Capture::relay(Pin::new(&mut client), Pin::new(&mut server), CLIENT, now)
+            .expect("client relay");
     }
     let peer = server.sole().expect("server connection");
     let mut payload = Vec::new();
@@ -151,8 +153,10 @@ fn retains_reset() {
             }
             assert!(early, "actual 0-RTT flight: code={code:?} queued={queued}");
             for _ in 0..4 {
-                Capture::relay(&mut server, &mut client, SERVER, now).expect("server relay");
-                Capture::relay(&mut client, &mut server, CLIENT, now).expect("client relay");
+                Capture::relay(Pin::new(&mut server), Pin::new(&mut client), SERVER, now)
+                    .expect("server relay");
+                Capture::relay(Pin::new(&mut client), Pin::new(&mut server), CLIENT, now)
+                    .expect("client relay");
             }
             let events = server.handler().events.borrow();
             let resets = events

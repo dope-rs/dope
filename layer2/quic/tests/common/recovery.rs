@@ -1,4 +1,67 @@
-use dope::core::{driver::route, io::Reclaimed};
+use std::{convert::Infallible, io, os::fd::AsFd};
+
+use dope::{
+    core::{
+        Backend, Errno,
+        driver::{
+            life::{creation::Attempt, recovery::{Policy, Recovery}},
+            route, settings, storage,
+        },
+        io::Reclaimed,
+    },
+    runtime::{
+        executor::{Build, Executor, session},
+        shutdown,
+    },
+};
+use dope_sys::io::fd::Fd;
+
+pub fn executor(
+    source: shutdown::Source,
+    config: settings::Config,
+) -> Executor<(), shutdown::Source> {
+    let mut attempt = Attempt::new();
+    let admitted = source.try_build(&mut attempt, config);
+    match admitted {
+        Ok(executor) => Ok(executor),
+        Err(ref error) => Err(error.kind()),
+    }
+    .expect("driver admission")
+}
+
+fn recover(failure: Recovery<'_, '_>) -> Infallible {
+    let message = format!("native recovery: {:?}\n", failure.cause());
+    let stderr = io::stderr();
+    let mut pending = message.as_bytes();
+    while !pending.is_empty() {
+        match Backend::write::<Errno>(stderr.as_fd(), pending) {
+            Ok([]) => break,
+            Ok(written) => pending = &pending[written.len()..],
+            Err(error) if error.is_intr() => continue,
+            Err(_) => break,
+        }
+    }
+    failure.abort()
+}
+
+pub fn run<S: storage::Direct, R>(
+    executor: Executor<S, shutdown::Source>,
+    scenario: impl for<'scope, 'life, 'p, 'd> FnOnce(
+        session::Scope<'scope, 'life, 'p, 'd, S, shutdown::Source>,
+    ) -> R,
+) -> (R, Vec<Reclaimed>) {
+    let mut reports = Vec::new();
+    let output = executor.run(|executor| {
+        let policy = Policy::new(|event| reports.push(event), recover);
+        let retired = executor.enter_with(scenario, policy);
+        match retired {
+            Ok(output) => Ok(output),
+            Err(ref error) => Err(error.cause()),
+        }
+        .expect("driver retirement")
+    });
+    (output, reports)
+}
 
 #[derive(Debug)]
 pub struct Teardown<const N: usize> {

@@ -3,7 +3,7 @@ use dope::manifold::network::datagram::send;
 
 use crate::runtime::{Transit, brand};
 
-use std::{iter, marker, pin};
+use std::{iter, pin};
 
 use crate::conn::id;
 use crate::errors;
@@ -15,44 +15,28 @@ use router::drive;
 
 /// Exclusive output access tied to one router borrow and TLS auth.
 #[repr(transparent)]
-pub struct Queue<
-    'a,
-    'tls,
-    H,
-    const DOMAIN: u8,
-    B = Vec<u8>,
-    A = auth::Pooled<'tls, routing::Plain, id::Static>,
-> where
+pub struct Queue<'a, H, const DOMAIN: u8, B, A>
+where
     H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
     B: stream::Recv,
     A: auth::Mode<DOMAIN>,
 {
     mux: pin::Pin<&'a mut router::Router<H, DOMAIN, B, A>>,
-    lifetime: marker::PhantomData<&'tls ()>,
 }
 
 impl<
     'a,
-    'tls,
     H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
     const DOMAIN: u8,
     B: stream::Recv,
     A: auth::Mode<DOMAIN>,
-> Queue<'a, 'tls, H, DOMAIN, B, A>
+> Queue<'a, H, DOMAIN, B, A>
 {
     pub(crate) fn new(mux: pin::Pin<&'a mut router::Router<H, DOMAIN, B, A>>) -> Self {
-        Self {
-            mux,
-            lifetime: marker::PhantomData,
-        }
+        Self { mux }
     }
 
-    pub(crate) fn drain(
-        self,
-    ) -> impl Iterator<Item = output::Flight> + 'a + use<'a, H, DOMAIN, B, A>
-    where
-        'tls: 'a,
-    {
+    pub fn drain(self) -> impl Iterator<Item = output::Flight> + 'a + use<'a, H, DOMAIN, B, A> {
         let mut mux = router::Turn::new(self.mux);
         let mut left = if mux.lifecycle.shutting_down {
             0
@@ -158,7 +142,21 @@ impl<
         state.outgoing.pending.submit(credit, submit)
     }
 
-    pub(crate) fn drive_at(
+    pub fn try_drain(
+        mut self,
+        at: <A::Identity as id::Temporal>::Observation,
+    ) -> Result<
+        impl Iterator<Item = output::Flight> + 'a + use<'a, H, DOMAIN, B, A>,
+        errors::Transmit<A::Identity, DOMAIN>,
+    >
+    where
+        A::Identity: id::Temporal,
+    {
+        self.drive_at(at)?;
+        Ok(self.drain())
+    }
+
+    pub fn drive_at(
         &mut self,
         at: <A::Identity as id::Temporal>::Observation,
     ) -> Result<usize, errors::Transmit<A::Identity, DOMAIN>>

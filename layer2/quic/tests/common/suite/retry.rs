@@ -46,9 +46,6 @@ impl Capture {
         mux: &mut router::Router<Self>,
         now: Instant,
     ) -> Result<Option<output::Flight>, errors::Transmit> {
-        Pin::new(mux).observe(now, |mut turn| {
-            turn.output().drive()?;
-            Ok(turn.output().drain().next())
-        })
+        Ok(Pin::new(mux).output().try_drain(now)?.next())
     }
 }

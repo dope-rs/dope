@@ -105,9 +105,12 @@ impl Capture {
                         .map_err(Error::Receive)?;
                 }
             }
-            turn.output().drive().map_err(Error::Output)?;
             Ok::<(), Error>(())
         })?;
+        Pin::new(&mut *dst)
+            .output()
+            .drive_at(now)
+            .map_err(Error::Output)?;
         if dst.handler().certificates != 0 {
             return Err(Error::Certificates(dst.handler().certificates));
         }
@@ -184,12 +187,11 @@ impl Capture {
     pub fn drain(mux: &mut router::Router<Capture>) -> Result<usize, errors::Transmit> {
         let now = Instant::now();
         dispatch::Capture::drive(mux, now)?;
-        Ok(Pin::new(mux).observe(now, |mut turn| {
-            turn.output()
-                .drain()
-                .map(|packet| packet.packet_count().get())
-                .sum()
-        }))
+        Ok(Pin::new(mux)
+            .output()
+            .drain()
+            .map(|packet| packet.packet_count().get())
+            .sum())
     }
 }
 

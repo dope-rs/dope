@@ -1,7 +1,10 @@
 use crate::common::peer;
 pub mod common;
 
-use common::suite::mux::pinned::{self, Capture, Counts};
+use common::suite::mux::{
+    dispatch,
+    pinned::{Capture, Counts},
+};
 use common::suite::peers::tls;
 use dope_quic::conn::life::{accept, options::Options};
 use dope_quic::proto::param;
@@ -55,8 +58,10 @@ fn pin_keeps_address() {
     let handle = handle.expect("the borrowed handler must create its connection");
 
     for _ in 0..12 {
-        pinned::relay(client.as_mut(), server.as_mut(), cli_addr, now).expect("client relay");
-        pinned::relay(server.as_mut(), client.as_mut(), srv_addr, now).expect("server relay");
+        dispatch::Capture::relay(client.as_mut(), server.as_mut(), cli_addr, now)
+            .expect("client relay");
+        dispatch::Capture::relay(server.as_mut(), client.as_mut(), srv_addr, now)
+            .expect("server relay");
         now += Duration::from_millis(10);
         if local.ready.len() == 1 && peer.ready.len() == 1 {
             break;
@@ -78,7 +83,8 @@ fn pin_keeps_address() {
         "the retained connection must admit its datagram"
     );
     for _ in 0..64 {
-        pinned::relay(client.as_mut(), server.as_mut(), cli_addr, now).expect("datagram relay");
+        dispatch::Capture::relay(client.as_mut(), server.as_mut(), cli_addr, now)
+            .expect("datagram relay");
         if peer.bytes.len() == 1 {
             break;
         }
@@ -94,7 +100,8 @@ fn pin_keeps_address() {
     );
     client
         .as_mut()
-        .observe(now, |mut turn| turn.output().drive())
+        .output()
+        .drive_at(now)
         .expect("close notification");
     for (trace, expected) in [(&local.shutting, (1, 0)), (&local.retired, (2, 1))] {
         let values = trace.take();

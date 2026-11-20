@@ -88,7 +88,7 @@ fn expired_response_keeps() {
                 found |= matches!(
                     frame.view(),
                     frame::View::Stream { stream_id: id, data, .. }
-                        if id == stream && data.as_slice() == b"active-after-expiry"
+                        if *id == stream && data.as_slice() == b"active-after-expiry"
                 );
             }
         }

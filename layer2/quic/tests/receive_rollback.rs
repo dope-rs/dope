@@ -2,6 +2,7 @@ use crate::common::peer;
 pub mod common;
 use common::receive::cancel;
 use common::runtime::gso::{self, Capture};
+use common::suite::mux::dispatch;
 use dope_quic::conn::life::{accept::Authority, options::Options};
 use dope_quic::errors::detail::{Diagnostic, Scope, Stream, Streams};
 use dope_quic::proto::param;
@@ -64,7 +65,7 @@ fn cancels_then_reuses() {
             .build()
             .expect("sender allocation");
         let mut now = Instant::now();
-        let handle = Capture::connect(
+        let handle = dispatch::Capture::connect(
             &mut client,
             gso::SERVER,
             key,
@@ -85,7 +86,7 @@ fn cancels_then_reuses() {
             Capture::deliver_at(
                 &mut client,
                 gso::SERVER,
-                cancel::Capture::output(&mut server, now).expect("fixture output"),
+                dispatch::Capture::output(&mut server, now).expect("fixture output"),
                 now,
             )
             .expect("fixture deliver_at");
@@ -168,7 +169,8 @@ fn cancels_then_reuses() {
         cancel::Capture::receive(&mut server, gso::CLIENT, &mut retry, now)
             .expect("fixture receive");
         Pin::new(&mut server)
-            .observe(now, |mut turn| turn.output().drive())
+            .output()
+            .drive_at(now)
             .expect("dispatch committed stream notifications");
         assert_eq!(
             server.handler().readable.len(),

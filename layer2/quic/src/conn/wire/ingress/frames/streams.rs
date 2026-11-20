@@ -32,8 +32,7 @@ pub(super) fn try_apply<B: stream::Recv, S: sources::Backing<B>>(
                 order = rest;
                 let mut input = indices.iter().map(|index| {
                     ready
-                        .entry(*index)
-                        .try_stream()
+                        .try_stream(*index)
                         .map(|stream| stream.map(|stream| (*index, stream)))
                         .map_err(|error| detail::Stream::Backing {
                             frame: *index.as_inner() as usize,

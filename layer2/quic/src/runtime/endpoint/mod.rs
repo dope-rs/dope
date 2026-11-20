@@ -357,7 +357,7 @@ where
         let host = this.udp.as_mut().handler_mut().project();
         host.rotation.seal();
         use udp::Storage as _;
-        if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(host.input) {
+        if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(&mut host.io.input) {
             input.clear();
         }
         manage::Shutdown::new(host.mux).finish(proof);

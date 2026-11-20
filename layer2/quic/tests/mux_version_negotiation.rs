@@ -28,13 +28,14 @@ fn server_negotiates() {
             .expect("server must process the unsupported-version probe");
 
         assert_eq!(server.active_conns(), 0);
-        let output = Pin::new(&mut server).observe(Instant::now(), |mut turn| {
+        let output = {
+            let mut output = Pin::new(&mut server).output();
             assert!(
-                turn.output().drive().is_ok(),
+                output.drive_at(Instant::now()).is_ok(),
                 "version-negotiation mux connections must admit output"
             );
-            turn.output().drain().collect::<Vec<_>>()
-        });
+            output.drain().collect::<Vec<_>>()
+        };
         assert_eq!(output.len(), 1);
         assert_eq!(output[0].addr(), peer);
         assert!(output[0].payload().len() <= request.len());

@@ -90,10 +90,9 @@ where
         let mut non_probing = false;
         let mut response = false;
         for record in frames.iter() {
-            non_probing |= !record.is_probing();
-            match record.view() {
-                frame::View::PathChallenge { .. } => response = true,
-                frame::View::PathResponse { data } => {
+            match record.control() {
+                Some(frame::View::PathChallenge { .. }) => response = true,
+                Some(frame::View::PathResponse { data }) => {
                     // A valid response belongs to its outstanding challenge,
                     // independently of this packet's source or route capacity.
                     path_effects.insert(conn::Effects::TRANSMIT);
@@ -109,7 +108,8 @@ where
                         ) => return Ok(frames::Disposition::Drop),
                     }
                 }
-                _ => {}
+                Some(frame::View::Padding | frame::View::NewConnectionId { .. }) => {}
+                _ => non_probing = true,
             }
         }
         let non_probing = meta.kind() == frames::PacketKind::ONE_RTT && non_probing;
@@ -191,7 +191,7 @@ where
         state.receive.connection_window.record(token, credit);
         done.applied(frames, evcap != 0 || dgrams.size_hint().0 != 0);
         for record in frames.iter() {
-            if let frame::View::PathChallenge { data } = record.view() {
+            if let Some(frame::View::PathChallenge { data }) = record.control() {
                 use path::probe::Error;
                 match ctrl.replies().try_queue(*data, route) {
                     Ok(()) => {}
@@ -303,7 +303,7 @@ where
                         );
                     }
                     frame::View::ConnectionClose { .. } => {
-                        unreachable!("close");
+                        return Ok(frames::Disposition::Drop);
                     }
                     frame::View::NewConnectionId { notice, retire } => {
                         match path.accept(notice.clone(), *retire, ctrl) {
@@ -324,12 +324,12 @@ where
                         let Some(route) = cid else {
                             return Ok(frames::Disposition::Drop);
                         };
-                        let issued = path.local.retire(seq, route.routed, route.bytes, ctrl)?;
+                        let issued = path.local.retire(*seq, route.routed, route.bytes, ctrl)?;
                         egress.derived.advertise(issued);
                     }
                     frame::View::PathChallenge { .. } => {}
                     frame::View::MaxData { maximum_data: max } => {
-                        if state.transmit.peer.data_credit.raise(max, ctrl) {
+                        if state.transmit.peer.data_credit.raise(*max, ctrl) {
                             state.transmit.wake_data();
                         }
                     }
@@ -337,21 +337,21 @@ where
                         stream_id: id,
                         maximum_stream_data: max,
                     } => {
-                        state.open_peer(id);
+                        state.open_peer(*id);
                         if let Err(error) = transmit::Commit::new(state).try_credit(
-                            id,
-                            max,
+                            *id,
+                            *max,
                             peer.transport_params.as_ref(),
                             ctrl,
                         ) {
                             if let Some(observer) = proof.observer() {
-                                observer.observe(&Diagnostic::Send { id, error });
+                                observer.observe(&Diagnostic::Send { id: *id, error });
                             }
                             return Ok(frames::Disposition::Drop);
                         }
                     }
                     frame::View::StreamDataBlocked { stream_id: id, .. } => {
-                        state.open_peer(id);
+                        state.open_peer(*id);
                     }
                     frame::View::MaxStreams {
                         direction: dir,
@@ -367,7 +367,7 @@ where
                             let blocked = *limit < opened;
                             *limit = max;
                             if blocked {
-                                state.transmit.wake_streams(dir);
+                                state.transmit.wake_streams(*dir);
                             }
                             if matches!(dir, Direction::Bidi) {
                                 state.receive.map.wake();
@@ -379,6 +379,7 @@ where
                     | frame::View::Padding
                     | frame::View::Ping
                     | frame::View::Datagram { .. }
+                    | frame::View::DatagramLen { .. }
                     | frame::View::Stream { .. }
                     | frame::View::ResetStream { .. }
                     | frame::View::StopSending { .. }
@@ -400,7 +401,7 @@ where
                     };
                     rx.datagrams.push_back(bytes);
                 }
-                record::Operation::Stream { id, .. } => {
+                record::Operation::Stream { id } => {
                     state.open_peer(id);
                 }
                 record::Operation::StreamTransient {

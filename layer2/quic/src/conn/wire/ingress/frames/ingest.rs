@@ -31,7 +31,7 @@ where
     S: sources::Source<B>,
     E: events::Sink,
 {
-    use frames::{Disposition, commit, plan};
+    use frames::{Disposition, commit, plan, record};
 
     if input.connection.is_closing() {
         if input.connection.egress.lifecycle.received() {
@@ -63,7 +63,7 @@ where
         buffers.segments.clear();
         buffers.parts.clear();
         work.records.with(|mut records| {
-            let mut build = plan::Build::new(slots, max);
+            let mut build = record::Build::new(slots, max);
             let mut rest = bytes;
             let mut count = 0;
             let mut saw = false;

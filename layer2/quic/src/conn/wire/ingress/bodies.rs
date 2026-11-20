@@ -1,13 +1,14 @@
-use crate::conn::wire::ingress::events;
-use o3::buffer;
+use dope::manifold::network::datagram::packet as datagram;
+use o3::buffer::{self, storage::provided};
 
 use std::{mem, ops, time};
 
 use crate::{conn, security::crypto, stream, wire::packet};
 use conn::wire::ingress;
 use frames::sources;
-use ingress::frames;
+use ingress::{events, frames};
 use packet::{cid, kind, long};
+use stream::retain;
 
 pub(in crate::conn::wire::ingress) trait LongKind:
     kind::Long
@@ -36,7 +37,7 @@ pub(in crate::conn::wire::ingress) enum Cid {
 
 /// Authenticated body owning the packet storage from which it was derived.
 #[must_use = "an authenticated packet body must be committed or deliberately dropped"]
-pub(in crate::conn) struct Packet<P: buffer::raw::Source> {
+pub(crate) struct Packet<P: buffer::raw::Source> {
     packet: P,
     meta: frames::PacketMeta,
     body: ops::Range<usize>,
@@ -74,7 +75,7 @@ impl<P: long::Buffer> Packet<P> {
 }
 
 impl<P: buffer::raw::Source> Packet<P> {
-    pub(super) fn freeze(self) -> Packet<P::Output>
+    fn freeze(self) -> Packet<P::Output>
     where
         P: buffer::raw::Freeze,
     {
@@ -86,92 +87,64 @@ impl<P: buffer::raw::Source> Packet<P> {
         }
     }
 
-    pub(super) fn with<R>(self, read: impl FnOnce(&P, Packet<&[u8]>) -> R) -> R {
-        let Self {
-            packet,
-            meta,
-            body,
-            cid,
-        } = self;
-        let auth = Packet {
-            packet: packet.as_ref(),
-            meta,
-            body,
-            cid,
+    fn ingest<const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::raw::Segment>(
+        &self,
+        input: &mut ingress::Input<'_, DOMAIN, B, RECONCILE, D>,
+        source: impl sources::Source<B>,
+        hooks: &mut impl events::Sink,
+    ) -> Result<(), conn::Error> {
+        let packet = self.packet.as_ref();
+        let cid = match self.cid {
+            Cid::None => None,
+            Cid::Short(width, pto) => Some(frames::PacketCid {
+                routed: input.context.route(),
+                // SAFETY: one_rtt retains the short header and its admitted width together.
+                bytes: unsafe { packet.get_unchecked(1..width.end()) },
+                pto,
+            }),
         };
-        read(&packet, auth)
-    }
-
-    pub(super) fn borrow(&self) -> (frames::PacketMeta, usize, &[u8]) {
-        (self.meta, self.body.start, self.body())
-    }
-
-    fn body(&self) -> &[u8] {
-        // SAFETY: both constructors transfer the authenticated range together
-        // with its stable owner, which freezing and shared projection preserve.
-        unsafe { self.packet.as_ref().get_unchecked(self.body.clone()) }
-    }
-
-    pub(super) fn cid(&self) -> Option<(&[u8], time::Duration)> {
-        let Cid::Short(width, pto) = self.cid else {
-            return None;
-        };
-        // SAFETY: one_rtt transfers the width from the original short header
-        // through Opened; freezing and shared projection preserve that source.
-        let bytes = unsafe { self.packet.as_ref().get_unchecked(1..width.end()) };
-        Some((bytes, pto))
+        // SAFETY: the constructor transfers the authenticated range and its original
+        // storage together. Freeze preserves its exact backing, extent and contents.
+        let body = unsafe { packet.get_unchecked(self.body.clone()) };
+        frames::ingest::try_process(input, self.meta, cid, body, source, hooks)
     }
 }
 
 /// Static authenticated-owner projection into the frame source used by commit.
-pub(in crate::conn) trait Policy<
-    P: long::Buffer,
-    const DOMAIN: u8,
-    B: stream::Recv,
-    const RECONCILE: bool,
-    D: buffer::raw::Segment,
->: Copy
-{
-    fn try_process<E>(
+pub(crate) trait Policy<P: long::Buffer, B: stream::Recv>: Copy {
+    fn try_process<const DOMAIN: u8, const RECONCILE: bool, D: buffer::raw::Segment>(
         self,
         input: &mut ingress::Input<'_, DOMAIN, B, RECONCILE, D>,
         packet: Packet<P>,
-        hooks: &mut E,
-    ) -> Result<(), conn::Error>
-    where
-        E: events::Sink;
+        hooks: &mut impl events::Sink,
+    ) -> Result<(), conn::Error>;
 }
 
-#[derive(Clone, Copy)]
-pub(in crate::conn) struct Copied;
-
-impl<'a, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::raw::Segment>
-    Policy<&'a mut [u8], DOMAIN, B, RECONCILE, D> for Copied
-{
-    fn try_process<E>(
+impl<'a, B: stream::Recv> Policy<&'a mut [u8], B> for () {
+    fn try_process<const DOMAIN: u8, const RECONCILE: bool, D: buffer::raw::Segment>(
         self,
         input: &mut ingress::Input<'_, DOMAIN, B, RECONCILE, D>,
         auth: Packet<&'a mut [u8]>,
-        hooks: &mut E,
-    ) -> Result<(), conn::Error>
-    where
-        E: events::Sink,
-    {
-        use frames::ingest;
+        hooks: &mut impl events::Sink,
+    ) -> Result<(), conn::Error> {
+        auth.ingest(input, sources::Copied::<B>::new(), hooks)
+    }
+}
 
-        let id = auth.cid().map(|(bytes, pto)| frames::PacketCid {
-            routed: input.context.route(),
-            bytes,
-            pto,
-        });
-        ingest::try_process(
-            input,
-            auth.meta,
-            id,
-            auth.body(),
-            sources::Copied::<B>::new(),
-            hooks,
-        )
+impl<'d, const ADAPTIVE: bool, P: long::Buffer + buffer::raw::Freeze>
+    Policy<P, stream::RecvBuffer<'d, ADAPTIVE>> for datagram::Retainer<'d>
+where
+    P::Output: datagram::Backing<Storage: provided::Frozen<'d, Account: retain::Retain<'d>>>,
+{
+    fn try_process<const DOMAIN: u8, const RECONCILE: bool, D: buffer::raw::Segment>(
+        self,
+        input: &mut ingress::Input<'_, DOMAIN, stream::RecvBuffer<'d, ADAPTIVE>, RECONCILE, D>,
+        auth: Packet<P>,
+        hooks: &mut impl events::Sink,
+    ) -> Result<(), conn::Error> {
+        let auth = auth.freeze();
+        let source = sources::Retained::new(&auth.packet, self, auth.body.start);
+        auth.ingest(input, source, hooks)
     }
 }
 
@@ -179,4 +152,3 @@ const _: () = {
     assert!(mem::size_of::<Cid>() <= 24);
     assert!(!mem::needs_drop::<Packet<&'static mut [u8]>>());
 };
-const _: () = assert!(mem::size_of::<Copied>() == 0);

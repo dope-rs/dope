@@ -45,7 +45,10 @@ use crate::{
     conn::id,
     runtime::{
         endpoint::{Idle, Input, Interest, Udp, control, owner},
-        mux::{auth, handler, manage, output, router},
+        mux::{
+            app::{Accepted, Receipt, Silent},
+            auth, handler, manage, output, router,
+        },
         receive::Storage,
         routing,
     },
@@ -81,10 +84,18 @@ pub struct Engine<
     pub(super) mux: router::Router<H, ID, B, M>,
     pub(super) rotation: clock::Bound<'d, cid::Schedule>,
     pub(super) app: A,
-    pub(super) pooled: buffers::Pending<Q, Interest<'d, H, ID, B>>,
+    pub(super) io: Io<'d, H, ID, B, Q>,
+}
+
+pub(super) struct Io<'d, H, const ID: u8, B, Q>
+where
+    H: handler::Handler<ID, B, Shared<'d>, id::Driver<'d>>,
+    B: stream::Recv,
+{
+    pooled: buffers::Pending<Q, Interest<'d, H, ID, B>>,
     pub(super) input: Input<'d, H, ID, B>,
-    pub(super) flush: Gate,
-    pub(super) stopping: bool,
+    flush: Gate,
+    stopping: bool,
 }
 
 impl<'d, H, const ID: u8, B, A, M, Q: buffer::Residency + buffer::raw::Source>
@@ -104,10 +115,12 @@ where
             mux,
             rotation,
             app,
-            pooled: buffers::Pending::new(),
-            input,
-            flush: Gate::new(),
-            stopping: false,
+            io: Io {
+                pooled: buffers::Pending::new(),
+                input,
+                flush: Gate::new(),
+                stopping: false,
+            },
         }
     }
 
@@ -123,37 +136,31 @@ where
         self.project().mux.config()
     }
 
-    pub(super) fn stop(
-        mut mux: pin::Pin<&mut router::Router<H, ID, B, M>>,
-        pooled: &mut buffers::Pending<Q, Interest<'d, H, ID, B>>,
-        stopping: &mut bool,
-        rotation: &mut clock::Bound<'d, cid::Schedule>,
-        input: &mut Input<'d, H, ID, B>,
-    ) {
-        rotation.seal();
-        pooled.clear();
-        if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(input) {
-            input.clear();
-        }
-        if let Some(clear) =
-            <H::Events as Dispatch<H, ID, B, Shared<'d>, id::Driver<'d>>>::Writable::clear()
-        {
-            clear.call(mux.as_mut().handler_mut());
-        }
-        *stopping = true;
-        manage::Shutdown::new(mux).begin();
-    }
-
     pub(super) fn try_sender<N: owner::Binding<'d, ID, Mode = M>>(
         self: pin::Pin<&mut Self>,
         now: time::Instant,
     ) -> Result<control::Sender<'_, 'd, ID, H, B, N, Q>, control::SendError> {
         let this = self.project();
-        if *this.stopping {
+        if this.io.stopping {
             return Err(control::SendError::Closed);
         }
-        let slot = this.pooled.vacant().ok_or(control::SendError::Full)?;
+        let slot = this.io.pooled.vacant().ok_or(control::SendError::Full)?;
         Ok(control::Sender::new(slot, this.mux, now))
+    }
+
+    pub(super) fn transport(
+        mux: pin::Pin<&mut router::Router<H, ID, B, M>>,
+        now: clock::Moment<'d>,
+        work: app::Work<'_, 'd>,
+    ) -> quota::Admission<bool> {
+        if !mux.as_ref().schedule(now.into()).is_break() {
+            return quota::Admission::Empty;
+        }
+        let Some(permit) = work.permit() else {
+            return quota::Admission::Exhausted;
+        };
+        mux.drive_net(permit, now);
+        quota::Admission::Item(false)
     }
 
     pub(super) fn progress(
@@ -165,7 +172,7 @@ where
         B: Storage<'d, Shared<'d>>,
     {
         let this = self.project_ref();
-        if *this.stopping {
+        if this.io.stopping {
             return if this.mux.is_done() {
                 schedule::Progress::Quiescent
             } else {
@@ -178,8 +185,8 @@ where
         ) {
             state = state.reduce(schedule::Progress::Runnable);
         }
-        if Udp::<'d, H, ID, B>::pending::<ID>(this.input)
-            || ((this.pooled.is_some() || this.mux.has_output()) && this.flush.is_open())
+        if Udp::<'d, H, ID, B>::pending::<ID>(&this.io.input)
+            || ((this.io.pooled.is_some() || this.mux.has_output()) && this.io.flush.is_open())
         {
             state = state.reduce(schedule::Progress::Runnable);
         }
@@ -198,6 +205,114 @@ where
             state = state.reduce(schedule::Progress::until(clock.deadline_at(until)));
         }
         ready(state)
+    }
+}
+
+impl<'d, H, const ID: u8, B, Q> Io<'d, H, ID, B, Q>
+where
+    H: handler::Handler<ID, B, Shared<'d>, id::Driver<'d>>,
+    B: stream::Recv,
+{
+    fn stop<M>(
+        &mut self,
+        mut mux: pin::Pin<&mut router::Router<H, ID, B, M>>,
+        rotation: &mut clock::Bound<'d, cid::Schedule>,
+    ) where
+        M: auth::Mode<ID, Send = Shared<'d>, Identity = id::Driver<'d>>,
+    {
+        rotation.seal();
+        self.pooled.clear();
+        if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(&mut self.input) {
+            input.clear();
+        }
+        if let Some(clear) =
+            <H::Events as Dispatch<H, ID, B, Shared<'d>, id::Driver<'d>>>::Writable::clear()
+        {
+            clear.call(mux.as_mut().handler_mut());
+        }
+        self.stopping = true;
+        manage::Shutdown::new(mux).begin();
+    }
+
+    pub(super) fn begin<M>(
+        &mut self,
+        mux: pin::Pin<&mut router::Router<H, ID, B, M>>,
+        now: clock::Moment<'d>,
+        work: app::Work<'_, 'd>,
+    ) -> bool
+    where
+        M: auth::Mode<ID, Send = Shared<'d>, Identity = id::Driver<'d>>,
+    {
+        if self.stopping {
+            let mut shutdown = manage::Shutdown::new(mux);
+            while !shutdown.is_complete() {
+                let Some(permit) = work.permit() else { break };
+                shutdown.step(permit, now.into());
+            }
+            return false;
+        }
+        self.flush.open();
+        true
+    }
+
+    pub(super) fn output<R, A, M>(
+        &mut self,
+        mut mux: pin::Pin<&mut router::Router<H, ID, B, M>>,
+        socket: pin::Pin<&mut datagram::Socket<'d, route::KeyTag<ID>, Payload<Q>>>,
+        rotation: &mut clock::Bound<'d, cid::Schedule>,
+        now: clock::Moment<'d>,
+        work: app::Work<'_, 'd>,
+        quantum: &mut Quantum,
+        app: &mut A,
+    ) -> quota::Admission<bool>
+    where
+        B: Storage<'d, Shared<'d>>,
+        M: auth::Mode<ID, Send = Shared<'d>, Identity = id::Driver<'d>>,
+        Q: buffer::Residency + buffer::raw::Source,
+        H: cert::Sink<ID, id::Driver<'d>>,
+        <H::Events as Dispatch<H, ID, B, Shared<'d>, id::Driver<'d>>>::Packet:
+            Mode<H, ID, B, Shared<'d>, id::Driver<'d>, Output = ()>,
+        R: Receipt<'d, H, ID, B, Shared<'d>, A>,
+    {
+        let output =
+            (self.pooled.is_some() || !mux.as_mut().output().is_empty()) && self.flush.is_open();
+        if !output && !Udp::<'d, H, ID, B>::pending::<ID>(&self.input) {
+            return quota::Admission::Empty;
+        }
+        let Some(permit) = work.permit() else {
+            return quota::Admission::Exhausted;
+        };
+        if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(&mut self.input)
+            && input.select(output)
+        {
+            let failed = permit
+                .run(|| input.step(mux.as_mut(), socket, now))
+                .is_break();
+            if failed {
+                self.stop(mux, rotation);
+            }
+            return quota::Admission::Item(failed);
+        }
+        let Some(credit) = quantum.credit() else {
+            return quota::Admission::Item(true);
+        };
+        match queue::Queue::new(socket, &mut self.pooled, mux.as_mut()).one(permit, credit) {
+            output::Submit::Empty => quota::Admission::Item(false),
+            output::Submit::Deferred => quota::Admission::Item(true),
+            output::Submit::Accepted((), grant) => {
+                if let Some(observer) = R::observer(app) {
+                    observer.accepted();
+                }
+                quota::Admission::Item(grant.commit().is_exhausted())
+            }
+            output::Submit::Rejected(cause) => {
+                self.flush.block();
+                if queue::Queue::<ID, H, B, M, Q>::rejection(mux.as_mut(), cause).is_break() {
+                    self.stop(mux, rotation);
+                }
+                quota::Admission::Item(self.stopping)
+            }
+        }
     }
 }
 
@@ -249,22 +364,16 @@ where
                 });
                 if matches!(error, ReceiveError::Submit(error)
                     if error.cause() == SubmitCause::IdentityExhausted)
-                    && !*this.stopping
+                    && !this.io.stopping
                 {
-                    Self::stop(
-                        this.mux,
-                        this.pooled,
-                        this.stopping,
-                        this.rotation,
-                        this.input,
-                    );
+                    this.io.stop(this.mux, this.rotation);
                 }
                 return;
             }
         };
         let keep = socket.as_ref().retainer();
         let mut this = self.project();
-        let packet = if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(this.input) {
+        let packet = if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(&mut this.io.input) {
             match input.intercept(addr, packet, this.mux.as_mut().handler_mut()) {
                 ControlFlow::Continue(packet) => packet,
                 ControlFlow::Break(()) => return,
@@ -294,7 +403,7 @@ where
         _: &mut region::Token<region::Identity<'d, 1>>,
     ) {
         let mut this = self.project();
-        let failed = Udp::<'d, H, ID, B>::state::<ID>(this.input)
+        let failed = Udp::<'d, H, ID, B>::state::<ID>(&mut this.io.input)
             .is_some_and(|input| input.settled(&done))
             || matches!(done.outcome(), send::Outcome::Submit(error)
             if error.cause() == SubmitCause::IdentityExhausted);
@@ -309,14 +418,8 @@ where
         });
         let (_, _, _, data, _) = done.into_parts();
         this.mux.as_mut().output().reclaim(data, gso_failed);
-        if failed && !*this.stopping {
-            Self::stop(
-                this.mux,
-                this.pooled,
-                this.stopping,
-                this.rotation,
-                this.input,
-            );
+        if failed && !this.io.stopping {
+            this.io.stop(this.mux, this.rotation);
         }
     }
 }
@@ -338,95 +441,25 @@ where
         work: app::Work<'turn, 'd>,
         _: &mut region::Token<region::Identity<'d, 1>>,
     ) {
-        now.at(self).apply(|engine, raw| {
-            let mut this = engine.project();
-            let mut mux = this.mux.as_mut();
-            if *this.stopping {
-                while !mux.as_ref().is_done() {
-                    let Some(permit) = work.permit() else {
-                        return;
-                    };
-                    manage::Shutdown::new(mux.as_mut()).step(permit, raw);
-                }
-                return;
-            }
-            this.flush.open();
-            let mut quota = Quantum::new();
-            loop {
-                let admit = this.app.work.admit(|source| match source {
-                    Net::Output => {
-                        let output = (this.pooled.is_some() || !mux.as_mut().output().is_empty())
-                            && this.flush.is_open();
-                        if !output && !Udp::<'d, H, ID, B>::pending::<ID>(this.input) {
-                            return quota::Admission::Empty;
-                        }
-                        let Some(permit) = work.permit() else {
-                            return quota::Admission::Exhausted;
-                        };
-                        if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(this.input)
-                            && input.select(output)
-                        {
-                            let failed = permit
-                                .run(|| input.step(mux.as_mut(), socket.as_mut(), now))
-                                .is_break();
-                            if failed {
-                                Self::stop(
-                                    mux.as_mut(),
-                                    this.pooled,
-                                    this.stopping,
-                                    this.rotation,
-                                    this.input,
-                                );
-                            }
-                            return quota::Admission::Item(failed);
-                        }
-                        let Some(credit) = quota.credit() else {
-                            return quota::Admission::Item(true);
-                        };
-                        match queue::Queue::new(socket.as_mut(), this.pooled, mux.as_mut())
-                            .one(permit, credit)
-                        {
-                            output::Submit::Empty => quota::Admission::Item(false),
-                            output::Submit::Deferred => quota::Admission::Item(true),
-                            output::Submit::Accepted((), grant) => {
-                                quota::Admission::Item(grant.commit().is_exhausted())
-                            }
-                            output::Submit::Rejected(cause) => {
-                                this.flush.block();
-                                if queue::Queue::<ID, H, B, M, Q>::rejection(mux.as_mut(), cause)
-                                    .is_break()
-                                {
-                                    Self::stop(
-                                        mux.as_mut(),
-                                        this.pooled,
-                                        this.stopping,
-                                        this.rotation,
-                                        this.input,
-                                    );
-                                }
-                                quota::Admission::Item(*this.stopping)
-                            }
-                        }
-                    }
-                    Net::Transport => {
-                        if !mux.as_ref().schedule(raw).is_break() {
-                            return quota::Admission::Empty;
-                        }
-                        let Some(permit) = work.permit() else {
-                            return quota::Admission::Exhausted;
-                        };
-                        mux.as_mut().drive_net(permit, now);
-                        quota::Admission::Item(false)
-                    }
-                });
-                match admit {
-                    quota::Admission::Item(false) => {}
-                    quota::Admission::Item(true)
-                    | quota::Admission::Empty
-                    | quota::Admission::Exhausted => break,
-                }
-            }
-        });
+        let this = self.project();
+        let mut mux = this.mux;
+        if !this.io.begin(mux.as_mut(), now, work) {
+            return;
+        }
+        let mut quantum = Quantum::new();
+        let mut admit = |source| match source {
+            Net::Output => this.io.output::<Silent, _, _>(
+                mux.as_mut(),
+                socket.as_mut(),
+                this.rotation,
+                now,
+                work,
+                &mut quantum,
+                &mut (),
+            ),
+            Net::Transport => Self::transport(mux.as_mut(), now, work),
+        };
+        while let quota::Admission::Item(false) = this.app.work.admit(&mut admit) {}
     }
 
     fn progress(
@@ -469,13 +502,7 @@ where
 {
     fn shutdown(self: pin::Pin<&mut Self>) {
         let this = self.project();
-        Self::stop(
-            this.mux,
-            this.pooled,
-            this.stopping,
-            this.rotation,
-            this.input,
-        );
+        this.io.stop(this.mux, this.rotation);
     }
 }
 
@@ -509,7 +536,7 @@ where
 {
     fn transferred(self: pin::Pin<&mut Self>, sent: send::Transfer<'d, route::KeyTag<ID>>) {
         let mut this = self.project();
-        if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(this.input) {
+        if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(&mut this.io.input) {
             input.transferred(sent);
         }
         let domain = this.mux.as_ref().get_ref().domain();

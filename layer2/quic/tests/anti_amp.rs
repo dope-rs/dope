@@ -1,4 +1,5 @@
 pub mod common;
+use common::suite::mux::dispatch;
 
 use common::peer::Receiver as _;
 use common::runtime::{
@@ -183,7 +184,7 @@ fn close_waits_for_credit() -> Result<(), Error> {
         ..
     } = Capture::build_pair(0)?;
     let now = Instant::now();
-    Capture::connect(
+    dispatch::Capture::connect(
         &mut client,
         SERVER,
         key,
@@ -224,7 +225,7 @@ fn close_waits_for_credit() -> Result<(), Error> {
     })
     .map_err(Error::Access)?;
     assert!(
-        Capture::output(&mut server, now)
+        dispatch::Capture::output(&mut server, now)
             .map_err(Error::Output)?
             .is_empty()
     );
@@ -239,7 +240,10 @@ fn close_waits_for_credit() -> Result<(), Error> {
         Pin::new(&mut server).observe(now, |turn| turn.deadline()),
         Some(deadline)
     );
-    assert_eq!(Capture::drive(&mut server, now).map_err(Error::Output)?, 0);
+    assert_eq!(
+        dispatch::Capture::drive(&mut server, now).map_err(Error::Output)?,
+        0
+    );
 
     Capture::receive(&mut server, CLIENT, &mut raw, now)?;
     assert_eq!(
@@ -255,7 +259,7 @@ fn close_waits_for_credit() -> Result<(), Error> {
         Pin::new(&mut server).observe(now, |turn| turn.deadline()),
         Some(now)
     );
-    let close = Capture::output(&mut server, now).map_err(Error::Output)?;
+    let close = dispatch::Capture::output(&mut server, now).map_err(Error::Output)?;
     assert_eq!(
         close
             .iter()
@@ -273,7 +277,7 @@ fn close_waits_for_credit() -> Result<(), Error> {
     assert_eq!(closing.view().next_timer(), Some(deadline));
     assert_eq!(srv_log.borrow().closed, [handle]);
     assert!(
-        Capture::output(&mut server, deadline)
+        dispatch::Capture::output(&mut server, deadline)
             .map_err(Error::Output)?
             .is_empty()
     );

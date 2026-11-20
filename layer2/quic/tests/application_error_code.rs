@@ -30,7 +30,7 @@ fn decodes_reset() {
     assert_eq!(consumed, wire.len());
     assert!(matches!(
         decoded.view(),
-        View::ResetStream { error_code, .. } if error_code == code
+        View::ResetStream { error_code, .. } if *error_code == code
     ));
 }
 
@@ -49,7 +49,7 @@ fn decodes_close() {
         View::ConnectionClose {
             code: close::Code::Application(decoded),
             ..
-        } if decoded == code
+        } if *decoded == code
     ));
 }
 

@@ -1,4 +1,5 @@
 pub mod common;
+use common::suite::mux::dispatch;
 use common::suite::peers::tls::Capture;
 use dope_quic::conn::{self, life};
 use dope_quic::errors::{Code, Connect};
@@ -174,7 +175,7 @@ fn recycles_mux_leases() {
     for turn in 0..8 {
         let now = started + Duration::from_millis(turn * 10);
         Capture::relay(&mut client, &mut server, local, now).expect("pooled TLS relay");
-        let packets = Capture::take(&mut server, now).expect("pooled TLS take");
+        let packets = dispatch::Capture::output(&mut server, now).expect("pooled TLS take");
         let (mut app, mut hs): (Vec<_>, Vec<_>) = packets.into_iter().partition(|packet| {
             packet
                 .payload()

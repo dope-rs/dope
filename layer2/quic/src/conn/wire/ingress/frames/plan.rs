@@ -1,6 +1,6 @@
 use crate::errors::detail;
 use o3::buffer::{self, resident};
-use std::{marker, mem, num::NonZero, ops};
+use std::{marker, mem};
 
 use crate::conn;
 use crate::conn::stream::{
@@ -9,8 +9,7 @@ use crate::conn::stream::{
 };
 use crate::conn::wire::{crypto::chunks, ingress, scratch};
 use crate::stream;
-use crate::wire::frame::{self, ack::ranges};
-use crate::wire::stream::Initiator;
+use crate::wire::frame;
 use frames::{check, record, sources};
 use ingress::frames;
 use receive::{credits, planner};
@@ -19,89 +18,6 @@ use receive::{credits, planner};
 #[derive(Clone, Copy)]
 pub struct CommitPermit<'commit> {
     brand: marker::PhantomData<fn(&'commit mut ()) -> &'commit mut ()>,
-}
-
-/// Parsing accounts for payloads while the initialized record owner admits rows.
-pub(super) struct Build<'slots> {
-    bytes: usize,
-    dgrams: usize,
-    max: Option<u64>,
-    close: Option<record::Index<'slots>>,
-}
-
-impl<'slots> Build<'slots> {
-    fn try_bytes(current: usize, add: usize) -> Result<usize, detail::Plan> {
-        let limit = u16::MAX as usize;
-        let Some(total) = current.checked_add(add) else {
-            return Err(detail::Plan::Bytes {
-                current,
-                additional: add,
-                limit,
-            });
-        };
-        if total > limit {
-            return Err(detail::Plan::Bytes {
-                current,
-                additional: add,
-                limit,
-            });
-        }
-        Ok(total)
-    }
-
-    pub(super) fn new(dgrams: usize, max: Option<u64>) -> Self {
-        Self {
-            bytes: 0,
-            dgrams,
-            max,
-            close: None,
-        }
-    }
-
-    pub(super) fn try_record<'id>(
-        &mut self,
-        slot: record::Vacant<'_, '_, 'slots, 'id, '_, '_, '_, '_>,
-        body: &frame::Body<'_, 'id>,
-        kind: frames::PacketKind,
-        local: Initiator,
-        frame: frame::Frame<ops::Range<usize>, ranges::Proof<'id>>,
-        used: NonZero<usize>,
-    ) -> Result<(), detail::Plan> {
-        let admitted = record::Admitted::new(kind, local, frame)?;
-        let close = matches!(admitted.frame().view(), frame::View::ConnectionClose { .. });
-        match admitted.frame().view() {
-            frame::View::Datagram { length, data }
-                if self.max.is_none_or(|max| used.get() as u64 > max) =>
-            {
-                return Err(detail::Plan::Datagram {
-                    len: data.len(),
-                    length,
-                    maximum: self.max,
-                });
-            }
-            _ => {}
-        }
-        let mut record = record::FrameRecord::new(admitted, body);
-        if kind.is_app()
-            && self.dgrams != 0
-            && let Some(datagram) = record.datagram_mut()
-        {
-            let accepted = datagram.len();
-            let dgrams = self.dgrams.checked_sub(1).ok_or(detail::Plan::Datagram {
-                len: accepted,
-                length: datagram.length(),
-                maximum: self.max,
-            })?;
-            datagram.admit()?;
-            self.bytes = Self::try_bytes(self.bytes, accepted)?;
-            self.dgrams = dgrams;
-        }
-        let index = slot.insert(record, kind.is_app())?;
-        if close {
-            self.close.get_or_insert(index);
-        }
-        Ok(())
-    }
 }
 
 /// One body, its initialized records, and the remaining disjoint scratch fields.
@@ -161,7 +77,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>
         work: &'a mut scratch::Buffers,
         body: frame::Body<'wire, 'id>,
         records: record::Records<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>,
-        build: Build<'slots>,
+        build: record::Build<'slots>,
     ) -> Self {
         Self {
             work,
@@ -178,7 +94,10 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>
         next: u64,
         cid: Option<&frames::PacketCid<'_>>,
     ) -> Result<Option<(frame::close::Code, &'wire [u8])>, conn::Error> {
-        let Some(index) = self.close else {
+        let Some(frame::View::ConnectionClose { code, reason, .. }) = self
+            .close
+            .and_then(|index| self.records.get(index).control())
+        else {
             return Ok(None);
         };
         check::validate(
@@ -187,11 +106,8 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>
             next,
             cid,
         )?;
-        let frame::View::ConnectionClose { code, reason } = self.records.get(index).view() else {
-            unreachable!("close");
-        };
         Ok(Some((
-            code,
+            *code,
             self.body
                 .resolve(reason.clone())
                 .map_err(conn::Error::FrameBody)?,
@@ -220,7 +136,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send>
             let id = group.id();
             let impact = planner::Planner::new(&streams)
                 .try_plan(group, planner::Plan::new(segments, parts))?;
-            bytes = Build::try_bytes(bytes, impact.accepted_bytes)?;
+            bytes = record::Build::try_bytes(bytes, impact.accepted_bytes)?;
             recv_n += impact.stream_slots;
             resident += usize::from(impact.stream_slots != 0 && streams.resident.key(id).is_none());
             events += impact.event_slots;

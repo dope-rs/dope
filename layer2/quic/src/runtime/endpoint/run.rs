@@ -19,22 +19,21 @@ use o3::{
 use crate::{
     conn::id,
     runtime::{
-        endpoint::{Payload, Socket, Transport, Udp, reactor},
+        endpoint::{Payload, Socket, Transport, reactor},
         mux::{
             self, auth, handler,
             handler::hook::{
                 set,
-                wire::{cert, packet, udp::Storage as _},
+                wire::{cert, packet},
             },
-            manage, output,
         },
         receive::Storage,
     },
 };
 
-use mux::app::{Accepted, Driver, Receipt, Silent, drive, has_work};
-use output::quantum::Quantum;
-use reactor::{Engine, Work, queue};
+use mux::app::{BATCH_QUANTUM, Driver, Receipt, Silent, drive, has_work};
+use mux::output::quantum::Quantum;
+use reactor::{Engine, Work};
 
 /// Application scheduler and its endpoint-owned fair-work cursor.
 pub struct Run<A, R = Silent> {
@@ -111,135 +110,45 @@ where
         work: app::Work<'turn, 'd>,
         driver: &mut driver::Context<'_, 'd>,
     ) {
-        now.at(self).apply(|engine, raw| {
-            let mut this = engine.project();
-            let mut mux = this.mux.as_mut();
-            let app = &mut this.app.app;
-            if *this.stopping {
-                while !mux.as_ref().is_done() {
-                    let Some(permit) = work.permit() else {
-                        return;
-                    };
-                    manage::Shutdown::new(mux.as_mut()).step(permit, raw);
+        let this = self.project();
+        let mut mux = this.mux;
+        if !this.io.begin(mux.as_mut(), now, work) {
+            return;
+        }
+        let mut quantum = Quantum::new();
+        let app = &mut this.app.app;
+        while let quota::Admission::Item(false) = this.app.work.admit(|source| match source {
+            Work::Application => {
+                if !has_work(mux.as_ref(), app) {
+                    return quota::Admission::Empty;
                 }
-                return;
-            }
-            this.flush.open();
-            let mut quota = Quantum::new();
-            loop {
-                let admit = this.app.work.admit(|source| match source {
-                    Work::Application => {
-                        use mux::app::BATCH_QUANTUM;
-
-                        if !has_work(mux.as_ref(), app) {
-                            return quota::Admission::Empty;
-                        }
-                        let parent = socket.as_ref().wake_target();
-                        let limit = usize::from(BATCH_QUANTUM.get());
-                        let mut driven = 0usize;
-                        while driven < limit {
-                            let step = drive(mux.as_mut(), app, parent, work, driver, raw);
-                            let batch = match step {
-                                quota::Admission::Empty => {
-                                    return if driven == 0 {
-                                        quota::Admission::Empty
-                                    } else {
-                                        quota::Admission::Item(false)
-                                    };
-                                }
-                                quota::Admission::Exhausted => {
-                                    return if driven == 0 {
-                                        quota::Admission::Exhausted
-                                    } else {
-                                        quota::Admission::Item(true)
-                                    };
-                                }
-                                quota::Admission::Item(step::Flow::Batch) => true,
-                                quota::Admission::Item(step::Flow::Yield) => false,
-                            };
-                            driven += 1;
-                            if !batch {
-                                break;
-                            }
-                        }
-                        quota::Admission::Item(false)
-                    }
-                    Work::Output => {
-                        let output = (this.pooled.is_some() || !mux.as_mut().output().is_empty())
-                            && this.flush.is_open();
-                        if !output && !Udp::<'d, H, ID, B>::pending::<ID>(this.input) {
-                            return quota::Admission::Empty;
-                        }
-                        let Some(permit) = work.permit() else {
+                let parent = socket.as_ref().wake_target();
+                for driven in 0..usize::from(BATCH_QUANTUM.get()) {
+                    match drive(mux.as_mut(), app, parent, work, driver, now.into()) {
+                        quota::Admission::Empty if driven == 0 => return quota::Admission::Empty,
+                        quota::Admission::Exhausted if driven == 0 => {
                             return quota::Admission::Exhausted;
-                        };
-                        if let Some(input) = Udp::<'d, H, ID, B>::state::<ID>(this.input)
-                            && input.select(output)
-                        {
-                            let failed = permit
-                                .run(|| input.step(mux.as_mut(), socket.as_mut(), now))
-                                .is_break();
-                            if failed {
-                                Self::stop(
-                                    mux.as_mut(),
-                                    this.pooled,
-                                    this.stopping,
-                                    this.rotation,
-                                    this.input,
-                                );
-                            }
-                            return quota::Admission::Item(failed);
                         }
-                        let Some(credit) = quota.credit() else {
-                            return quota::Admission::Item(true);
-                        };
-                        match queue::Queue::new(socket.as_mut(), this.pooled, mux.as_mut())
-                            .one(permit, credit)
-                        {
-                            output::Submit::Empty => quota::Admission::Item(false),
-                            output::Submit::Deferred => quota::Admission::Item(true),
-                            output::Submit::Accepted((), grant) => {
-                                if let Some(observer) = R::observer(app) {
-                                    observer.accepted();
-                                }
-                                quota::Admission::Item(grant.commit().is_exhausted())
-                            }
-                            output::Submit::Rejected(cause) => {
-                                this.flush.block();
-                                if queue::Queue::<ID, H, B, M, Q>::rejection(mux.as_mut(), cause)
-                                    .is_break()
-                                {
-                                    Self::stop(
-                                        mux.as_mut(),
-                                        this.pooled,
-                                        this.stopping,
-                                        this.rotation,
-                                        this.input,
-                                    );
-                                }
-                                quota::Admission::Item(*this.stopping)
-                            }
+                        quota::Admission::Exhausted => return quota::Admission::Item(true),
+                        quota::Admission::Empty | quota::Admission::Item(step::Flow::Yield) => {
+                            break;
                         }
+                        quota::Admission::Item(step::Flow::Batch) => {}
                     }
-                    Work::Transport => {
-                        if !mux.as_ref().schedule(raw).is_break() {
-                            return quota::Admission::Empty;
-                        }
-                        let Some(permit) = work.permit() else {
-                            return quota::Admission::Exhausted;
-                        };
-                        mux.as_mut().drive_net(permit, now);
-                        quota::Admission::Item(false)
-                    }
-                });
-                match admit {
-                    quota::Admission::Item(false) => {}
-                    quota::Admission::Item(true)
-                    | quota::Admission::Empty
-                    | quota::Admission::Exhausted => break,
                 }
+                quota::Admission::Item(false)
             }
-        });
+            Work::Output => this.io.output::<R, _, _>(
+                mux.as_mut(),
+                socket.as_mut(),
+                this.rotation,
+                now,
+                work,
+                &mut quantum,
+                app,
+            ),
+            Work::Transport => Self::transport(mux.as_mut(), now, work),
+        }) {}
     }
 
     fn progress(

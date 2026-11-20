@@ -85,10 +85,11 @@ where
     assert_eq!(router.active_conns(), 1);
     let handle = router.sole().expect("one admitted client identity");
     assert_eq!(router.handler().certificates, 0);
-    let outgoing: Vec<_> = Pin::new(&mut router).observe(now, |mut turn| {
-        turn.output().drive().expect("server handshake output");
-        turn.output().drain().collect()
-    });
+    let outgoing: Vec<_> = {
+        let mut output = Pin::new(&mut router).output();
+        output.drive_at(now).expect("server handshake output");
+        output.drain().collect()
+    };
     assert!(!outgoing.is_empty());
     for mut outgoing in outgoing {
         for packet in outgoing.segments_mut() {

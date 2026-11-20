@@ -1,6 +1,6 @@
 pub mod common;
 
-use std::{cell::Cell, convert::Infallible, net::UdpSocket, time::Duration};
+use std::{cell::Cell, net::UdpSocket, time::Duration};
 
 use common::{
     peer, recovery,
@@ -11,15 +11,9 @@ use common::{
     suite::peers::tls,
 };
 use dope::{
-    core::driver::{
-        life::{
-            creation::Attempt,
-            recovery::{Policy, Recovery},
-        },
-        route::Id,
-    },
+    core::driver::route::Id,
     runtime::{
-        executor::{Executor, session},
+        executor::session,
         shutdown,
     },
 };
@@ -43,86 +37,61 @@ fn retains_retry_deadline_failure() {
         let closes = Cell::new(0);
         let plan = Plan::<1>::new(BIND, ENDPOINT).expect("client endpoint");
         let (source, stop) = shutdown::Pair::new().expect("shutdown pair").split();
-        let mut create = Attempt::new();
-        let executor = Executor::new(
-            &mut create,
+        let executor = recovery::executor(
+            source,
             Events::settings(8, plan.as_ref()).expect("driver claims"),
         );
-        executor
-            .as_ref()
-            .map_err(|cause| cause.kind())
-            .expect("driver");
-        let executor = executor
-            .ok()
-            .expect("driver admission")
-            .shutdown(source)
-            .expect("shutdown source");
-        let mut reports = Vec::new();
-        executor.run(|executor| {
-            executor
-                .enter_with(
-                    |mut session| {
-                        let (client, timeout) = {
-                            let mut driver = session.driver();
-                            let timeout = driver
-                                .driver_ref()
-                                .clock()
-                                .now()
-                                .try_add(Duration::from_secs(2))
-                                .expect("test deadline");
-                            let client = build::Builder::owned_with(
-                                vec![client::EndpointSpec {
-                                    addr: address,
-                                    authority: tls::client(public).expect("TLS authority"),
-                                }],
-                                timing::Config {
-                                    defer,
-                                    started: &started,
-                                },
-                                Connected::new(|event: Result<client::SlotId, Callback<'_>>| {
-                                    let Err(Callback::Close) = event else {
-                                        panic!("unexpected callback: {event:?}");
-                                    };
-                                    closes.set(closes.get() + 1);
-                                }),
-                                timing::Backoff(&retries),
-                                client::Config {
-                                    event_budget: 1,
-                                    retry_budget: 1,
-                                },
-                            )
-                            .bind(plan, &mut driver)
-                            .expect("bound client");
-                            (client, timeout)
-                        };
-                        let mut report = session::Completion::new();
-                        session
-                            .with_quiesce(
-                                &mut report,
-                                timing::App {
-                                    client,
-                                    started: &started,
-                                    closed_at: &closed_at,
-                                    failure: &failure,
-                                    stop: Some(stop),
-                                    timeout,
-                                },
-                                TIMEOUT,
-                                |app| app.run_for(TIMEOUT).map(|_| ()),
-                            )
-                            .expect("session completion")
-                            .expect("application completion");
+        let ((), reports) = recovery::run(executor, |mut session| {
+            let (client, timeout) = {
+                let mut driver = session.driver();
+                let timeout = driver
+                    .driver_ref()
+                    .clock()
+                    .now()
+                    .try_add(Duration::from_secs(2))
+                    .expect("test deadline");
+                let client = build::Builder::owned_with(
+                    vec![client::EndpointSpec {
+                        addr: address,
+                        authority: tls::client(public).expect("TLS authority"),
+                    }],
+                    timing::Config {
+                        defer,
+                        started: &started,
                     },
-                    Policy::new(
-                        |event| reports.push(event),
-                        |failure: Recovery<'_, '_>| -> Infallible {
-                            panic!("native recovery: {:?}", failure.cause())
-                        },
-                    ),
+                    Connected::new(|event: Result<client::SlotId, Callback<'_>>| {
+                        let Err(Callback::Close) = event else {
+                            panic!("unexpected callback: {event:?}");
+                        };
+                        closes.set(closes.get() + 1);
+                    }),
+                    timing::Backoff(&retries),
+                    client::Config {
+                        event_budget: 1,
+                        retry_budget: 1,
+                    },
                 )
-                .as_ref()
-                .map_err(|cause| cause.cause())
-                .expect("driver retirement");
+                .bind(plan, &mut driver)
+                .expect("bound client");
+                (client, timeout)
+            };
+            let mut report = session::Completion::new();
+            session
+                .with_quiesce(
+                    &mut report,
+                    timing::App {
+                        client,
+                        started: &started,
+                        closed_at: &closed_at,
+                        failure: &failure,
+                        stop: Some(stop),
+                        timeout,
+                    },
+                    TIMEOUT,
+                    |app| app.run_for(TIMEOUT).map(|_| ()),
+                )
+                .expect("session completion")
+                .expect("application completion");
         });
         let (expected, began) = started.get().expect("first attempt");
         let Some(protocol::Failure::Timing {

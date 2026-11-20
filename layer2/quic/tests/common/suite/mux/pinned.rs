@@ -1,15 +1,12 @@
-use crate::common::runtime::Error;
 use dope_quic::conn::id;
-use dope_quic::errors;
-use dope_quic::proto::epoch;
+use dope_quic::runtime::mux::handler;
 use dope_quic::runtime::mux::handler::hook::data::datagram;
 use dope_quic::runtime::mux::handler::hook::life::{close, closing, create, ready};
 use dope_quic::runtime::mux::handler::hook::set;
 use dope_quic::runtime::mux::handler::hook::wire::{cert, endpoint, ingress, packet};
-use dope_quic::runtime::mux::{handler, router};
 use dope_test::harness::observe::VecCellExt as _;
 use o3::buffer::storage;
-use std::{cell::Cell, marker::PhantomPinned, net::SocketAddr, pin::Pin, ptr, time::Instant};
+use std::{cell::Cell, marker::PhantomPinned, pin::Pin, ptr};
 
 #[derive(Default)]
 pub struct Counts {
@@ -112,30 +109,6 @@ impl datagram::Sink<0, Vec<u8>, storage::Shared, id::Static> for Capture<'_> {
         counts.bytes.push(data);
         this.observe();
     }
-}
-
-pub fn relay<'a>(
-    mut source: Pin<&mut router::Router<Capture<'a>>>,
-    mut dst: Pin<&mut router::Router<Capture<'a>>>,
-    addr: SocketAddr,
-    now: Instant,
-) -> Result<(), Error> {
-    let packets = source.as_mut().observe(now, |mut turn| {
-        turn.output().drive()?;
-        Ok::<_, errors::Transmit<id::Static, 0>>(turn.output().drain().collect::<Vec<_>>())
-    });
-    let packets = packets.map_err(Error::Output)?;
-    for mut packet in packets {
-        for segment in packet.segments_mut() {
-            let received = dst.as_mut().observe(now, |mut turn| {
-                turn.protocol().recv(addr, segment, epoch::WALL_CLOCK)
-            });
-            received.map_err(Error::Receive)?;
-        }
-    }
-    let driven = dst.as_mut().observe(now, |mut turn| turn.output().drive());
-    driven.map_err(Error::Output)?;
-    Ok(())
 }
 
 impl cert::Sink<0, id::Static> for Capture<'_> {

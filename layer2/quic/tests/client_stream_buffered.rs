@@ -6,10 +6,9 @@ use common::receive::client::{App, PREFIX, Peer, RESET, Received, STOPPED, SUFFI
 use common::recovery;
 use common::retry::writable::Callback;
 use common::retry::{ENDPOINT, Events, Finish, traces::Immediate};
-use dope::core::driver::life::recovery::{Policy, Recovery};
-use dope::core::driver::{life::creation::Attempt, route::Id};
+use dope::core::driver::route::Id;
 use dope::runtime::{
-    executor::{Executor, session},
+    executor::session,
     shutdown,
 };
 use dope_quic::client::{self, EndpointSpec, SlotId, build};
@@ -20,7 +19,6 @@ use dope_quic::runtime::endpoint::client::Plan;
 use dope_quic::runtime::receive;
 use dope_test::harness::scenario::TIMEOUT;
 use std::cell::{Cell, RefCell};
-use std::convert::Infallible;
 use std::{rc::Rc, time::Duration};
 
 #[test]
@@ -46,89 +44,61 @@ fn resumes_buffered_owners() {
         Plan::<1, receive::Adaptive>::new("127.0.0.1:0".parse().expect("client address"), ENDPOINT)
             .expect("client plan");
     let (source, stop) = shutdown::Pair::new().expect("shutdown pair").split();
-    let mut create = Attempt::new();
-    let executor = Executor::new(
-        &mut create,
+    let executor = recovery::executor(
+        source,
         Events::settings(8, dial.as_ref()).expect("driver settings"),
     );
-    assert!(
-        executor.is_ok(),
-        "executor: {:?}",
-        executor.as_ref().err().map(|cause| cause.kind())
-    );
-    let executor = executor
-        .ok()
-        .expect("executor admission")
-        .shutdown(source)
-        .expect("shutdown source");
     let received = Rc::new(RefCell::new(State::default()));
     let done = Rc::new(Cell::new(Vec::new()));
     let retry = Immediate::default();
-    let mut reports = Vec::new();
-    executor.run(|executor| {
-        let result = executor.enter_with(
-            |mut session| {
-                let (client, next, timeout) = {
-                    let mut driver = session.driver();
-                    let now = driver.driver_ref().clock().now();
-                    let timeout = now.try_add(Duration::from_secs(5)).expect("test deadline");
-                    let client = build::Builder::owned(
-                        vec![EndpointSpec {
-                            addr: address,
-                            authority: tls::client(pubkey).expect("client TLS authority"),
-                        }],
-                        options,
-                        Received {
-                            state: Rc::clone(&received),
-                            observe: |event: Result<SlotId, Callback<'_>>| {
-                                event.expect("only connected events");
-                            },
-                            active: None,
-                        },
-                        retry.clone(),
-                        client::Config {
-                            event_budget: 8,
-                            retry_budget: 8,
-                        },
-                    )
-                    .bind(dial, &mut driver)
-                    .expect("client endpoint");
-                    (client, now.into(), timeout)
-                };
-                let mut finish = session::Completion::new();
-                session
-                    .with_quiesce(
-                        &mut finish,
-                        App {
-                            client,
-                            peer,
-                            received: Rc::clone(&received),
-                            finish: Finish {
-                                stop: Some(stop),
-                                done: Rc::clone(&done),
-                            },
-                            timeout,
-                            next,
-                        },
-                        TIMEOUT,
-                        |app| app.run_for(TIMEOUT).map(|_| ()),
-                    )
-                    .expect("session finish")
-                    .expect("application finish");
-            },
-            Policy::new(
-                |event| reports.push(event),
-                |failure: Recovery<'_, '_>| -> Infallible {
-                    panic!("native recovery: {:?}", failure.cause())
+    let ((), reports) = recovery::run(executor, |mut session| {
+        let (client, next, timeout) = {
+            let mut driver = session.driver();
+            let now = driver.driver_ref().clock().now();
+            let timeout = now.try_add(Duration::from_secs(5)).expect("test deadline");
+            let client = build::Builder::owned(
+                vec![EndpointSpec {
+                    addr: address,
+                    authority: tls::client(pubkey).expect("client TLS authority"),
+                }],
+                options,
+                Received {
+                    state: Rc::clone(&received),
+                    observe: |event: Result<SlotId, Callback<'_>>| {
+                        event.expect("only connected events");
+                    },
+                    active: None,
                 },
-            ),
-        );
-        assert!(
-            result.is_ok(),
-            "domain: {:?}",
-            result.as_ref().err().map(|cause| cause.cause())
-        );
-        result.ok().expect("domain completion");
+                retry.clone(),
+                client::Config {
+                    event_budget: 8,
+                    retry_budget: 8,
+                },
+            )
+            .bind(dial, &mut driver)
+            .expect("client endpoint");
+            (client, now.into(), timeout)
+        };
+        let mut finish = session::Completion::new();
+        session
+            .with_quiesce(
+                &mut finish,
+                App {
+                    client,
+                    peer,
+                    received: Rc::clone(&received),
+                    finish: Finish {
+                        stop: Some(stop),
+                        done: Rc::clone(&done),
+                    },
+                    timeout,
+                    next,
+                },
+                TIMEOUT,
+                |app| app.run_for(TIMEOUT).map(|_| ()),
+            )
+            .expect("session finish")
+            .expect("application finish");
     });
     assert!(retry.0.get().is_none());
     let peers = peers.borrow();

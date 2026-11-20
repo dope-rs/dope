@@ -268,10 +268,11 @@ fn forgery_never_validates() {
                     .expect("forged token is a valid packet with invalid authentication");
             }
         }
-        turn.output()
-            .drive()
-            .expect("forged-token rejection output must fit fixture capacity");
     });
+    Pin::new(&mut server)
+        .output()
+        .drive_at(now)
+        .expect("forged-token rejection output must fit fixture capacity");
 
     assert_eq!(server.active_conns(), active);
     assert!(Capture::drain(&mut server).expect("token drain") > 0);

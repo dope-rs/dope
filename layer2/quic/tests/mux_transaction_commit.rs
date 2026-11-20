@@ -49,18 +49,14 @@ fn error_keeps_terminal() {
     install::forward(&mut client, &mut server, cli_addr, now).expect("install forward");
     install::forward(&mut server, &mut client, srv_addr, now).expect("install forward");
     install::forward(&mut client, &mut server, cli_addr, now).expect("install forward");
-    Pin::new(&mut server).observe(now, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "fixture server connection must admit settled transaction output"
-        );
-    });
-    Pin::new(&mut client).observe(now, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "fixture client connection must admit settled transaction output"
-        );
-    });
+    assert!(
+        Pin::new(&mut server).output().drive_at(now).is_ok(),
+        "fixture server connection must admit settled transaction output"
+    );
+    assert!(
+        Pin::new(&mut client).output().drive_at(now).is_ok(),
+        "fixture client connection must admit settled transaction output"
+    );
     assert!(
         client
             .conn(handle)
@@ -79,13 +75,14 @@ fn error_keeps_terminal() {
         .expect("established test handle must resolve in its owning router");
 
     assert_eq!(result, Err(7));
-    let terminal = Pin::new(&mut client).observe(now, |mut turn| {
+    let terminal = {
+        let mut output = Pin::new(&mut client).output();
         assert!(
-            turn.output().drive().is_ok(),
+            output.drive_at(now).is_ok(),
             "closed fixture connection must admit its terminal packet"
         );
-        turn.output().drain().collect::<Vec<_>>()
-    });
+        output.drain().collect::<Vec<_>>()
+    };
     assert_eq!(terminal.len(), 1);
     assert_eq!(terminal[0].packet_count().get(), 1);
 }

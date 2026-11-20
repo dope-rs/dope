@@ -37,12 +37,12 @@ fn packet_capacity() {
     Capture::drive(&mut client, now).expect("fixture drive");
     assert_eq!(Pin::new(&mut client).output().capacity(), 2);
     assert_eq!(Pin::new(&mut client).output().len(), 2);
-    let mut sent = Pin::new(&mut client).observe(now, |mut turn| turn.output().drain().count());
+    let mut sent = Pin::new(&mut client).output().drain().count();
     while sent < 4 {
         let now = Instant::now();
         Capture::drive(&mut client, now).expect("fixture drive");
         assert!(Pin::new(&mut client).output().len() <= Pin::new(&mut client).output().capacity());
-        sent += Pin::new(&mut client).observe(now, |mut turn| turn.output().drain().count());
+        sent += Pin::new(&mut client).output().drain().count();
     }
     assert!(sent >= 4);
     assert!(
@@ -212,16 +212,13 @@ fn round_robin() {
     assert!(Pin::new(&mut client).observe(now, |turn| {
         turn.deadline().is_none_or(|deadline| deadline > now)
     }));
-    let mut packets =
-        Pin::new(&mut client).observe(now, |mut turn| turn.output().drain().collect::<Vec<_>>());
+    let mut packets = Pin::new(&mut client).output().drain().collect::<Vec<_>>();
     assert_eq!(packets.len(), 1);
     assert_eq!(Pin::new(&mut client).output().bytes(), 0);
     Capture::drive(&mut client, now).expect("fixture drive");
     assert_eq!(Pin::new(&mut client).output().len(), 1);
     assert_eq!(Pin::new(&mut client).output().bytes(), 1200);
-    packets.extend(
-        Pin::new(&mut client).observe(now, |mut turn| turn.output().drain().collect::<Vec<_>>()),
-    );
+    packets.extend(Pin::new(&mut client).output().drain().collect::<Vec<_>>());
     assert_eq!(packets.len(), 2);
     assert!(packets.iter().all(|packet| packet.payload().len() == 1200));
     assert_eq!(Pin::new(&mut client).output().len(), 0);
@@ -279,7 +276,7 @@ fn blocked_head_keeps_smaller_reservation() {
     Capture::drive(&mut client, now).expect("mixed sweep");
     assert_eq!(Pin::new(&mut client).output().len(), 2);
     assert_eq!(Pin::new(&mut client).output().bytes(), 2400);
-    Pin::new(&mut client).observe(now, |mut turn| turn.output().drain().for_each(drop));
+    Pin::new(&mut client).output().drain().for_each(drop);
     Capture::drive(&mut client, now).expect("returned credit resumes probe");
     assert_ne!(Pin::new(&mut client).output().len(), 0);
 }

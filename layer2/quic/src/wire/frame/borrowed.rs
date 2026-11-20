@@ -22,7 +22,7 @@ impl<'a> Borrowed<'a> {
         rest: &'a [(varint::VarInt, varint::VarInt)],
     ) -> Result<Self, error::Fault> {
         let count = ranges::validate_pairs(largest, first, rest)?;
-        Ok(Self(frame::Frame(frame::Repr::Ack {
+        Ok(Self(frame::Frame(frame::View::Ack {
             largest,
             delay,
             first_range: first,
@@ -37,7 +37,7 @@ impl<'a> Borrowed<'a> {
             length: data.len() as u64,
         })?;
         error::Fault::check_span(offset, len)?;
-        Ok(Self(frame::Frame(frame::Repr::Crypto {
+        Ok(Self(frame::Frame(frame::View::Crypto {
             offset,
             len,
             data,
@@ -45,7 +45,7 @@ impl<'a> Borrowed<'a> {
     }
 
     pub(crate) fn datagram(data: &'a [u8]) -> Self {
-        Self(frame::Frame(frame::Repr::Datagram { data }))
+        Self(frame::Frame(frame::View::Datagram { data }))
     }
 
     pub(crate) fn try_close(code: close::Code, reason: &'a [u8]) -> Result<Self, error::Fault> {
@@ -53,7 +53,7 @@ impl<'a> Borrowed<'a> {
             offset: 0,
             length: reason.len() as u64,
         })?;
-        Ok(Self(frame::Frame(frame::Repr::ConnectionClose {
+        Ok(Self(frame::Frame(frame::View::ConnectionClose {
             code,
             len,
             reason,
@@ -72,7 +72,7 @@ impl<'a> Borrowed<'a> {
             length: data.len() as u64,
         })?;
         error::Fault::check_span(offset, len)?;
-        Ok(Self(frame::Frame(frame::Repr::Stream {
+        Ok(Self(frame::Frame(frame::View::Stream {
             stream_id: stream,
             offset,
             boundary,

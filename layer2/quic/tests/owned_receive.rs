@@ -1,5 +1,6 @@
 use crate::common::peer;
 pub mod common;
+use common::suite::mux::dispatch;
 
 use common::receive::copied;
 use common::runtime::gso::{self, Capture};
@@ -56,7 +57,7 @@ fn moves_received_owner() {
         .build()
         .expect("client router");
     let mut now = Instant::now();
-    let handle = Capture::connect(
+    let handle = dispatch::Capture::connect(
         &mut client,
         gso::SERVER,
         key,
@@ -77,7 +78,7 @@ fn moves_received_owner() {
         Capture::deliver_at(
             &mut client,
             gso::SERVER,
-            copied::Capture::output(&mut server, now).expect("fixture output"),
+            dispatch::Capture::output(&mut server, now).expect("fixture output"),
             now,
         )
         .expect("fixture deliver_at");
@@ -107,7 +108,7 @@ fn moves_received_owner() {
             Capture::deliver_at(
                 &mut client,
                 gso::SERVER,
-                copied::Capture::output(&mut server, now).expect("fixture output"),
+                dispatch::Capture::output(&mut server, now).expect("fixture output"),
                 now,
             )
             .expect("fixture deliver_at");
@@ -155,7 +156,7 @@ fn moves_received_owner() {
                     Capture::deliver_at(
                         &mut client,
                         gso::SERVER,
-                        copied::Capture::output(&mut server, now).expect("fixture output"),
+                        dispatch::Capture::output(&mut server, now).expect("fixture output"),
                         now,
                     )
                     .expect("fixture deliver_at");

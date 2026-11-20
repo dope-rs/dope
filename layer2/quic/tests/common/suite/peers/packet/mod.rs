@@ -165,7 +165,7 @@ impl Session {
                 (1, read.open(&mut packet, offset).map_err(Error::Seal)?.1)
             };
             for frame in frame::Frame::decode_all(&data).map_err(Error::Frame)? {
-                if let frame::View::Crypto { offset, data } = frame.view() {
+                if let frame::View::Crypto { offset, data, .. } = frame.view() {
                     if offset.get() != self.offsets[index] {
                         return Err(Error::Offset {
                             expected: self.offsets[index],

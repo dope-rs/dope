@@ -1,5 +1,5 @@
 use crate::errors::{self, detail};
-use std::ops;
+use std::{num::NonZero, ops};
 
 use crate::conn::stream::resident;
 use crate::conn::stream::state::receive::input;
@@ -11,7 +11,7 @@ use crate::{
     wire::{frame, packet::cid, stream, varint},
 };
 use conn::wire::ingress::frames;
-use frame::{Repr, ack::ranges};
+use frame::{View, ack::ranges};
 use plan::Record;
 
 mod storage;
@@ -21,15 +21,20 @@ pub(in crate::conn) use storage::{Group, Index, Storage};
 
 #[derive(Clone, Copy, Default)]
 #[repr(transparent)]
-struct PayloadPlan(u64);
+pub(super) struct PayloadPlan(u64);
 
 impl PayloadPlan {
-    const fn record(self) -> Record {
+    pub(super) const fn record(self) -> Record {
         Record::from_bits(self.0 as u32)
     }
 
     const fn start(self) -> usize {
         (self.0 >> u32::BITS) as u16 as usize
+    }
+
+    pub(super) fn range(self) -> ops::Range<usize> {
+        let start = self.start();
+        start..start + self.record().bytes()
     }
 
     fn set_record(&mut self, record: Record) {
@@ -41,8 +46,7 @@ impl PayloadPlan {
     }
 }
 
-type Parsed<'id> = Repr<ops::Range<usize>, ranges::Proof<'id>, cid::Id>;
-pub(super) type View<'a, 'id> = frame::View<'a, ops::Range<usize>, ranges::Proof<'id>, cid::Id>;
+pub(super) type Parsed<'id> = View<ops::Range<usize>, ranges::Proof<'id>, cid::Id>;
 
 /// A row's kind, immutable identity, and kind-specific admission remain together.
 pub(in crate::conn) struct FrameRecord<'id> {
@@ -59,9 +63,8 @@ enum Kind<'id> {
     Crypto(CryptoRecord<'id>),
 }
 
-pub(super) struct Datagram {
+struct Datagram {
     data: ops::Range<usize>,
-    length: frame::Length,
     payload: Option<PayloadPlan>,
 }
 
@@ -72,13 +75,12 @@ enum Status {
     Transient,
 }
 
-struct StreamRecord {
-    offset: varint::VarInt,
-    data: ops::Range<usize>,
-    boundary: frame::Boundary,
-    length: frame::Length,
-    key: Option<resident::Key>,
-    payload: PayloadPlan,
+pub(super) struct StreamRecord {
+    pub(super) offset: varint::VarInt,
+    pub(super) data: ops::Range<usize>,
+    pub(super) boundary: frame::Boundary,
+    pub(super) key: Option<resident::Key>,
+    pub(super) payload: PayloadPlan,
     admission: Status,
 }
 
@@ -174,20 +176,6 @@ impl Reset<'_> {
 }
 
 impl Datagram {
-    pub(super) fn len(&self) -> usize {
-        self.data.len()
-    }
-    pub(super) fn length(&self) -> frame::Length {
-        self.length
-    }
-    pub(super) fn admit(&mut self) -> Result<(), detail::Payload> {
-        let len = self.data.len();
-        let record = Record::full(len).ok_or_else(|| detail::Payload::new(len))?;
-        let mut payload = PayloadPlan::default();
-        payload.set_record(record);
-        self.payload = Some(payload);
-        Ok(())
-    }
     fn stored_mut(&mut self) -> Option<Stored<'_>> {
         Some(Stored {
             offset: varint::VarInt::ZERO,
@@ -197,36 +185,11 @@ impl Datagram {
     }
 }
 
-/// Construction consumes a decoder frame only after packet and role admission.
-#[repr(transparent)]
-pub(super) struct Admitted<'id>(frame::Frame<ops::Range<usize>, ranges::Proof<'id>>);
-
-impl<'id> Admitted<'id> {
-    pub(super) fn new(
-        kind: frames::PacketKind,
-        local: stream::Initiator,
-        frame: frame::Frame<ops::Range<usize>, ranges::Proof<'id>>,
-    ) -> Result<Self, conn::Error> {
-        if !kind.allows(&frame, local) {
-            return Err(conn::Error::ProtocolViolation);
-        }
-        Ok(Self(frame))
-    }
-    pub(super) fn frame(&self) -> &frame::Frame<ops::Range<usize>, ranges::Proof<'id>> {
-        &self.0
-    }
-}
-
-pub(in crate::conn) enum Operation<'record> {
+pub(in crate::conn) enum Operation {
     Drop,
     Datagram,
     Stream {
-        key: Option<resident::Key>,
         id: stream::Id,
-        offset: varint::VarInt,
-        data: &'record ops::Range<usize>,
-        plan: Record,
-        boundary: frame::Boundary,
     },
     StreamTransient {
         key: Option<resident::Key>,
@@ -243,14 +206,86 @@ pub(in crate::conn) enum Operation<'record> {
     },
 }
 
-impl<'id> FrameRecord<'id> {
-    pub(super) fn new(frame: Admitted<'id>, body: &frame::Body<'_, 'id>) -> Self {
-        let (id, kind) = match frame.0.into_repr() {
-            Repr::Stream {
+/// Parsing accounts for payloads while the initialized record owner admits rows.
+pub(super) struct Build<'slots> {
+    pub(super) bytes: usize,
+    dgrams: usize,
+    max: Option<u64>,
+    pub(super) close: Option<Index<'slots>>,
+}
+
+impl<'slots> Build<'slots> {
+    pub(super) fn try_bytes(current: usize, add: usize) -> Result<usize, detail::Plan> {
+        let limit = u16::MAX as usize;
+        let Some(total) = current.checked_add(add) else {
+            return Err(detail::Plan::Bytes {
+                current,
+                additional: add,
+                limit,
+            });
+        };
+        if total > limit {
+            return Err(detail::Plan::Bytes {
+                current,
+                additional: add,
+                limit,
+            });
+        }
+        Ok(total)
+    }
+
+    pub(super) fn new(dgrams: usize, max: Option<u64>) -> Self {
+        Self {
+            bytes: 0,
+            dgrams,
+            max,
+            close: None,
+        }
+    }
+
+    fn try_datagram(
+        &mut self,
+        data: ops::Range<usize>,
+        length: frame::Length,
+        used: NonZero<usize>,
+    ) -> Result<Datagram, detail::Plan> {
+        let len = data.len();
+        if self.max.is_none_or(|max| used.get() as u64 > max) {
+            return Err(detail::Plan::Datagram {
+                len,
+                length,
+                maximum: self.max,
+            });
+        }
+        let payload = if self.dgrams == 0 {
+            None
+        } else {
+            let record = Record::full(len).ok_or_else(|| detail::Payload::new(len))?;
+            self.bytes = Self::try_bytes(self.bytes, len)?;
+            self.dgrams -= 1;
+            Some(PayloadPlan(u64::from(record.bits())))
+        };
+        Ok(Datagram { data, payload })
+    }
+
+    pub(super) fn try_record<'id>(
+        &mut self,
+        slot: Vacant<'_, '_, 'slots, 'id, '_, '_, '_, '_>,
+        body: &frame::Body<'_, 'id>,
+        packet: frames::PacketKind,
+        local: stream::Initiator,
+        frame: frame::Frame<ops::Range<usize>, ranges::Proof<'id>>,
+        used: NonZero<usize>,
+    ) -> Result<(), detail::Plan> {
+        if !packet.allows(&frame, local) {
+            return Err(conn::Error::ProtocolViolation.into());
+        }
+        let zero = stream::Id::from_varint(varint::VarInt::ZERO);
+        let (id, kind) = match frame.into_view() {
+            View::Stream {
                 stream_id: id,
                 offset,
                 boundary,
-                length,
                 data,
                 ..
             } => (
@@ -259,13 +294,12 @@ impl<'id> FrameRecord<'id> {
                     offset,
                     data,
                     boundary,
-                    length,
                     key: None,
                     payload: PayloadPlan::default(),
                     admission: Status::Drop,
                 }),
             ),
-            Repr::ResetStream {
+            View::ResetStream {
                 stream_id: id,
                 error_code: code,
                 final_size: end,
@@ -278,7 +312,7 @@ impl<'id> FrameRecord<'id> {
                     free: None,
                 }),
             ),
-            Repr::StopSending {
+            View::StopSending {
                 stream_id: id,
                 error_code: code,
             } => (
@@ -289,24 +323,16 @@ impl<'id> FrameRecord<'id> {
                     admitted: false,
                 }),
             ),
-            Repr::Datagram { data } => (
-                stream::Id::from_varint(varint::VarInt::ZERO),
-                Kind::Datagram(Datagram {
-                    data,
-                    length: frame::Length::Implicit,
-                    payload: None,
-                }),
+            View::Datagram { data } => (
+                zero,
+                Kind::Datagram(self.try_datagram(data, frame::Length::Implicit, used)?),
             ),
-            Repr::DatagramLen { data, .. } => (
-                stream::Id::from_varint(varint::VarInt::ZERO),
-                Kind::Datagram(Datagram {
-                    data,
-                    length: frame::Length::Explicit,
-                    payload: None,
-                }),
+            View::DatagramLen { data, .. } => (
+                zero,
+                Kind::Datagram(self.try_datagram(data, frame::Length::Explicit, used)?),
             ),
-            Repr::Crypto { offset, data, .. } => (
-                stream::Id::from_varint(varint::VarInt::ZERO),
+            View::Crypto { offset, data, .. } => (
+                zero,
                 Kind::Crypto(CryptoRecord {
                     offset,
                     data,
@@ -315,100 +341,61 @@ impl<'id> FrameRecord<'id> {
             ),
             wire => {
                 let id = match &wire {
-                    Repr::MaxStreamData { stream_id: id, .. } => *id,
-                    _ => stream::Id::from_varint(varint::VarInt::ZERO),
+                    View::MaxStreamData { stream_id: id, .. } => *id,
+                    _ => zero,
                 };
                 (id, Kind::Other(wire))
             }
         };
-        Self { id, kind }
+        let close = matches!(&kind, Kind::Other(View::ConnectionClose { .. }));
+        let index = slot.insert(FrameRecord { id, kind }, packet.is_app())?;
+        if close {
+            self.close.get_or_insert(index);
+        }
+        Ok(())
     }
+}
 
-    pub(in crate::conn) fn view(&self) -> View<'_, 'id> {
+impl<'id> FrameRecord<'id> {
+    pub(super) fn control(&self) -> Option<&Parsed<'id>> {
         match &self.kind {
-            Kind::Other(wire) => wire.view(),
-            Kind::Datagram(record) => frame::View::Datagram {
-                length: record.length,
-                data: &record.data,
-            },
-            Kind::Stream(record) => frame::View::Stream {
-                stream_id: self.id,
-                offset: record.offset,
-                boundary: record.boundary,
-                length: record.length,
-                data: &record.data,
-            },
-            Kind::Reset(record) => frame::View::ResetStream {
-                stream_id: self.id,
-                error_code: record.code,
-                final_size: record.end,
-            },
-            Kind::Stop(record) => frame::View::StopSending {
-                stream_id: self.id,
-                error_code: record.code,
-            },
-            Kind::Crypto(record) => frame::View::Crypto {
-                offset: record.offset,
-                data: &record.data,
-            },
+            Kind::Other(wire) => Some(wire),
+            _ => None,
         }
     }
 
-    pub(super) fn is_probing(&self) -> bool {
-        let kind = match &self.kind {
-            Kind::Other(wire) => wire.kind(),
-            Kind::Datagram(_) => frame::Kind::Datagram,
-            Kind::Stream(_) => frame::Kind::Stream,
-            Kind::Reset(_) => frame::Kind::ResetStream,
-            Kind::Stop(_) => frame::Kind::StopSending,
-            Kind::Crypto(_) => frame::Kind::Crypto,
+    pub(super) fn datagram(&self) -> Option<(&ops::Range<usize>, PayloadPlan)> {
+        let Kind::Datagram(record) = &self.kind else {
+            return None;
         };
-        kind.is_probing()
+        Some((&record.data, record.payload?))
     }
 
-    pub(super) fn is_datagram(&self) -> bool {
-        matches!(&self.kind, Kind::Datagram(record) if record.payload.is_some())
+    pub(super) fn stored_stream(&self) -> Option<&StreamRecord> {
+        match &self.kind {
+            Kind::Stream(stream) if stream.admission == Status::Stream => Some(stream),
+            _ => None,
+        }
     }
 
     fn is_receive_stream(&self) -> bool {
         matches!(&self.kind, Kind::Stream(record) if record.admission != Status::Drop)
     }
 
-    pub(super) fn datagram_mut(&mut self) -> Option<&mut Datagram> {
-        match &mut self.kind {
-            Kind::Datagram(record) => Some(record),
-            _ => None,
-        }
-    }
-
     pub(super) fn stored_dgram(&mut self) -> Option<Stored<'_>> {
-        self.datagram_mut()?.stored_mut()
-    }
-
-    pub(in crate::conn) fn range(&self) -> ops::Range<usize> {
-        let payload = match &self.kind {
-            Kind::Datagram(record) => record.payload.unwrap_or_default(),
-            Kind::Stream(record) => record.payload,
-            _ => PayloadPlan::default(),
+        let Kind::Datagram(record) = &mut self.kind else {
+            return None;
         };
-        let start = payload.start();
-        start..start + payload.record().bytes()
+        record.stored_mut()
     }
 
-    pub(in crate::conn) fn operation(&self) -> Operation<'_> {
+    pub(in crate::conn) fn operation(&self) -> Operation {
         let id = self.id;
         match &self.kind {
             Kind::Datagram(record) if record.payload.is_some() => Operation::Datagram,
             Kind::Stream(record) => match record.admission {
                 Status::Drop => Operation::Drop,
-                Status::Stream => Operation::Stream {
-                    key: record.key,
-                    id,
-                    offset: record.offset,
-                    data: &record.data,
-                    plan: record.payload.record(),
-                    boundary: record.boundary,
-                },
+                Status::Stream => Operation::Stream { id },
                 Status::Transient => Operation::StreamTransient {
                     key: record.key,
                     id,

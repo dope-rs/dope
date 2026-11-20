@@ -3,6 +3,7 @@ use dope_quic::conn;
 use dope_quic::runtime::mux::builder::{Builder, Plan};
 pub mod common;
 use common::runtime::gso::{self, Capture};
+use common::suite::mux::dispatch;
 use dope_quic::wire::packet::cid;
 use dope_test::harness::observe::VecCellExt as _;
 use o3::buffer::Residency as _;
@@ -34,7 +35,7 @@ fn same_destination_shares() {
     let mut now = Instant::now();
     for ordinal in 0..CONNECTIONS {
         assert!(
-            Capture::connect(
+            dispatch::Capture::connect(
                 &mut client,
                 gso::SERVER,
                 key,
@@ -122,12 +123,10 @@ fn same_destination_shares() {
             Capture::receive(&mut server, gso::CLIENT, segment, now).expect("fixture ingress");
             assert_eq!(segment[0] & 3, 0, "fixture uses one-byte packet numbers");
         }
-        Pin::new(&mut server).observe(now, |mut turn| {
-            assert!(
-                turn.output().drive().is_ok(),
-                "fixture server connections must admit routed datagram output"
-            )
-        });
+        assert!(
+            Pin::new(&mut server).output().drive_at(now).is_ok(),
+            "fixture server connections must admit routed datagram output"
+        );
 
         let mut seen = peer.datagrams.take();
         assert_eq!(seen.len(), CONNECTIONS);
@@ -163,11 +162,10 @@ fn same_destination_shares() {
     for segment in first.segments_mut() {
         Capture::receive(&mut server, gso::CLIENT, segment, now).expect("fixture ingress");
     }
-    Pin::new(&mut server).observe(now, |mut turn| {
-        turn.output()
-            .drive()
-            .expect("fixture datagram notification");
-    });
+    Pin::new(&mut server)
+        .output()
+        .drive_at(now)
+        .expect("fixture datagram notification");
     let seen = peer.datagrams.take();
     assert_eq!(seen.len(), 1);
     assert_eq!(

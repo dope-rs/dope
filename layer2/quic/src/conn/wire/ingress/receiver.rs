@@ -12,52 +12,25 @@ use ingress::bodies;
 use long::sequence::{self, Sequence as _};
 use path::reset;
 
-enum Reset {
-    Received,
-    Absent,
-}
-
-pub(in crate::conn) struct Receiver<
-    'a,
-    'b,
-    const DOMAIN: u8,
-    B: stream::Recv,
-    const RECONCILE: bool,
-    D: buffer::raw::Segment,
-    E,
-> {
-    input: &'a mut ingress::Input<'b, DOMAIN, B, RECONCILE, D>,
-    now: time::Instant,
-    sink: &'a mut E,
-}
-
-impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::raw::Segment, E>
-    Receiver<'a, 'b, DOMAIN, B, RECONCILE, D, E>
+impl<const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer::raw::Segment>
+    ingress::Input<'_, DOMAIN, B, RECONCILE, D>
 {
-    pub(in crate::conn) fn new(
-        input: &'a mut ingress::Input<'b, DOMAIN, B, RECONCILE, D>,
-        now: time::Instant,
-        sink: &'a mut E,
-    ) -> Self {
-        Self { input, now, sink }
-    }
-
-    pub(in crate::conn) fn run<P, S>(
-        self,
+    pub(crate) fn receive<P, S>(
+        &mut self,
         mut packet: long::Datagram<P>,
         policy: S,
+        now: time::Instant,
+        sink: &mut impl events::Sink,
     ) -> ingress::Received
     where
         P: long::Buffer,
         for<'p> &'p mut P: sequence::Sequence,
-        S: bodies::Policy<P, DOMAIN, B, RECONCILE, D>,
-        for<'p> S:
-            bodies::Policy<<&'p mut P as sequence::Sequence>::First, DOMAIN, B, RECONCILE, D>,
-        E: events::Sink,
+        S: bodies::Policy<P, B>,
+        for<'p> S: bodies::Policy<<&'p mut P as sequence::Sequence>::First, B>,
     {
         let mut token = None;
         let result = (|| {
-            let Self { input, now, sink } = self;
+            let input = self;
             let terminal = input.connection.try_terminal(now)?;
             token = reset::Token::from_tail(packet.as_ref());
             if terminal {
@@ -174,8 +147,8 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer
                         token = None;
                     }
                     return match Self::reset(input, &mut token) {
-                        Reset::Received => Ok(()),
-                        Reset::Absent => result.and_then(|()| failure.map_or(Ok(()), Err)),
+                        machine::Reset::Accept => Ok(()),
+                        machine::Reset::Ignore => result.and_then(|()| failure.map_or(Ok(()), Err)),
                     };
                 }
                 let long = match (&mut packet).first() {
@@ -285,35 +258,30 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer
                 }
             }
             match Self::reset(input, &mut token) {
-                Reset::Received => Ok(()),
-                Reset::Absent => failure.map_or(Ok(()), Err),
+                machine::Reset::Accept => Ok(()),
+                machine::Reset::Ignore => failure.map_or(Ok(()), Err),
             }
         })();
         (result, token)
     }
 
-    fn reset(
-        input: &mut ingress::Input<'_, DOMAIN, B, RECONCILE, D>,
-        token: &mut Option<reset::Token>,
-    ) -> Reset {
+    fn reset(input: &mut Self, token: &mut Option<reset::Token>) -> machine::Reset {
         let Some(candidate) = *token else {
-            return Reset::Absent;
+            return machine::Reset::Ignore;
         };
-        match input.connection.reset(None, candidate) {
-            machine::Reset::Accept => {
-                *token = None;
-                input
-                    .context
-                    .record(conn::Effects::from_bits(conn::Effects::LIFECYCLE));
-                Reset::Received
-            }
-            machine::Reset::Ignore => Reset::Absent,
+        let outcome = input.connection.reset(None, candidate);
+        if matches!(outcome, machine::Reset::Accept) {
+            *token = None;
+            input
+                .context
+                .record(conn::Effects::from_bits(conn::Effects::LIFECYCLE));
         }
+        outcome
     }
 
     /// Authenticated protocol failures retain their exact error, not the reset tail.
     fn fail(
-        input: &mut ingress::Input<'_, DOMAIN, B, RECONCILE, D>,
+        input: &mut Self,
         token: &mut Option<reset::Token>,
         error: conn::Error,
     ) -> Result<(), conn::Error> {
@@ -333,8 +301,8 @@ impl<'a, 'b, const DOMAIN: u8, B: stream::Recv, const RECONCILE: bool, D: buffer
             return input.reject(error);
         }
         match Self::reset(input, token) {
-            Reset::Received => Ok(()),
-            Reset::Absent => input.reject(error),
+            machine::Reset::Accept => Ok(()),
+            machine::Reset::Ignore => input.reject(error),
         }
     }
 }

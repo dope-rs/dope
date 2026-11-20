@@ -1,5 +1,6 @@
 pub mod common;
 use common::runtime::reap::{CLIENT, Capture, Credit, SERVER};
+use common::suite::mux::dispatch;
 use common::suite::peers;
 use common::suite::peers::Error;
 use dope_quic::conn;
@@ -57,7 +58,7 @@ fn early_flow_waits_for_credit() {
         })
         .expect("client access");
         assert!(
-            !Capture::output(&mut client, now)
+            !dispatch::Capture::output(&mut client, now)
                 .expect("early flight")
                 .is_empty()
         );
@@ -69,7 +70,7 @@ fn early_flow_waits_for_credit() {
         );
         let now = view.send_at(now);
         assert!(
-            Capture::output(&mut client, now)
+            dispatch::Capture::output(&mut client, now)
                 .expect("finite discovery")
                 .is_empty()
         );
@@ -177,7 +178,7 @@ fn early_control_credit() {
     })
     .expect("release early receive credit");
     assert!(
-        Capture::output(&mut server, now)
+        dispatch::Capture::output(&mut server, now)
             .expect("materialize flow control")
             .is_empty()
     );
@@ -191,7 +192,7 @@ fn early_control_credit() {
         "blocked control at {now:?}, due {due:?}"
     );
     assert_eq!(
-        Capture::drive(&mut server, now).expect("blocked control turn"),
+        dispatch::Capture::drive(&mut server, now).expect("blocked control turn"),
         0
     );
     Capture::receive(&mut server, CLIENT, &mut raw, now).expect("raw ingress credit");
@@ -206,7 +207,8 @@ fn early_control_credit() {
         now.max(due) < pto,
         "flow control resumes before another PTO can arm"
     );
-    let output = Capture::output(&mut server, now.max(due)).expect("protected flow control output");
+    let output = dispatch::Capture::output(&mut server, now.max(due))
+        .expect("protected flow control output");
     assert!(!output.is_empty());
     let sent = output
         .iter()

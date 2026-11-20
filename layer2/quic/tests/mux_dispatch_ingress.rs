@@ -54,8 +54,13 @@ fn sealed_admission() {
     Pin::new(&mut server).seal();
     assert!(server.is_sealed());
     assert!(
-        Capture::relay(&mut client, &mut server, CLIENT, Instant::now()).expect("fixture relay")
-            > 0
+        Capture::relay(
+            Pin::new(&mut client),
+            Pin::new(&mut server),
+            CLIENT,
+            Instant::now()
+        )
+        .expect("fixture relay")
     );
     assert_eq!(server.active_conns(), 0);
     assert!(events.borrow().established.is_empty());

@@ -23,7 +23,7 @@ use handler::{
     net::Ingress,
 };
 use life::{options, tls};
-use mux::{app, auth, handler, manage, output, protocol, router};
+use mux::{app, auth, handler, manage, protocol, router};
 use router::routing::issuer;
 use scope::path;
 use stream::retain;
@@ -103,15 +103,6 @@ where
         {
             ops::ControlFlow::Break(at) => Some(at),
             ops::ControlFlow::Continue(at) => at,
-        }
-    }
-
-    /// Borrows the time-dependent output plane for this observation.
-    pub fn output(&mut self) -> Output<'_, 'observation, A, H, DOMAIN, B> {
-        Output {
-            queue: self.mux.as_mut().output(),
-            observed_at: self.observed_at,
-            _brand: self.brand,
         }
     }
 
@@ -268,40 +259,6 @@ where
 {
     pub fn advance(&mut self) -> manage::Status {
         self.shutdown.bounded_at(self.now)
-    }
-}
-
-/// Output auth borrowed from one [`Observed`] turn.
-pub struct Output<'mux, 'observation, A, H, const DOMAIN: u8, B>
-where
-    A: auth::Mode<DOMAIN>,
-    A::Identity: id::Temporal,
-    H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
-    B: stream::Recv,
-{
-    queue: output::Queue<'mux, 'mux, H, DOMAIN, B, A>,
-    observed_at: <A::Identity as id::Temporal>::Observation,
-    _brand: brand::Token<'observation>,
-}
-
-impl<'mux, 'observation, A, H, const DOMAIN: u8, B> Output<'mux, 'observation, A, H, DOMAIN, B>
-where
-    A: auth::Mode<DOMAIN>,
-    H: handler::Handler<DOMAIN, B, A::Send, A::Identity>,
-    B: stream::Recv,
-    A::Identity: id::Temporal,
-{
-    pub fn drive(&mut self) -> Result<usize, errors::Transmit<A::Identity, DOMAIN>> {
-        self.queue.drive_at(self.observed_at)
-    }
-
-    /// Returns one fully consumed flight to this mux's packet pool.
-    pub fn recycle(&mut self, flight: output::Flight) {
-        self.queue.recycle(flight);
-    }
-
-    pub fn drain(self) -> impl Iterator<Item = output::Flight> + 'mux + use<'mux, A, H, DOMAIN, B> {
-        self.queue.drain()
     }
 }
 

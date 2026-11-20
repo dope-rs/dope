@@ -1,7 +1,8 @@
 use crate::common::peer::{self, Receiver as _};
+use crate::common::suite::mux::dispatch;
 use dope_quic::conn::life::accept::Authority;
 use dope_quic::conn::life::options::Options;
-use dope_quic::proto::{epoch, param};
+use dope_quic::proto::param;
 use dope_quic::runtime::mux::builder::Builder;
 use dope_quic::runtime::mux::builder::Plan;
 use std::cell::Cell;
@@ -154,11 +155,7 @@ impl Capture {
         packet: &mut [u8],
         now: Instant,
     ) -> Result<(), Error> {
-        Pin::new(&mut *mux)
-            .observe(now, |mut turn| {
-                turn.protocol().recv(from, packet, epoch::WALL_CLOCK)
-            })
-            .map_err(Error::Receive)?;
+        dispatch::Capture::recv(mux, from, packet, now).map_err(Error::Receive)?;
         let events = &mux.handler().events;
         if events.overflow.get() {
             return Err(Error::CertificateOverflow);
@@ -168,22 +165,6 @@ impl Capture {
             return Err(Error::Certificates(count));
         }
         Ok(())
-    }
-
-    pub fn connect(
-        mux: &mut router::Router<Capture>,
-        peer: SocketAddr,
-        key: [u8; 32],
-        options: Options,
-        cid: Vec<u8>,
-        now: Instant,
-    ) -> Result<id::Handle, Error> {
-        let auth = tls::client(key).map_err(Error::Tls)?;
-        Pin::new(mux)
-            .observe(now, |mut turn| {
-                turn.protocol().connect(peer, &auth, options, cid)
-            })
-            .map_err(Error::Connect)
     }
 
     pub fn connect_peer(
@@ -232,19 +213,14 @@ impl Capture {
         payload: Vec<u8>,
         now: Instant,
     ) -> Result<(), errors::SendFailure<Vec<u8>>> {
-        Pin::new(mux).observe(now, |mut turn| {
-            turn.protocol().try_datagram(handle, payload)
-        })
+        dispatch::Capture::send(mux, handle, payload, now)
     }
 
     pub fn output(
         router: &mut router::Router<Capture>,
         now: Instant,
     ) -> Result<Vec<output::Flight>, errors::Transmit> {
-        Pin::new(router).observe(now, |mut turn| {
-            turn.output().drive()?;
-            Ok(turn.output().drain().collect())
-        })
+        dispatch::Capture::output(router, now)
     }
 
     pub fn access<R>(
@@ -357,7 +333,8 @@ impl Pair {
             .build()
             .map_err(Error::Storage)?;
         let now = Instant::now();
-        let handle = Capture::connect(&mut client, SERVER, key, options(), CID.to_vec(), now)?;
+        let handle =
+            dispatch::Capture::connect(&mut client, SERVER, key, options(), CID.to_vec(), now)?;
         let mut pair = Self {
             server,
             client,

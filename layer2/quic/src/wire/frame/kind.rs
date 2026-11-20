@@ -8,7 +8,6 @@ enum Sender {
 struct Rule {
     packet_mask: u8,
     sender: Sender,
-    probing: bool,
 }
 
 impl Rule {
@@ -61,112 +60,90 @@ impl Kind {
         Rule {
             packet_mask: ALL_PACKETS,
             sender: Sender::Either,
-            probing: true,
         },
         Rule {
             packet_mask: ALL_PACKETS,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: INITIAL | HANDSHAKE | ONE_RTT,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: INITIAL | HANDSHAKE | ONE_RTT,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: ONE_RTT,
             sender: Sender::Server,
-            probing: false,
         },
         Rule {
             packet_mask: APPLICATION_DATA,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: ONE_RTT,
             sender: Sender::Server,
-            probing: false,
         },
         Rule {
             packet_mask: ALL_PACKETS,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: APPLICATION_DATA,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: ONE_RTT,
             sender: Sender::Either,
-            probing: true,
         },
         Rule {
             packet_mask: ONE_RTT,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: ONE_RTT,
             sender: Sender::Either,
-            probing: true,
         },
         Rule {
             packet_mask: ONE_RTT,
             sender: Sender::Either,
-            probing: true,
         },
         Rule {
             packet_mask: APPLICATION_DATA,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: APPLICATION_DATA,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: APPLICATION_DATA,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: APPLICATION_DATA,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: APPLICATION_DATA,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: APPLICATION_DATA,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: APPLICATION_DATA,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: APPLICATION_DATA,
             sender: Sender::Either,
-            probing: false,
         },
         Rule {
             packet_mask: APPLICATION_DATA,
             sender: Sender::Either,
-            probing: false,
         },
     ];
 
@@ -176,10 +153,6 @@ impl Kind {
 
     pub(crate) const fn is_allowed(self, packet: u8, local: Initiator) -> bool {
         self.rule().allows(packet, local)
-    }
-
-    pub(crate) const fn is_probing(self) -> bool {
-        self.rule().probing
     }
 }
 

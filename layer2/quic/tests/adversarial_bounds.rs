@@ -310,7 +310,7 @@ fn initial_frame_rejected() {
                 frame_type,
             },
             ..
-        }) if error_code.get() == 0x0a && frame_type == VarInt::ZERO
+        }) if error_code.get() == 0x0a && *frame_type == VarInt::ZERO
     ));
     assert_eq!(
         server.view().lifecycle().state(),
@@ -520,7 +520,7 @@ fn crypto_reassembly() {
         .expect("decrypted client Initial frames must decode")
         .into_iter()
         .find_map(|frame| match frame.view() {
-            View::Crypto { offset, data } if offset == VarInt::ZERO => Some(data.clone()),
+            View::Crypto { offset, data, .. } if *offset == VarInt::ZERO => Some(data.clone()),
             _ => None,
         })
         .expect("ClientHello CRYPTO frame");

@@ -63,12 +63,10 @@ fn ack_keeps_safe_wake() {
     );
 
     let wake = safe + Duration::from_micros(1);
-    Pin::new(&mut client).observe(wake, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "fixture mux connection must admit safe-wake output"
-        )
-    });
+    assert!(
+        Pin::new(&mut client).output().drive_at(wake).is_ok(),
+        "fixture mux connection must admit safe-wake output"
+    );
     assert_eq!(client.active_conns(), 1);
     assert_eq!(
         Pin::new(&mut client).observe(wake, |turn| turn.deadline()),
@@ -101,15 +99,12 @@ fn pto_replaces_deadline() {
         .and_then(|conn| conn.view().next_timer())
         .expect("a dropped application packet must arm its PTO timer");
     let fired_at = pto + Duration::from_nanos(1);
-    Pin::new(&mut client).observe(fired_at, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "fixture mux connection must admit PTO output"
-        )
-    });
+    assert!(
+        Pin::new(&mut client).output().drive_at(fired_at).is_ok(),
+        "fixture mux connection must admit PTO output"
+    );
     loop {
-        let probe =
-            Pin::new(&mut client).observe(fired_at, |mut turn| turn.output().drain().next());
+        let probe = Pin::new(&mut client).output().drain().next();
         let Some(probe) = probe else {
             break;
         };
@@ -141,13 +136,14 @@ fn pacing_releases_output() {
 
     const PACKETS: usize = 32;
     Seen::enqueue(&mut client, handle, PACKETS, 1_150, now).expect("output enqueue");
-    let initial = Pin::new(&mut client).observe(now, |mut turn| {
+    let initial = {
+        let mut output = Pin::new(&mut client).output();
         assert!(
-            turn.output().drive().is_ok(),
+            output.drive_at(now).is_ok(),
             "fixture mux connection must admit the initial paced burst"
         );
-        turn.output().drain().collect::<Vec<_>>()
-    });
+        output.drain().collect::<Vec<_>>()
+    };
     let sent = Seen::packet_count(&initial);
     assert!(
         (1..PACKETS).contains(&sent),
@@ -161,22 +157,22 @@ fn pacing_releases_output() {
         .observe(now, |turn| turn.deadline())
         .expect("the pending packet owns a pacing deadline");
     assert!(due > now);
-    assert!(
-        Pin::new(&mut client).observe(due - Duration::from_nanos(1), |mut turn| {
-            assert!(
-                turn.output().drive().is_ok(),
-                "fixture mux connection must remain admissible before pacing release"
-            );
-            turn.output().drain().next().is_none()
-        })
-    );
-    let released = Pin::new(&mut client).observe(due, |mut turn| {
+    assert!({
+        let mut output = Pin::new(&mut client).output();
         assert!(
-            turn.output().drive().is_ok(),
+            output.drive_at(due - Duration::from_nanos(1)).is_ok(),
+            "fixture mux connection must remain admissible before pacing release"
+        );
+        output.drain().next().is_none()
+    });
+    let released = {
+        let mut output = Pin::new(&mut client).output();
+        assert!(
+            output.drive_at(due).is_ok(),
             "fixture mux connection must admit pacing release output"
         );
-        turn.output().drain().collect::<Vec<_>>()
-    });
+        output.drain().collect::<Vec<_>>()
+    };
     assert_eq!(Seen::packet_count(&released), 1);
     for outgoing in released {
         Pin::new(&mut client).output().recycle(outgoing);
@@ -205,18 +201,14 @@ fn ack_debt_tracks_deadline() {
         assert!(Seen::pump(&mut client, &mut server, CLIENT, now).is_ok());
         assert!(Seen::pump(&mut server, &mut client, SERVER, now).is_ok());
     }
-    Pin::new(&mut client).observe(now, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "fixture client connection must admit settled output"
-        )
-    });
-    Pin::new(&mut server).observe(now, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "fixture server connection must admit settled output"
-        )
-    });
+    assert!(
+        Pin::new(&mut client).output().drive_at(now).is_ok(),
+        "fixture client connection must admit settled output"
+    );
+    assert!(
+        Pin::new(&mut server).output().drive_at(now).is_ok(),
+        "fixture server connection must admit settled output"
+    );
 
     Seen::enqueue(&mut server, peer_id, 1, 1_150, now).expect("output enqueue");
     assert!(Seen::pump(&mut server, &mut client, SERVER, now).is_ok());
@@ -226,35 +218,36 @@ fn ack_debt_tracks_deadline() {
             .map(|peer| peer.view().recovery().unacked(Epoch::Application)),
         Some(1)
     );
-    assert!(Pin::new(&mut client).observe(now, |mut turn| {
+    assert!({
+        let mut output = Pin::new(&mut client).output();
         assert!(
-            turn.output().drive().is_ok(),
+            output.drive_at(now).is_ok(),
             "fixture client connection must remain admissible before delayed ACK"
         );
-        turn.output().drain().next().is_none()
-    }));
+        output.drain().next().is_none()
+    });
 
     let due = Pin::new(&mut client)
         .observe(now, |turn| turn.deadline())
         .expect("one received application packet must arm its delayed ACK deadline");
     assert!(due > now && due <= now + Duration::from_millis(25));
-    assert!(
-        Pin::new(&mut client).observe(due - Duration::from_nanos(1), |mut turn| {
-            assert!(
-                turn.output().drive().is_ok(),
-                "fixture client connection must remain admissible before ACK deadline"
-            );
-            turn.output().drain().next().is_none()
-        })
-    );
-
-    let mut acks = Pin::new(&mut client).observe(due, |mut turn| {
+    assert!({
+        let mut output = Pin::new(&mut client).output();
         assert!(
-            turn.output().drive().is_ok(),
+            output.drive_at(due - Duration::from_nanos(1)).is_ok(),
+            "fixture client connection must remain admissible before ACK deadline"
+        );
+        output.drain().next().is_none()
+    });
+
+    let mut acks = {
+        let mut output = Pin::new(&mut client).output();
+        assert!(
+            output.drive_at(due).is_ok(),
             "fixture client connection must admit its delayed ACK"
         );
-        turn.output().drain().collect::<Vec<_>>()
-    });
+        output.drain().collect::<Vec<_>>()
+    };
     assert_eq!(Seen::packet_count(&acks), 1);
     for outgoing in &mut acks {
         for packet in outgoing.segments_mut() {

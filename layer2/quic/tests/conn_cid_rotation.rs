@@ -1,6 +1,7 @@
 use crate::common::peer;
 pub mod common;
 use common::suite::cid::{Count, INITIAL};
+use common::suite::mux::dispatch;
 use dope_quic::runtime::mux::builder::Builder;
 use dope_quic::runtime::mux::builder::Plan;
 use std::{
@@ -11,10 +12,7 @@ use std::{
 
 #[test]
 fn retransmits_retiring_advertisement() {
-    use common::suite::mux::{
-        dispatch,
-        paths::{self, CLIENT, Pair},
-    };
+    use common::suite::mux::paths::{self, CLIENT, Pair};
     use dope_quic::{
         conn::scope::path::Rotation,
         wire::{frame, varint::VarInt},
@@ -257,17 +255,14 @@ fn reuses_rotated_slot() {
 
     let old_at = started + Duration::from_secs(1);
     assert!(
-        Count::send(&mut client, outbound, vec![0x10], old_at).is_ok(),
+        dispatch::Capture::send(&mut client, outbound, vec![0x10], old_at).is_ok(),
         "live client connection must accept the first datagram"
     );
-    Pin::new(&mut client).observe(old_at, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "fixture client connections must admit the first CID packet"
-        );
-    });
-    let mut flights: Vec<_> =
-        Pin::new(&mut client).observe(old_at, |mut turn| turn.output().drain().collect());
+    assert!(
+        Pin::new(&mut client).output().drive_at(old_at).is_ok(),
+        "fixture client connections must admit the first CID packet"
+    );
+    let mut flights: Vec<_> = Pin::new(&mut client).output().drain().collect();
     let mut live = (flights
         .iter_mut()
         .flat_map(|outgoing| outgoing.segments_mut())
@@ -282,21 +277,18 @@ fn reuses_rotated_slot() {
 
     let queue_at = old_at + Duration::from_millis(1);
     assert!(
-        Count::send(&mut client, outbound, vec![0x11], queue_at).is_ok(),
+        dispatch::Capture::send(&mut client, outbound, vec![0x11], queue_at).is_ok(),
         "live client connection must accept the held datagram"
     );
     let stale_at = match Pin::new(&mut client).observe(queue_at, |turn| turn.deadline()) {
         Some(deadline) => deadline.max(queue_at),
         None => queue_at,
     };
-    Pin::new(&mut client).observe(stale_at, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "fixture client connections must admit the held CID packet"
-        );
-    });
-    let mut flights: Vec<_> =
-        Pin::new(&mut client).observe(stale_at, |mut turn| turn.output().drain().collect());
+    assert!(
+        Pin::new(&mut client).output().drive_at(stale_at).is_ok(),
+        "fixture client connections must admit the held CID packet"
+    );
+    let mut flights: Vec<_> = Pin::new(&mut client).output().drain().collect();
     let mut stale = (flights
         .iter_mut()
         .flat_map(|outgoing| outgoing.segments_mut())
@@ -323,13 +315,11 @@ fn reuses_rotated_slot() {
     let mut dropped = 0;
     for turn in 0..4 {
         let now = start + Duration::from_millis(turn * 10);
-        Pin::new(&mut server).observe(now, |mut turn| {
-            assert!(
-                turn.output().drive().is_ok(),
-                "fixture server connections must admit CID rotation output"
-            );
-        });
-        dropped += Pin::new(&mut server).observe(now, |mut turn| turn.output().drain().count());
+        assert!(
+            Pin::new(&mut server).output().drive_at(now).is_ok(),
+            "fixture server connections must admit CID rotation output"
+        );
+        dropped += Pin::new(&mut server).output().drain().count();
     }
     assert_ne!(dropped, 0, "the first rotation flight is dropped");
 
@@ -338,18 +328,16 @@ fn reuses_rotated_slot() {
         Count::receive(&mut server, local, &mut live, live_at).is_ok(),
         "packet on the live initial route must be accepted"
     );
-    Pin::new(&mut server).observe(live_at, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "fixture server connections must admit live-route output"
-        );
-    });
+    assert!(
+        Pin::new(&mut server).output().drive_at(live_at).is_ok(),
+        "fixture server connections must admit live-route output"
+    );
     assert_eq!(
         server.handler().datagrams,
         1,
         "the old route remains valid before its retirement arrives",
     );
-    Pin::new(&mut server).observe(live_at, |mut turn| turn.output().drain().count());
+    Pin::new(&mut server).output().drain().count();
     let deadline = (server
         .conn(inbound)
         .and_then(|conn| conn.view().next_timer()))
@@ -384,14 +372,12 @@ fn reuses_rotated_slot() {
         Count::receive(&mut server, local, &mut stale, fill_at).is_ok(),
         "packet on the retired route must reach router input"
     );
-    Pin::new(&mut server).observe(fill_at, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "fixture server connections must admit retired-route output"
-        );
-    });
+    assert!(
+        Pin::new(&mut server).output().drive_at(fill_at).is_ok(),
+        "fixture server connections must admit retired-route output"
+    );
     assert_eq!(server.handler().datagrams, 1, "the retired route is gone");
-    Pin::new(&mut server).observe(fill_at, |mut turn| turn.output().drain().count());
+    Pin::new(&mut server).output().drain().count();
 
     let mut cycle_at = fill_at;
     for _ in 0..4 {
@@ -470,7 +456,7 @@ fn reuses_rotated_slot() {
 
     let final_at = cycle_at + Duration::from_millis(100);
     assert!(
-        Count::send(&mut client, outbound, vec![0x30], final_at).is_ok(),
+        dispatch::Capture::send(&mut client, outbound, vec![0x30], final_at).is_ok(),
         "live client connection must accept the final datagram"
     );
     let deadline = (Pin::new(&mut client).observe(final_at, |turn| turn.deadline()))

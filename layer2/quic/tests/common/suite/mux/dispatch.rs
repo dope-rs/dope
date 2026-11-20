@@ -182,7 +182,6 @@ impl Capture {
     ) -> Result<(), errors::Receive>
     where
         H: handler::Handler<0, Vec<u8>, storage::Shared> + Unpin + cert::Sink<0, id::Static>,
-        H::Events: set::Dispatch<H, 0, Vec<u8>, storage::Shared, id::Static, Release = set::Off>,
     {
         Pin::new(mux).observe(now, |mut turn| {
             turn.protocol().recv(from, packet, epoch::WALL_CLOCK)
@@ -202,37 +201,47 @@ impl Capture {
         mux: &mut router::Router<H>,
         now: Instant,
     ) -> Result<usize, errors::Transmit> {
-        Pin::new(mux).observe(now, |mut turn| turn.output().drive())
+        Pin::new(mux).output().drive_at(now)
     }
-    pub fn output<H: handler::Handler<0, Vec<u8>, storage::Shared> + Unpin>(
-        mux: &mut router::Router<H>,
+    pub fn output<A, H, B>(
+        mux: &mut router::Router<H, 0, B, A>,
         now: Instant,
-    ) -> Result<Vec<Flight>, errors::Transmit> {
-        Self::drive(mux, now)?;
-        Ok(Pin::new(mux).observe(now, |mut turn| turn.output().drain().collect()))
+    ) -> Result<Vec<Flight>, errors::Transmit>
+    where
+        A: mux::auth::Mode<0, Identity = id::Static>,
+        H: handler::Handler<0, B, A::Send, id::Static> + Unpin,
+        B: dope_quic::stream::Recv,
+    {
+        Ok(Pin::new(mux).output().try_drain(now)?.collect())
     }
-    pub fn relay<S: handler::Handler<0, Vec<u8>, storage::Shared> + Unpin, D>(
-        source: &mut router::Router<S>,
-        dst: &mut router::Router<D>,
+    pub fn relay<S, D>(
+        source: Pin<&mut router::Router<S>>,
+        mut dst: Pin<&mut router::Router<D>>,
         from: SocketAddr,
         now: Instant,
-    ) -> Result<usize, Error>
+    ) -> Result<bool, Error>
     where
-        D: handler::Handler<0, Vec<u8>, storage::Shared> + Unpin + cert::Sink<0, id::Static>,
-        D::Events: set::Dispatch<D, 0, Vec<u8>, storage::Shared, id::Static, Release = set::Off>,
+        S: handler::Handler<0, Vec<u8>, storage::Shared>,
+        D: handler::Handler<0, Vec<u8>, storage::Shared> + cert::Sink<0, id::Static>,
     {
-        let packets = Self::output(source, now).map_err(Error::Output)?;
-        let count = packets
-            .iter()
-            .map(|packet| packet.packet_count().get())
-            .sum();
-        for mut packet in packets {
-            for segment in packet.segments_mut() {
-                Self::recv(dst, from, segment, now).map_err(Error::Receive)?;
+        let mut flights = source.output().try_drain(now).map_err(Error::Output)?;
+        let mut delivered = false;
+        while let Some(mut flight) = flights.next() {
+            let received = dst.as_mut().observe(now, |mut turn| {
+                for segment in flight.segments_mut() {
+                    turn.protocol().recv(from, segment, epoch::WALL_CLOCK)?;
+                }
+                Ok(())
+            });
+            drop(flight);
+            if let Err(cause) = received {
+                flights.for_each(drop);
+                return Err(Error::Receive(cause));
             }
+            delivered = true;
         }
-        Self::drive(dst, now).map_err(Error::Output)?;
-        Ok(count)
+        dst.output().drive_at(now).map_err(Error::Output)?;
+        Ok(delivered)
     }
 }
 

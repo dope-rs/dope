@@ -149,14 +149,16 @@ pub fn reap(
     now: Instant,
 ) -> Result<(), runtime::Error> {
     Pin::new(&mut *mux)
-        .observe(now, |mut turn| turn.output().drive())
+        .output()
+        .drive_at(now)
         .map_err(runtime::Error::Output)?;
     let deadline = mux
         .conn(handle)
         .and_then(|conn| conn.view().next_timer())
         .ok_or(runtime::Error::Deadline(now))?;
     Pin::new(&mut *mux)
-        .observe(deadline, |mut turn| turn.output().drive())
+        .output()
+        .drive_at(deadline)
         .map_err(runtime::Error::Output)?;
     Ok(())
 }
@@ -167,15 +169,16 @@ pub fn transfer(
     from: SocketAddr,
     now: Instant,
 ) -> Result<(), runtime::Error> {
-    Pin::new(source).observe(now, |mut turn| {
-        turn.output().drive().map_err(runtime::Error::Output)?;
-        for mut outgoing in turn.output().drain() {
-            for segment in outgoing.segments_mut() {
-                receive(dst, from, segment, now)?;
-            }
+    for mut outgoing in Pin::new(source)
+        .output()
+        .try_drain(now)
+        .map_err(runtime::Error::Output)?
+    {
+        for segment in outgoing.segments_mut() {
+            receive(dst, from, segment, now)?;
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 pub fn relay(
@@ -185,16 +188,16 @@ pub fn relay(
     now: Instant,
 ) -> Result<Vec<Vec<u8>>, runtime::Error> {
     let mut wires = Vec::new();
-    Pin::new(source).observe(now, |mut turn| {
-        turn.output().drive().map_err(runtime::Error::Output)?;
-        for mut outgoing in turn.output().drain() {
-            for segment in outgoing.segments_mut() {
-                wires.push(segment.to_vec());
-                receive(dst, from, segment, now)?;
-            }
+    for mut outgoing in Pin::new(source)
+        .output()
+        .try_drain(now)
+        .map_err(runtime::Error::Output)?
+    {
+        for segment in outgoing.segments_mut() {
+            wires.push(segment.to_vec());
+            receive(dst, from, segment, now)?;
         }
-        Ok::<(), runtime::Error>(())
-    })?;
+    }
     Ok(wires)
 }
 
@@ -287,13 +290,14 @@ pub fn forward(
     addr: SocketAddr,
     now: Instant,
 ) -> Result<(), runtime::Error> {
-    Pin::new(&mut *source).observe(now, |mut turn| {
-        turn.output().drive().map_err(runtime::Error::Output)?;
-        for mut outgoing in turn.output().drain() {
-            for packet in outgoing.segments_mut() {
-                Capture::receive(dst, addr, packet, now)?;
-            }
+    for mut outgoing in Pin::new(&mut *source)
+        .output()
+        .try_drain(now)
+        .map_err(runtime::Error::Output)?
+    {
+        for packet in outgoing.segments_mut() {
+            Capture::receive(dst, addr, packet, now)?;
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }

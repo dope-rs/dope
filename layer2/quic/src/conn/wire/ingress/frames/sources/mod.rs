@@ -76,7 +76,7 @@ pub(super) struct Applied<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> {
 
 pub(super) enum Control<'row, 'wire, 'id> {
     Crypto(Crypto<'row, 'wire, 'id>),
-    Frame(record::View<'row, 'id>),
+    Frame(&'row record::Parsed<'id>),
 }
 
 /// An actual row loan coupled to the cursor which prepared it.
@@ -96,13 +96,6 @@ impl<'row, 'wire, 'id> Crypto<'row, 'wire, 'id> {
     ) {
         (self.cursor, self.step, self.body)
     }
-}
-
-pub(in crate::conn::wire::ingress) struct Entry<'a, 'body, 'id, B: stream::Recv, S: Backing<B>> {
-    backing: &'a S,
-    record: &'a record::FrameRecord<'id>,
-    body: frame::Body<'body, 'id>,
-    buffer: marker::PhantomData<fn() -> B>,
 }
 
 pub(in crate::conn::wire::ingress) struct Stream<'a, 'body, B: stream::Recv, S: Backing<B>> {
@@ -192,28 +185,24 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto>
 impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B: stream::Recv, S: Backing<B>>
     Prepared<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B, S>
 {
-    pub(super) fn entries(
+    pub(super) fn try_stream(
         &self,
-    ) -> impl ExactSizeIterator<Item = Entry<'_, 'wire, 'id, B, S>> + Clone {
-        self.input
-            .records
-            .as_slice()
-            .iter()
-            .map(move |record| Entry {
-                backing: &self.backing,
-                record,
-                body: self.input.body,
-                buffer: marker::PhantomData,
-            })
-    }
-
-    pub(super) fn entry(&self, index: record::Index<'slots>) -> Entry<'_, 'wire, 'id, B, S> {
-        Entry {
+        index: record::Index<'slots>,
+    ) -> Result<Option<Stream<'_, 'wire, B, S>>, detail::Backing> {
+        let Some(stream) = self.input.records.get(index).stored_stream() else {
+            return Ok(None);
+        };
+        let payload =
+            Payload::try_new(self.input.body, stream.data.clone(), stream.payload.range())?;
+        Ok(Some(Stream {
             backing: &self.backing,
-            record: self.input.records.get(index),
-            body: self.input.body,
+            payload,
+            key: stream.key,
+            offset: stream.offset,
+            plan: stream.payload.record(),
+            boundary: stream.boundary,
             buffer: marker::PhantomData,
-        }
+        }))
     }
 
     pub(super) fn id(&self, index: record::Index<'slots>) -> Id {
@@ -235,21 +224,31 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B: stream::Recv,
     }
 
     pub(super) fn try_datagram(&self) -> Result<(Option<B>, Vec<B>), detail::Unavailable> {
-        let mut entries = self
-            .entries()
-            .filter(|entry| entry.record.is_datagram());
+        let entries = self
+            .frames()
+            .iter()
+            .filter_map(record::FrameRecord::datagram);
         let Some(count) = NonZero::new(entries.clone().count()) else {
             return Ok((None, Vec::new()));
         };
-        if count.get() == 1 {
-            let Some(entry) = entries.next() else {
-                unreachable!("datagram");
-            };
-            let value = entry.datagram().map_err(detail::Unavailable::Backing)?;
-            return Ok((Some(value), Vec::new()));
+        let mut values = entries.map(|(wire, plan)| {
+            self.backing.datagram(Payload::try_new(
+                self.input.body,
+                wire.clone(),
+                plan.range(),
+            )?)
+        });
+        if count == NonZero::<usize>::MIN {
+            return Ok((
+                values
+                    .next()
+                    .transpose()
+                    .map_err(detail::Unavailable::Backing)?,
+                Vec::new(),
+            ));
         }
-        // SAFETY: this exact immutable filter and its retained rows establish the count.
-        let values = unsafe { raw::try_datagram(count, entries.map(|entry| entry.datagram())) }?;
+        // SAFETY: both passes use the same immutable admitted datagram records.
+        let values = unsafe { raw::try_datagram(count, values) }?;
         Ok((None, values))
     }
 
@@ -291,7 +290,7 @@ impl<'a, 'wire, 'f, 'slots, 'id, 'r, 'recv, 's, 'send, 'crypto, B: stream::Recv,
 }
 
 impl<'id> Applied<'_, '_, '_, 'id, '_, '_, '_, '_> {
-    pub(super) fn operations(&self) -> impl Iterator<Item = record::Operation<'_>> {
+    pub(super) fn operations(&self) -> impl Iterator<Item = record::Operation> {
         self.records
             .as_slice()
             .iter()
@@ -299,50 +298,16 @@ impl<'id> Applied<'_, '_, '_, 'id, '_, '_, '_, '_> {
     }
 }
 
-impl<'a, 'body, 'id, B: stream::Recv, S: Backing<B>> Entry<'a, 'body, 'id, B, S> {
-    pub(in crate::conn::wire::ingress) fn datagram(&self) -> Result<B, detail::Backing> {
-        let frame::View::Datagram { data, .. } = self.record.view() else {
-            return Err(detail::Backing::Body(frame::Projection));
-        };
-        self.backing
-            .datagram(Payload::try_new(self.record, self.body, data.clone())?)
-    }
-
-    pub(super) fn try_stream(self) -> Result<Option<Stream<'a, 'body, B, S>>, detail::Backing> {
-        let record::Operation::Stream {
-            key,
-            offset,
-            data,
-            plan,
-            boundary,
-            ..
-        } = self.record.operation()
-        else {
-            return Ok(None);
-        };
-        let payload = Payload::try_new(self.record, self.body, data.clone())?;
-        Ok(Some(Stream {
-            backing: self.backing,
-            payload,
-            key,
-            offset,
-            plan,
-            boundary,
-            buffer: marker::PhantomData,
-        }))
-    }
-}
-
 impl<'body> Payload<'body> {
-    fn try_new<'id>(
-        record: &record::FrameRecord<'id>,
-        body: frame::Body<'body, 'id>,
+    fn try_new(
+        body: frame::Body<'body, '_>,
         wire: ops::Range<usize>,
+        compact: ops::Range<usize>,
     ) -> Result<Self, detail::Backing> {
         let bytes = body.resolve(wire.clone()).map_err(detail::Backing::Body)?;
         Ok(Self {
             wire,
-            compact: record.range(),
+            compact,
             bytes,
         })
     }

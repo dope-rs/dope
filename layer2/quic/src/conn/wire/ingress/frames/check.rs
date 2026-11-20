@@ -10,8 +10,8 @@ pub(super) fn validate<B: stream::Recv, D: buffer::raw::Segment>(
     next: u64,
     cid: Option<&frames::PacketCid<'_>>,
 ) -> Result<(), conn::Error> {
-    for record in records {
-        match record.view() {
+    for wire in records.iter().filter_map(record::FrameRecord::control) {
+        match wire {
             frame::View::Ack { largest: last, .. } if last.get() >= next => {
                 return Err(conn::Error::ProtocolViolation);
             }
@@ -19,7 +19,7 @@ pub(super) fn validate<B: stream::Recv, D: buffer::raw::Segment>(
                 return Err(conn::Error::ProtocolViolation);
             }
             frame::View::StreamDataBlocked { stream_id: id, .. } => {
-                state.try_peer(id, Access::Receive)?;
+                state.try_peer(*id, Access::Receive)?;
             }
             _ => {}
         }

@@ -12,7 +12,6 @@ mod borrowed;
 pub mod close;
 pub mod decode;
 mod kind;
-mod repr;
 mod view;
 
 pub(crate) use body::Body;
@@ -21,7 +20,6 @@ pub(crate) use body::Body;
 pub struct Projection;
 pub use borrowed::Borrowed;
 pub(crate) use kind::Kind;
-pub(crate) use repr::Repr;
 pub use view::View;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -82,17 +80,17 @@ const _: () = assert!(std::mem::align_of::<Length>() == std::mem::align_of::<boo
 #[repr(transparent)]
 #[derive(PartialEq, Eq)]
 pub struct Frame<Data = Vec<u8>, Ranges = Vec<(varint::VarInt, varint::VarInt)>, C = cid::Id>(
-    Repr<Data, Ranges, C>,
+    View<Data, Ranges, C>,
 );
 
 pub(crate) struct StreamHead;
 
 impl<Data, Ranges, C> Frame<Data, Ranges, C> {
-    pub fn view(&self) -> View<'_, Data, Ranges, C> {
-        self.0.view()
+    pub fn view(&self) -> &View<Data, Ranges, C> {
+        &self.0
     }
 
-    pub(crate) fn into_repr(self) -> Repr<Data, Ranges, C> {
+    pub(crate) fn into_view(self) -> View<Data, Ranges, C> {
         self.0
     }
 
@@ -163,9 +161,9 @@ impl<Data: AsRef<[u8]>, Ranges: ack::Storage, C: AsRef<[u8]>> Frame<Data, Ranges
     /// header and may leave a written prefix on failure.
     pub fn encode<W: Sink>(&self, out: &mut W) -> Result<(), W::Error> {
         match &self.0 {
-            Repr::Padding => out.write_byte(TYPE_PADDING),
-            Repr::Ping => out.write_byte(TYPE_PING),
-            Repr::Ack {
+            View::Padding => out.write_byte(TYPE_PADDING),
+            View::Ping => out.write_byte(TYPE_PING),
+            View::Ack {
                 largest,
                 delay,
                 first_range: first,
@@ -181,27 +179,27 @@ impl<Data: AsRef<[u8]>, Ranges: ack::Storage, C: AsRef<[u8]>> Frame<Data, Ranges
                 ])?;
                 ranges.encode_pairs(out)
             }
-            Repr::Crypto { offset, len, data } => out.write_slices([
+            View::Crypto { offset, len, data } => out.write_slices([
                 &[TYPE_CRYPTO],
                 offset.pack().as_ref(),
                 len.pack().as_ref(),
                 data.as_ref(),
             ]),
-            Repr::NewToken { len, token } => {
+            View::NewToken { len, token } => {
                 out.write_slices([&[TYPE_NEW_TOKEN], len.pack().as_ref(), token.as_ref()])
             }
-            Repr::Datagram { data } => out.write_slices([&[TYPE_DATAGRAM], data.as_ref()]),
-            Repr::DatagramLen { len, data } => {
+            View::Datagram { data } => out.write_slices([&[TYPE_DATAGRAM], data.as_ref()]),
+            View::DatagramLen { len, data } => {
                 out.write_slices([&[TYPE_DATAGRAM_LEN], len.pack().as_ref(), data.as_ref()])
             }
-            Repr::HandshakeDone => out.write_byte(TYPE_HANDSHAKE_DONE),
-            Repr::NewConnectionId { notice, retire } => notice.encode(out, *retire),
-            Repr::RetireConnectionId {
+            View::HandshakeDone => out.write_byte(TYPE_HANDSHAKE_DONE),
+            View::NewConnectionId { notice, retire } => notice.encode(out, *retire),
+            View::RetireConnectionId {
                 sequence_number: sequence,
             } => out.write_slices([&[TYPE_RETIRE_CONNECTION_ID], sequence.pack().as_ref()]),
-            Repr::PathChallenge { data } => out.write_slices([&[TYPE_PATH_CHALLENGE], data]),
-            Repr::PathResponse { data } => out.write_slices([&[TYPE_PATH_RESPONSE], data]),
-            Repr::Stream {
+            View::PathChallenge { data } => out.write_slices([&[TYPE_PATH_CHALLENGE], data]),
+            View::PathResponse { data } => out.write_slices([&[TYPE_PATH_RESPONSE], data]),
+            View::Stream {
                 stream_id: id,
                 offset,
                 boundary,
@@ -209,7 +207,7 @@ impl<Data: AsRef<[u8]>, Ranges: ack::Storage, C: AsRef<[u8]>> Frame<Data, Ranges
                 len,
                 data,
             } => Frame::write_parts(out, *id, *offset, *boundary, *length, *len, data.as_ref()),
-            Repr::ResetStream {
+            View::ResetStream {
                 stream_id: id,
                 error_code: code,
                 final_size: final_,
@@ -219,7 +217,7 @@ impl<Data: AsRef<[u8]>, Ranges: ack::Storage, C: AsRef<[u8]>> Frame<Data, Ranges
                 code.as_varint().pack().as_ref(),
                 final_.pack().as_ref(),
             ]),
-            Repr::StopSending {
+            View::StopSending {
                 stream_id: id,
                 error_code: code,
             } => out.write_slices([
@@ -227,10 +225,10 @@ impl<Data: AsRef<[u8]>, Ranges: ack::Storage, C: AsRef<[u8]>> Frame<Data, Ranges
                 id.varint().pack().as_ref(),
                 code.as_varint().pack().as_ref(),
             ]),
-            Repr::MaxData { maximum_data: max } => {
+            View::MaxData { maximum_data: max } => {
                 out.write_slices([&[TYPE_MAX_DATA], max.pack().as_ref()])
             }
-            Repr::MaxStreamData {
+            View::MaxStreamData {
                 stream_id: id,
                 maximum_stream_data: max,
             } => out.write_slices([
@@ -238,10 +236,10 @@ impl<Data: AsRef<[u8]>, Ranges: ack::Storage, C: AsRef<[u8]>> Frame<Data, Ranges
                 id.varint().pack().as_ref(),
                 max.pack().as_ref(),
             ]),
-            Repr::DataBlocked { maximum_data: max } => {
+            View::DataBlocked { maximum_data: max } => {
                 out.write_slices([&[TYPE_DATA_BLOCKED], max.pack().as_ref()])
             }
-            Repr::StreamDataBlocked {
+            View::StreamDataBlocked {
                 stream_id: id,
                 maximum_stream_data: max,
             } => out.write_slices([
@@ -249,7 +247,7 @@ impl<Data: AsRef<[u8]>, Ranges: ack::Storage, C: AsRef<[u8]>> Frame<Data, Ranges
                 id.varint().pack().as_ref(),
                 max.pack().as_ref(),
             ]),
-            Repr::MaxStreams {
+            View::MaxStreams {
                 direction: dir,
                 max_streams: max,
             } => out.write_slices([
@@ -259,7 +257,7 @@ impl<Data: AsRef<[u8]>, Ranges: ack::Storage, C: AsRef<[u8]>> Frame<Data, Ranges
                 }],
                 max.pack().as_ref(),
             ]),
-            Repr::StreamsBlocked {
+            View::StreamsBlocked {
                 direction: dir,
                 max_streams: max,
             } => out.write_slices([
@@ -269,7 +267,7 @@ impl<Data: AsRef<[u8]>, Ranges: ack::Storage, C: AsRef<[u8]>> Frame<Data, Ranges
                 }],
                 max.pack().as_ref(),
             ]),
-            Repr::ConnectionClose { code, len, reason } => {
+            View::ConnectionClose { code, len, reason } => {
                 let (ty, code, kind) = match code {
                     close::Code::Application(code) => (
                         TYPE_CONNECTION_CLOSE_APP,
@@ -297,7 +295,7 @@ impl Frame {
     fn read<'wire>(input: &mut &'wire [u8]) -> Result<decode::Decoded<Self>, error::Error> {
         decode::Decoder::new(
             |data| Box::<[u8]>::try_copy(data).map_err(alloc::Error::from),
-            |proof: ranges::Validated<'wire>| repr::try_ranges(proof.into_ranges()),
+            |proof: ranges::Validated<'wire>| view::try_ranges(proof.into_ranges()),
             decode::Notice::into_owned,
         )
         .decode::<_, _, _, _, _, error::Error>(input)

@@ -2,7 +2,7 @@ use crate::common::peer;
 use common::suite::peers::tls;
 pub mod common;
 
-use common::recovery::Teardown;
+use common::recovery;
 use common::retry::{
     ENDPOINT, Events, Finish,
     sender::{App, Phase},
@@ -10,7 +10,7 @@ use common::retry::{
     writable::{Callback, Connected, Peer},
 };
 use dope::core::driver::{
-    life::{creation::Attempt, recovery},
+    life::creation::Attempt,
     route::Id,
 };
 use dope::runtime::{
@@ -22,7 +22,7 @@ use dope_quic::conn::life::options::Options;
 use dope_quic::proto::{datagram::Arena, param};
 use dope_quic::runtime::endpoint::{client::Plan, config::Config};
 use dope_test::harness::scenario::TIMEOUT;
-use std::{cell::Cell, convert::Infallible, num::NonZero, rc::Rc, time::Duration};
+use std::{cell::Cell, num::NonZero, rc::Rc, time::Duration};
 
 #[test]
 fn reuses_sender_vacancy() {
@@ -69,81 +69,64 @@ fn reuses_sender_vacancy() {
         .expect("shutdown source");
     let done = Rc::new(Cell::new(Vec::new()));
     let retry = Immediate::default();
-    let mut reports = Vec::new();
-    let free = executor.run(|executor| {
-        let result = executor.enter_with(
-            |mut session| {
-                let arena = session.storage();
-                let (client, next, timeout) = {
-                    let mut driver = session.driver();
-                    let now = driver.driver_ref().clock().now();
-                    let timeout = now.try_add(Duration::from_secs(2)).expect("deadline");
-                    let client = build::Builder::owned(
-                        vec![
-                            EndpointSpec {
-                                addr,
-                                authority: auth.try_clone().expect("authority reference"),
-                            },
-                            EndpointSpec {
-                                addr,
-                                authority: auth,
-                            },
-                        ],
-                        options,
-                        Connected::new(|event: Result<client::SlotId, Callback<'_>>| {
-                            event.expect("only connected events");
-                        }),
-                        retry.clone(),
-                        client::Config {
-                            event_budget: 1,
-                            retry_budget: 1,
-                        },
-                    )
-                    .bind(dial, &mut driver)
-                    .expect("client endpoint");
-                    (client, now.into(), timeout)
-                };
-                let mut finish = session::Completion::new();
-                let error = Rc::new(Cell::new(None));
-                session
-                    .with_app(
-                        &mut finish,
-                        App {
-                            client,
-                            peer,
-                            arena,
-                            phase: Phase::Pending(None),
-                            finish: Finish {
-                                stop: Some(stop),
-                                done: Rc::clone(&done),
-                            },
-                            error: Rc::clone(&error),
-                            timeout,
-                            next,
-                        },
-                        |app| app.run_for(TIMEOUT).map(|_| ()),
-                    )
-                    .expect("session finish")
-                    .expect("application finish");
-                let error = error.take();
-                assert!(error.is_none(), "sender progress failed");
-                arena.available()
-            },
-            recovery::Policy::new(
-                |event| reports.push(event),
-                |failure: recovery::Recovery<'_, '_>| -> Infallible {
-                    panic!("native recovery: {:?}", failure.cause())
+    let (free, reports) = recovery::run(executor, |mut session| {
+        let arena = session.storage();
+        let (client, next, timeout) = {
+            let mut driver = session.driver();
+            let now = driver.driver_ref().clock().now();
+            let timeout = now.try_add(Duration::from_secs(2)).expect("deadline");
+            let client = build::Builder::owned(
+                vec![
+                    EndpointSpec {
+                        addr,
+                        authority: auth.try_clone().expect("authority reference"),
+                    },
+                    EndpointSpec {
+                        addr,
+                        authority: auth,
+                    },
+                ],
+                options,
+                Connected::new(|event: Result<client::SlotId, Callback<'_>>| {
+                    event.expect("only connected events");
+                }),
+                retry.clone(),
+                client::Config {
+                    event_budget: 1,
+                    retry_budget: 1,
                 },
-            ),
-        );
-        assert!(
-            result.is_ok(),
-            "domain: {:?}",
-            result.as_ref().err().map(|cause| cause.cause())
-        );
-        result.ok().expect("domain completion")
+            )
+            .bind(dial, &mut driver)
+            .expect("client endpoint");
+            (client, now.into(), timeout)
+        };
+        let mut finish = session::Completion::new();
+        let error = Rc::new(Cell::new(None));
+        session
+            .with_app(
+                &mut finish,
+                App {
+                    client,
+                    peer,
+                    arena,
+                    phase: Phase::Pending(None),
+                    finish: Finish {
+                        stop: Some(stop),
+                        done: Rc::clone(&done),
+                    },
+                    error: Rc::clone(&error),
+                    timeout,
+                    next,
+                },
+                |app| app.run_for(TIMEOUT).map(|_| ()),
+            )
+            .expect("session finish")
+            .expect("application finish");
+        let error = error.take();
+        assert!(error.is_none(), "sender progress failed");
+        arena.available()
     });
-    Teardown::new([Id::fixed::<1>()])
+    recovery::Teardown::new([Id::fixed::<1>()])
         .verify(reports)
         .expect("endpoint retirement");
     assert!(

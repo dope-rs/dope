@@ -1,4 +1,5 @@
 pub mod common;
+use common::suite::mux::dispatch;
 
 use common::{
     peer,
@@ -59,7 +60,7 @@ fn reset_closes_match() -> Result<(), Error> {
             now,
         )?;
         let other = if collide {
-            let other = Capture::connect(
+            let other = dispatch::Capture::connect(
                 &mut client,
                 SERVER,
                 key,
@@ -70,7 +71,7 @@ fn reset_closes_match() -> Result<(), Error> {
             Capture::relay_once(&mut client, &mut server, CLIENT, now)?;
             Capture::relay_once(&mut server, &mut client, SERVER, now)?;
             Capture::relay_once(&mut client, &mut server, CLIENT, now)?;
-            Capture::drive(&mut client, now).map_err(Error::Output)?;
+            dispatch::Capture::drive(&mut client, now).map_err(Error::Output)?;
             Some(other)
         } else {
             None
@@ -131,9 +132,9 @@ fn reset_closes_match() -> Result<(), Error> {
             let at = conn
                 .view()
                 .send_at(now + std::time::Duration::from_millis(1));
-            assert!(Capture::send(&mut client, other, vec![7], at).is_ok());
+            assert!(dispatch::Capture::send(&mut client, other, vec![7], at).is_ok());
             Capture::relay_once(&mut client, &mut server, CLIENT, at)?;
-            Capture::drive(&mut server, at).map_err(Error::Output)?;
+            dispatch::Capture::drive(&mut server, at).map_err(Error::Output)?;
             assert!(
                 server
                     .handler()
@@ -147,20 +148,20 @@ fn reset_closes_match() -> Result<(), Error> {
             continue;
         }
 
-        Capture::drive(&mut client, now).map_err(Error::Output)?;
+        dispatch::Capture::drive(&mut client, now).map_err(Error::Output)?;
         assert!(client.conn(handle).is_some());
         assert!(cli_log.borrow().closed == vec![handle]);
         let deadline = Pin::new(&mut client)
             .observe(now, |turn| turn.deadline())
             .expect("reset drain deadline");
         assert!(
-            Capture::output(&mut client, now)
+            dispatch::Capture::output(&mut client, now)
                 .map_err(Error::Output)?
                 .is_empty()
         );
         Capture::receive(&mut client, SERVER, &mut reset, now).expect("duplicate reset");
         assert!(
-            Capture::output(&mut client, now)
+            dispatch::Capture::output(&mut client, now)
                 .map_err(Error::Output)?
                 .is_empty()
         );
@@ -168,16 +169,16 @@ fn reset_closes_match() -> Result<(), Error> {
             Pin::new(&mut client).observe(now, |turn| turn.deadline()),
             Some(deadline)
         );
-        Capture::drive(&mut client, deadline).map_err(Error::Output)?;
+        dispatch::Capture::drive(&mut client, deadline).map_err(Error::Output)?;
         assert!(client.conn(handle).is_none());
 
         let remote = server.sole().expect("single server connection");
         Capture::close(&mut server, remote, now).expect("close the first server connection");
-        Capture::drive(&mut server, now).map_err(Error::Output)?;
+        dispatch::Capture::drive(&mut server, now).map_err(Error::Output)?;
         let retired = Pin::new(&mut server)
             .observe(now, |turn| turn.deadline())
             .expect("server close deadline");
-        Capture::drive(&mut server, retired).map_err(Error::Output)?;
+        dispatch::Capture::drive(&mut server, retired).map_err(Error::Output)?;
         let retained = Capture::handshake(&mut server, &mut client, key, tp, SERVER, CLIENT, now)?;
         let conn = client.conn(retained).expect("reconnected client");
         assert!(conn.view().lifecycle().is_ready());
@@ -202,10 +203,7 @@ fn reset_closes_match() -> Result<(), Error> {
 
 #[test]
 fn server_recognizes_initial_and_version_reset_forms() {
-    use common::suite::{
-        mux::{dispatch, paths},
-        peers::packet::bytes,
-    };
+    use common::suite::{mux::paths, peers::packet::bytes};
     use dope_quic::wire::frame;
 
     for form in 0..4 {

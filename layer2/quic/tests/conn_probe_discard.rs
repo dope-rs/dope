@@ -1,4 +1,5 @@
 pub mod common;
+use common::suite::mux::dispatch;
 
 use common::runtime::{
     Error,
@@ -30,7 +31,7 @@ fn discard_stops_probe() -> Result<(), Error> {
         .build()
         .expect("client router");
     let now = Instant::now();
-    let handle = Capture::connect(
+    let handle = dispatch::Capture::connect(
         &mut client,
         SERVER,
         key,
@@ -56,7 +57,7 @@ fn discard_stops_probe() -> Result<(), Error> {
             .and_then(|handle| server.conn(handle))
             .is_some_and(|conn| conn.view().lifecycle().is_ready())
     );
-    let confirm = Capture::output(&mut server, now).map_err(Error::Output)?;
+    let confirm = dispatch::Capture::output(&mut server, now).map_err(Error::Output)?;
     assert!(!confirm.is_empty());
 
     let conn = client.conn(handle).expect("retained client");
@@ -66,7 +67,7 @@ fn discard_stops_probe() -> Result<(), Error> {
     let pending = conn.view().recovery().unacked(Epoch::Handshake);
     assert!(pending > 0);
     let probe_at = conn.view().next_timer().expect("handshake PTO") + Duration::from_nanos(1);
-    let probe = Capture::output(&mut client, probe_at).map_err(Error::Output)?;
+    let probe = dispatch::Capture::output(&mut client, probe_at).map_err(Error::Output)?;
     assert_eq!(
         probe
             .iter()
@@ -95,7 +96,7 @@ fn discard_stops_probe() -> Result<(), Error> {
     assert!(conn.view().lifecycle().is_ready());
     assert_eq!(conn.view().recovery().unacked(Epoch::Handshake), 0);
     for _ in 0..4 {
-        let flights = Capture::output(&mut client, probe_at).map_err(Error::Output)?;
+        let flights = dispatch::Capture::output(&mut client, probe_at).map_err(Error::Output)?;
         if flights.is_empty() {
             break;
         }
@@ -110,7 +111,7 @@ fn discard_stops_probe() -> Result<(), Error> {
         "discarded handshake probes must not retain immediate mux work"
     );
     assert_eq!(
-        Capture::drive(&mut client, probe_at).map_err(Error::Output)?,
+        dispatch::Capture::drive(&mut client, probe_at).map_err(Error::Output)?,
         0
     );
     assert!(cli_log.borrow().closed.is_empty());

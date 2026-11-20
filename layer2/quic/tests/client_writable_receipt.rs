@@ -9,7 +9,6 @@ use common::retry::{
     traces::Immediate,
     writable::{App, Connected, Observed, Peer, Stage},
 };
-use dope::core::driver::life::recovery::{Policy, Recovery};
 use dope::core::driver::{life::creation::Attempt, route::Id};
 use dope::runtime::{
     executor::{Executor, session},
@@ -22,7 +21,6 @@ use dope_quic::runtime::endpoint::client::Plan;
 use dope_quic::runtime::mux::handler::hook::writable::Receipt;
 use dope_test::harness::scenario::TIMEOUT;
 use std::cell::{Cell, RefCell};
-use std::convert::Infallible;
 use std::{rc::Rc, time::Duration};
 
 #[test]
@@ -62,84 +60,67 @@ fn retains_stage_receipt() {
         .expect("shutdown source");
     let done = Rc::new(Cell::new(Vec::new()));
     let retry = Immediate::default();
-    let mut reports = Vec::new();
-    let free = executor.run(|executor| {
-        let result = executor.enter_with(
-            |mut session| {
-                let arena = session.storage();
-                let observed = Rc::new(RefCell::new(Observed::default()));
-                let (client, next, timeout) = {
-                    let mut driver = session.driver();
-                    let now = driver.driver_ref().clock().now();
-                    let timeout = now.try_add(Duration::from_secs(2)).expect("deadline");
-                    let client = build::Builder::owned(
-                        vec![EndpointSpec {
-                            addr: address,
-                            authority: tls::client(pubkey).expect("client TLS authority"),
-                        }],
-                        options,
-                        Connected::new(|event: Result<SlotId, Callback<'_>>| {
-                            event.expect("only connected events");
-                        }),
-                        retry.clone(),
-                        client::Config {
-                            event_budget: 1,
-                            retry_budget: 1,
-                        },
-                    )
-                    .bind(dial, &mut driver)
-                    .expect("client endpoint");
-                    (client, now.into(), timeout)
-                };
-                let mut finish = session::Completion::new();
-                session
-                    .with_quiesce(
-                        &mut finish,
-                        App {
-                            client,
-                            peer,
-                            arena,
-                            stage: Stage::Connect,
-                            finish: Finish {
-                                stop: Some(stop),
-                                done: Rc::clone(&done),
-                            },
-                            observed: Rc::clone(&observed),
-                            timeout,
-                            next,
-                        },
-                        TIMEOUT,
-                        |app| app.run_for(TIMEOUT).map(|_| ()),
-                    )
-                    .expect("session finish")
-                    .expect("application finish");
-                let observed = observed.borrow();
-                assert!(observed.error.is_none(), "writable progress failed");
-                assert!(
-                    observed
-                        .owners
-                        .iter()
-                        .all(|(returned, original)| returned == original)
-                );
-                assert!(observed.payloads.iter().all(|payload| payload == &[2; 32]));
-                assert_eq!(observed.available, [0]);
-                assert_eq!(observed.ready, [Receipt::Ready]);
-                assert_eq!(observed.idle, [Receipt::Idle; 3]);
-                arena.available()
-            },
-            Policy::new(
-                |event| reports.push(event),
-                |failure: Recovery<'_, '_>| -> Infallible {
-                    panic!("native recovery: {:?}", failure.cause())
+    let (free, reports) = recovery::run(executor, |mut session| {
+        let arena = session.storage();
+        let observed = Rc::new(RefCell::new(Observed::default()));
+        let (client, next, timeout) = {
+            let mut driver = session.driver();
+            let now = driver.driver_ref().clock().now();
+            let timeout = now.try_add(Duration::from_secs(2)).expect("deadline");
+            let client = build::Builder::owned(
+                vec![EndpointSpec {
+                    addr: address,
+                    authority: tls::client(pubkey).expect("client TLS authority"),
+                }],
+                options,
+                Connected::new(|event: Result<SlotId, Callback<'_>>| {
+                    event.expect("only connected events");
+                }),
+                retry.clone(),
+                client::Config {
+                    event_budget: 1,
+                    retry_budget: 1,
                 },
-            ),
-        );
+            )
+            .bind(dial, &mut driver)
+            .expect("client endpoint");
+            (client, now.into(), timeout)
+        };
+        let mut finish = session::Completion::new();
+        session
+            .with_quiesce(
+                &mut finish,
+                App {
+                    client,
+                    peer,
+                    arena,
+                    stage: Stage::Connect,
+                    finish: Finish {
+                        stop: Some(stop),
+                        done: Rc::clone(&done),
+                    },
+                    observed: Rc::clone(&observed),
+                    timeout,
+                    next,
+                },
+                TIMEOUT,
+                |app| app.run_for(TIMEOUT).map(|_| ()),
+            )
+            .expect("session finish")
+            .expect("application finish");
+        let observed = observed.borrow();
+        assert!(observed.error.is_none(), "writable progress failed");
         assert!(
-            result.is_ok(),
-            "domain: {:?}",
-            result.as_ref().err().map(|cause| cause.cause())
+            observed
+                .owners
+                .iter()
+                .all(|(returned, original)| returned == original)
         );
-        result.ok().expect("domain completion")
+        assert!(observed.payloads.iter().all(|payload| payload == &[2; 32]));
+        assert_eq!(observed.available, [0]);
+        assert_eq!(observed.ready, [Receipt::Ready]);
+        assert_eq!(observed.idle, [Receipt::Idle; 3]);
+        arena.available()
     });
     assert!(retry.0.get().is_none());
     let peers = peers.borrow();

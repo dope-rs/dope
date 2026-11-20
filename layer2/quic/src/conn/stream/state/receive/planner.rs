@@ -104,9 +104,7 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Planner<'_, B, D> {
             segments: segs,
             parts,
         } = ctx;
-        let will = frames
-            .records()
-            .any(|rec| matches!(rec.view(), frame::View::ResetStream { .. }));
+        let will = frames.has_reset();
         let stream = streams::Relative::new(id, self.local());
         if stream.is_local() {
             self.validate(id, Access::Receive)
@@ -272,10 +270,7 @@ impl<B: stream::Recv, D: buffer::raw::Segment> Planner<'_, B, D> {
             output: out,
             permit,
         } = ctx;
-        if !frames
-            .records()
-            .any(|rec| matches!(rec.operation(), record::Operation::Stream { .. }))
-        {
+        if !frames.has_stored_stream() {
             return Ok(());
         }
         let recv = &self.receive;

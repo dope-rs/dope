@@ -9,6 +9,7 @@ use common::runtime::{
     Error,
     reap::{CID, CLIENT, Capture, Pair, SERVER},
 };
+use common::suite::mux::dispatch;
 use dope_quic::{
     errors::{self, SendFailure},
     runtime::mux::manage,
@@ -34,8 +35,8 @@ fn idle_timeout_closes() -> Result<(), Error> {
     assert!(cli_log.borrow().established == vec![handle]);
 
     let t_past = t0 + Duration::from_millis(150);
-    Capture::drive(&mut server, t_past).map_err(Error::Output)?;
-    Capture::drive(&mut client, t_past).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut server, t_past).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut client, t_past).map_err(Error::Output)?;
 
     assert_eq!(
         srv_log.borrow().closed.len(),
@@ -71,9 +72,10 @@ fn reap_is_idempotent() -> Result<(), Error> {
     );
 
     let t_past = t0 + Duration::from_millis(200);
-    Capture::drive(&mut server, t_past).map_err(Error::Output)?;
-    Capture::drive(&mut server, t_past).map_err(Error::Output)?;
-    Capture::drive(&mut server, t_past + Duration::from_millis(100)).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut server, t_past).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut server, t_past).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut server, t_past + Duration::from_millis(100))
+        .map_err(Error::Output)?;
 
     assert_eq!(
         srv_log.borrow().closed.len(),
@@ -100,13 +102,13 @@ fn active_is_not_reaped() -> Result<(), Error> {
     let handle = Capture::handshake(&mut server, &mut client, key, tp, SERVER, CLIENT, t0)?;
 
     let t1 = t0 + Duration::from_millis(80);
-    Capture::send(&mut client, handle, b"keepalive".to_vec(), t1)
+    dispatch::Capture::send(&mut client, handle, b"keepalive".to_vec(), t1)
         .expect("established test connection must accept a keepalive DATAGRAM");
     Capture::relay_once(&mut client, &mut server, CLIENT, t1)?;
 
     let t2 = t1 + Duration::from_millis(50);
-    Capture::drive(&mut server, t2).map_err(Error::Output)?;
-    Capture::drive(&mut client, t2).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut server, t2).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut client, t2).map_err(Error::Output)?;
 
     assert!(
         srv_log.borrow().closed.is_empty(),
@@ -132,10 +134,10 @@ fn explicit_close_is_once() -> Result<(), Error> {
     let handle = Capture::handshake(&mut server, &mut client, key, tp, SERVER, CLIENT, t0)?;
 
     assert_eq!(Capture::close(&mut client, handle, t0), Ok(()));
-    Capture::drive(&mut client, t0).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut client, t0).map_err(Error::Output)?;
     assert_eq!(cli_log.borrow().closed.len(), 1);
 
-    Capture::drive(&mut client, t0).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut client, t0).map_err(Error::Output)?;
     assert_eq!(
         cli_log.borrow().closed.len(),
         1,
@@ -171,7 +173,7 @@ fn close_releases_owners() -> Result<(), Error> {
     })
     .expect("connection");
     Capture::close(&mut client, handle, now).expect("close application");
-    Capture::drive(&mut client, now).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut client, now).map_err(Error::Output)?;
     assert!(client.conn(handle).is_some());
     let deadline = Pin::new(&mut client)
         .observe(now, |turn| turn.deadline())
@@ -188,7 +190,7 @@ fn close_releases_owners() -> Result<(), Error> {
     assert!(!client.handler().events.borrow().release_after_close);
     assert!(!server.handler().events.borrow().release_after_close);
     drop(events);
-    Capture::drive(&mut client, deadline).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut client, deadline).map_err(Error::Output)?;
     assert!(client.conn(handle).is_none());
     assert_eq!(cli_log.borrow().released.len(), 1);
     assert!(cli_log.borrow().closed == [handle]);
@@ -201,7 +203,7 @@ fn pto_retransmits() -> Result<(), Error> {
         .build()
         .expect("default test client router plan must be valid");
     let t0 = Instant::now();
-    Capture::connect(
+    dispatch::Capture::connect(
         &mut client,
         SERVER,
         [7; 32],
@@ -211,7 +213,7 @@ fn pto_retransmits() -> Result<(), Error> {
     )
     .expect("test peer, key, options, and CID must start a connection");
     assert_eq!(
-        Capture::output(&mut client, Instant::now())
+        dispatch::Capture::output(&mut client, Instant::now())
             .map_err(Error::Output)?
             .len(),
         1
@@ -220,7 +222,8 @@ fn pto_retransmits() -> Result<(), Error> {
         .observe(t0, |turn| turn.deadline())
         .expect("PTO deadline");
     assert!(deadline > t0);
-    Capture::drive(&mut client, deadline + Duration::from_millis(1)).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut client, deadline + Duration::from_millis(1))
+        .map_err(Error::Output)?;
     assert!(!Pin::new(&mut client).output().is_empty());
     assert!(!client.handler().events.borrow().release_after_close);
     Ok(())
@@ -247,7 +250,7 @@ fn peer_close_reaps() -> Result<(), Error> {
     })
     .expect("established client handle must resolve in its owning router");
 
-    Capture::drive(&mut client, t0).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut client, t0).map_err(Error::Output)?;
     assert_eq!(
         cli_log.borrow().closed.len(),
         1,
@@ -256,7 +259,7 @@ fn peer_close_reaps() -> Result<(), Error> {
 
     Capture::relay_once(&mut client, &mut server, CLIENT, t0)?;
 
-    Capture::drive(&mut server, t0).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut server, t0).map_err(Error::Output)?;
     assert_eq!(
         srv_log.borrow().closed.len(),
         1,
@@ -267,9 +270,10 @@ fn peer_close_reaps() -> Result<(), Error> {
         let deadline = Pin::new(&mut *router)
             .observe(t0, |turn| turn.deadline())
             .expect("terminal deadline");
-        Capture::drive(router, deadline - Duration::from_nanos(1)).map_err(Error::Output)?;
+        dispatch::Capture::drive(router, deadline - Duration::from_nanos(1))
+            .map_err(Error::Output)?;
         assert_eq!(router.active_conns(), 1);
-        Capture::drive(router, deadline).map_err(Error::Output)?;
+        dispatch::Capture::drive(router, deadline).map_err(Error::Output)?;
         assert_eq!(router.active_conns(), 0);
     }
     assert_eq!(cli_log.borrow().closed.len(), 1);
@@ -302,11 +306,11 @@ fn stale_handle_rejected() -> Result<(), Error> {
     )?;
 
     let t_past = t0 + Duration::from_millis(200);
-    Capture::drive(&mut client, t_past).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut client, t_past).map_err(Error::Output)?;
 
     let mut alt_cid = CID;
     alt_cid[0] = 0x99;
-    let h1 = Capture::connect(
+    let h1 = dispatch::Capture::connect(
         &mut client,
         SERVER,
         key,
@@ -318,7 +322,7 @@ fn stale_handle_rejected() -> Result<(), Error> {
     assert!(h0 != h1);
     assert!(client.conn(h0).is_none());
     assert_eq!(
-        Capture::send(&mut client, h0, b"stale".to_vec(), t_past),
+        dispatch::Capture::send(&mut client, h0, b"stale".to_vec(), t_past),
         Err(SendFailure::Closed(b"stale".to_vec()))
     );
     assert_eq!(
@@ -338,7 +342,7 @@ fn scope_commits() -> Result<(), Error> {
         .build()
         .expect("default test client router plan must be valid");
     let now = Instant::now();
-    let handle = Capture::connect(
+    let handle = dispatch::Capture::connect(
         &mut client,
         SERVER,
         [7; 32],
@@ -356,7 +360,7 @@ fn scope_commits() -> Result<(), Error> {
     .expect("new test handle must resolve in its owning router");
 
     assert!(client.conn(handle).is_some());
-    Capture::drive(&mut client, now).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut client, now).map_err(Error::Output)?;
     assert!(
         !Pin::new(&mut client).output().is_empty(),
         "normal return must cross the lexical commit boundary"
@@ -371,7 +375,7 @@ fn scope_commits() -> Result<(), Error> {
     let deadline = Pin::new(&mut client)
         .observe(now, |turn| turn.deadline())
         .expect("terminal deadline");
-    Capture::drive(&mut client, deadline).map_err(Error::Output)?;
+    dispatch::Capture::drive(&mut client, deadline).map_err(Error::Output)?;
     assert!(client.conn(handle).is_none());
     assert_eq!(client.active_conns(), 0);
     assert!(!client.handler().events.borrow().release_after_close);
@@ -419,11 +423,11 @@ fn shutdown_retires() -> Result<(), Error> {
     assert_eq!(cli_log.borrow().closed.len(), 1);
     assert!(client.conn(handle).is_none());
     assert_eq!(
-        Capture::send(&mut client, handle, b"late".to_vec(), now),
+        dispatch::Capture::send(&mut client, handle, b"late".to_vec(), now),
         Err(SendFailure::Closed(b"late".to_vec()))
     );
     assert!(matches!(
-        Capture::connect(
+        dispatch::Capture::connect(
             &mut client,
             SERVER,
             key,
@@ -434,7 +438,7 @@ fn shutdown_retires() -> Result<(), Error> {
         Err(Error::Connect(errors::Connect::Closed))
     ));
     assert!(
-        Capture::output(&mut client, Instant::now())
+        dispatch::Capture::output(&mut client, Instant::now())
             .map_err(Error::Output)?
             .is_empty()
     );

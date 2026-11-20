@@ -1,4 +1,4 @@
-use dope_quic::{errors, runtime::mux::builder};
+use dope_quic::runtime::mux::builder;
 use dope_test::alloc::Tracker;
 use std::{pin::Pin, time::Duration};
 
@@ -14,12 +14,8 @@ fn small_burst_stays_plain() {
         Seen::enqueue(&mut client, handle, 1, 1_150, now).expect("output enqueue");
     }
 
-    let burst = Pin::new(&mut client)
-        .observe(now, |mut turn| {
-            turn.output().drive()?;
-            Ok::<Vec<_>, errors::Transmit>(turn.output().drain().collect())
-        })
-        .expect("fixture connections must admit the small burst");
+    let burst =
+        Capture::output(&mut client, now).expect("fixture connections must admit the small burst");
     assert_eq!(burst.len(), CONNECTIONS);
     assert_eq!(Seen::packet_count(&burst), CONNECTIONS);
     assert!(burst.iter().all(|outgoing| !outgoing.is_segmented()));
@@ -34,11 +30,7 @@ fn wire_shapes_stay_plain() {
         Seen::enqueue(&mut client, handle, 1, 1_100 + ordinal, now).expect("output enqueue");
     }
 
-    let burst = Pin::new(&mut client)
-        .observe(now, |mut turn| {
-            turn.output().drive()?;
-            Ok::<Vec<_>, errors::Transmit>(turn.output().drain().collect())
-        })
+    let burst = Capture::output(&mut client, now)
         .expect("fixture connections must admit the varied wire shapes");
     assert_eq!(burst.len(), CONNECTIONS);
     assert_eq!(Seen::packet_count(&burst), CONNECTIONS);
@@ -108,12 +100,15 @@ fn single_slot_gso_reuses_native_owner() {
     Seen::enqueue(&mut client, handle, 4, 1_150, now).expect("GSO-ready payloads");
     let span = Tracker::begin();
     Pin::new(&mut client)
-        .observe(now, |mut turn| turn.output().drive())
+        .output()
+        .drive_at(now)
         .expect("single slot output");
     assert_eq!(span.finish().allocations, 0);
     assert_eq!(Pin::new(&mut client).output().len(), capacity);
     let packet = Pin::new(&mut client)
-        .observe(now, |mut turn| turn.output().drain().last())
+        .output()
+        .drain()
+        .last()
         .expect("single slot packet");
     assert_eq!(packet.packet_count().get(), 1);
     assert_eq!(packet.payload().as_ptr(), owner);
@@ -128,18 +123,17 @@ fn native_batch_returns_credit_and_storage() {
     let (mut client, handles, mut now) = Seen::try_many(false, 1).expect("native peer");
     let handle = handles[0];
     Seen::enqueue(&mut client, handle, PACKETS, 64, now).expect("warm packets");
-    Pin::new(&mut client).observe(now, |mut turn| {
-        turn.output().drive().expect("warm native output");
-        for flight in turn.output().drain() {
+    {
+        let mut output = Pin::new(&mut client).output();
+        output.drive_at(now).expect("warm native output");
+        for flight in output.drain() {
             drop(flight);
         }
-    });
+    };
     now += Duration::from_millis(1);
     Seen::enqueue(&mut client, handle, PACKETS, 64, now).expect("pending packets");
-    let failure = Tracker::fail_after(1, || {
-        Pin::new(&mut client).observe(now, |mut turn| turn.output().drive())
-    })
-    .expect_err("the second packet allocation fails");
+    let failure = Tracker::fail_after(1, || Pin::new(&mut client).output().try_drain(now).err())
+        .expect("the second packet allocation fails");
     assert!(matches!(
         failure.into_parts().1,
         Error::Admission(Admission::Payload {
@@ -149,10 +143,11 @@ fn native_batch_returns_credit_and_storage() {
     ));
     assert_eq!(Pin::new(&mut client).output().len(), 1);
     assert!(Pin::new(&mut client).output().bytes() != 0);
-    let warm: Vec<_> = Pin::new(&mut client).observe(now, |mut turn| {
-        turn.output().drive().expect("retry owns every packet");
-        turn.output().drain().collect()
-    });
+    let warm: Vec<_> = Pin::new(&mut client)
+        .output()
+        .try_drain(now)
+        .expect("retry owns every packet")
+        .collect();
     assert_eq!(warm.len(), PACKETS);
     let owners: Vec<_> = warm
         .iter()
@@ -165,11 +160,11 @@ fn native_batch_returns_credit_and_storage() {
     Seen::enqueue(&mut client, handle, PACKETS, 64, now).expect("reuse packets");
     let span = Tracker::begin();
     Pin::new(&mut client)
-        .observe(now, |mut turn| turn.output().drive())
+        .output()
+        .drive_at(now)
         .expect("reused native output");
     assert_eq!(span.finish().allocations, 0);
-    let measured: Vec<_> =
-        Pin::new(&mut client).observe(now, |mut turn| turn.output().drain().collect());
+    let measured: Vec<_> = Pin::new(&mut client).output().drain().collect();
     assert_eq!(measured.len(), PACKETS);
     for (flight, owner) in measured.into_iter().zip(owners.into_iter().rev()) {
         assert_eq!(flight.addr(), SERVER);

@@ -109,7 +109,7 @@ fn rejects_key_dimensions() {
             for frame in frame::Frame::decode_all(opened.body()).expect("terminal close frames") {
                 if let frame::View::ConnectionClose { code, .. } = frame.view() {
                     assert!(matches!(code, close::Code::Transport { error_code, .. }
-                        if error_code == VarInt::from_u8(0x1)));
+                        if *error_code == VarInt::from_u8(0x1)));
                     closed = true;
                 }
             }

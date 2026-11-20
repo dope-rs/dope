@@ -4,6 +4,7 @@ use dope_quic::conn::stream;
 use dope_quic::runtime::mux::builder::{Builder, Plan};
 pub mod common;
 use common::runtime::gso::{self, Capture};
+use common::suite::mux::dispatch;
 use dope_quic::{conn::stream::Event, proto::param, runtime::mux::output};
 use std::{
     pin::Pin,
@@ -42,7 +43,7 @@ fn retry_requires_train() {
         );
 
         let mut now = Instant::now();
-        let handle = Capture::connect(
+        let handle = dispatch::Capture::connect(
             &mut client,
             gso::SERVER,
             key,
@@ -176,7 +177,7 @@ fn destinations_split() {
         } else {
             (gso::SERVER_B, key_b)
         };
-        let handle = Capture::connect(
+        let handle = dispatch::Capture::connect(
             &mut client,
             addr,
             key,
@@ -269,7 +270,7 @@ fn burst_reassembles() {
         .expect("default fixture client router is valid");
 
     let mut now = Instant::now();
-    let dialed = Capture::connect(
+    let dialed = dispatch::Capture::connect(
         &mut client,
         gso::SERVER,
         key,
@@ -297,12 +298,10 @@ fn burst_reassembles() {
     )
     .expect("fixture packet delivery");
     for (mux, peer) in [(&mut server, "server"), (&mut client, "client")] {
-        Pin::new(mux).observe(now, |mut turn| {
-            assert!(
-                turn.output().drive().is_ok(),
-                "fixture {peer} connections must admit settled stream output"
-            )
-        });
+        assert!(
+            Pin::new(mux).output().drive_at(now).is_ok(),
+            "fixture {peer} connections must admit settled stream output"
+        );
     }
 
     let ready = remote.established.take();

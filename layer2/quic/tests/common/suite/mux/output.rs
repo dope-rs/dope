@@ -85,10 +85,11 @@ impl Seen {
         now: Instant,
     ) -> Result<(), Error> {
         loop {
-            let item = Pin::new(&mut *src).observe(now, |mut turn| {
-                turn.output().drive().map_err(Error::Output)?;
-                Ok::<_, Error>(turn.output().drain().next())
-            })?;
+            let item = Pin::new(&mut *src)
+                .output()
+                .try_drain(now)
+                .map_err(Error::Output)?
+                .next();
             let Some(mut item) = item else {
                 return Ok(());
             };
@@ -235,10 +236,7 @@ impl Seen {
         client: &mut Router<Seen>,
         now: Instant,
     ) -> Result<Option<Flight>, errors::Transmit> {
-        Pin::new(client).observe(now, |mut turn| {
-            turn.output().drive()?;
-            Ok(turn.output().drain().next())
-        })
+        Ok(Pin::new(client).output().try_drain(now)?.next())
     }
 
     pub fn rotate_cid(

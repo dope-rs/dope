@@ -88,15 +88,4 @@ impl<F: for<'a> FnMut(&'a rustls::Error) + Unpin> Capture<F> {
         }
         Ok(())
     }
-
-    pub fn output(
-        router: &mut Router<Self, 0, RecvBuffer<'_>>,
-        now: Instant,
-    ) -> Result<Vec<Flight>, errors::Transmit> {
-        Pin::new(router).observe(now, |mut turn| {
-            let mut output = turn.output();
-            output.drive()?;
-            Ok(output.drain().collect())
-        })
-    }
 }

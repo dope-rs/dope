@@ -2,6 +2,7 @@ use crate::common::peer;
 use common::suite::peers::tls;
 pub mod common;
 use common::suite::cid::{Count, INITIAL};
+use common::suite::mux::dispatch;
 use dope_quic::conn::State;
 use dope_quic::errors::{Access, Code};
 use dope_quic::proto::cid::Rotation;
@@ -178,10 +179,12 @@ fn rotates_before_retiring() {
     assert!(client_deadline > close_at);
     assert!(server_deadline > close_at);
     Pin::new(&mut client)
-        .observe(client_deadline, |mut turn| turn.output().drive())
+        .output()
+        .drive_at(client_deadline)
         .expect("client terminal expiry");
     Pin::new(&mut server)
-        .observe(server_deadline, |mut turn| turn.output().drive())
+        .output()
+        .drive_at(server_deadline)
         .expect("server terminal expiry");
     assert!(server.conn(inbound).is_none());
     assert_eq!(client.active_conns(), 0);
@@ -324,7 +327,7 @@ fn projects_unique_cids() {
 
     let data_at = started + Duration::from_secs(1);
     for (ordinal, handle) in handles.into_iter().enumerate() {
-        Count::send(&mut client, handle, vec![ordinal as u8], data_at)
+        dispatch::Capture::send(&mut client, handle, vec![ordinal as u8], data_at)
             .expect("each established client handle must queue its datagram");
     }
     for turn in 0..8 {

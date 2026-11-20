@@ -172,6 +172,7 @@ fn initial_close_floor() {
         View::ConnectionClose {
             code: close::Code::Transport { error_code, .. },
             reason,
+            ..
         } if error_code.get() == 0x0c && reason.is_empty()
     ));
     assert_eq!(client.view().lifecycle().state(), State::Closing);
@@ -348,8 +349,8 @@ fn closing_repeats_original_cause_until_fixed_expiry() {
                 let frames = frame::Frame::decode_all(&body).expect("close frames");
                 assert_eq!(frames.len(), 1);
                 assert!(matches!(frames[0].view(), View::ConnectionClose {
-                    code: close::Code::Application(code), reason,
-                } if code == Code::from_u8(7) && reason == b"first cause"));
+                    code: close::Code::Application(code), reason, ..
+                } if *code == Code::from_u8(7) && reason == b"first cause"));
             }
             Pin::new(&mut server).output().recycle(flight);
         }

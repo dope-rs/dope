@@ -1,4 +1,5 @@
 use crate::common::peer;
+use crate::common::suite::mux::dispatch;
 use dope_quic::conn::life::options::Options;
 use dope_quic::conn::life::tls::{clients, servers};
 use dope_quic::proto::epoch;
@@ -133,27 +134,12 @@ impl cert::Sink<0, id::Static> for Capture {
 }
 
 impl Capture {
-    pub fn take(
-        mux: &mut router::Router<Capture, 0, Vec<u8>, auth::Pooled<'_>>,
-        now: Instant,
-    ) -> Result<Vec<output::Flight>, errors::Transmit> {
-        Pin::new(mux).observe(now, |mut turn| {
-            turn.output().drive()?;
-            Ok(turn.output().drain().collect())
-        })
-    }
-
     pub fn discard(
         mux: &mut router::Router<Capture, 0, Vec<u8>, auth::Pooled<'_>>,
         now: Instant,
     ) -> Result<(), errors::Transmit> {
-        Pin::new(mux).observe(now, |mut turn| {
-            turn.output().drive()?;
-            for flight in turn.output().drain() {
-                drop(flight);
-            }
-            Ok(())
-        })
+        Pin::new(mux).output().try_drain(now)?.for_each(drop);
+        Ok(())
     }
 
     pub fn deliver(
@@ -184,7 +170,7 @@ impl Capture {
         from: SocketAddr,
         now: Instant,
     ) -> Result<(), Transfer> {
-        let mut packets = Self::take(source, now).map_err(Transfer::Output)?;
+        let mut packets = dispatch::Capture::output(source, now).map_err(Transfer::Output)?;
         Self::deliver(target, from, &mut packets, now)
     }
 

@@ -10,6 +10,7 @@ use dope_quic::runtime::mux::builder;
 use dope_quic::runtime::routing::Plain;
 
 pub mod common;
+use common::suite::mux::dispatch;
 use common::suite::peers::tls::Capture;
 
 #[test]
@@ -150,18 +151,14 @@ fn returns_timeout_leases() {
     let peer_at = (conn.view().next_timer()).expect("timed server connection has a deadline");
     let expired = local_at.max(peer_at) + Duration::from_secs(3);
     assert!(expired < started + Duration::from_secs(30));
-    Pin::new(&mut client).observe(expired, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "expired client closes without admission failure"
-        );
-    });
-    Pin::new(&mut server).observe(expired, |mut turn| {
-        assert!(
-            turn.output().drive().is_ok(),
-            "expired server closes without admission failure"
-        );
-    });
+    assert!(
+        Pin::new(&mut client).output().drive_at(expired).is_ok(),
+        "expired client closes without admission failure"
+    );
+    assert!(
+        Pin::new(&mut server).output().drive_at(expired).is_ok(),
+        "expired server closes without admission failure"
+    );
     assert!(client.conn(handle).is_none());
     assert!(server.conn(peer).is_none());
     assert_eq!(client.active_conns(), 0);
@@ -293,7 +290,7 @@ fn client_opening_starts_at_admission_and_survives_retry() {
         client.conn(handle).expect("opening").view().next_timer(),
         Some(expires)
     );
-    let packets = Capture::take(&mut client, started + Duration::from_secs(20))
+    let packets = dispatch::Capture::output(&mut client, started + Duration::from_secs(20))
         .expect("delayed first output");
     let initial = dope_quic::wire::packet::long::initial::Prefix::decode(packets[0].payload())
         .expect("client Initial");

@@ -114,7 +114,7 @@ fn candidate_preserves_pto() {
                             stream_id: id,
                             data,
                             ..
-                        } => id == stream && !data.is_empty(),
+                        } => *id == stream && !data.is_empty(),
                         _ => false,
                     };
             }

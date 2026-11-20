@@ -1,7 +1,6 @@
 use crate::common::peer;
 use dope_quic::conn::life::accept::Authority;
 use dope_quic::conn::life::options::Options;
-use dope_quic::proto::epoch;
 use dope_quic::runtime::mux::builder::Builder;
 use dope_quic::runtime::mux::handler::hook::data::{datagram, release};
 use dope_quic::runtime::mux::handler::hook::life::close;
@@ -20,11 +19,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::common::runtime::Error;
-use crate::common::suite::peers::tls;
+use crate::common::suite::mux::dispatch;
 use dope_quic::conn::{Epoch, id, scope};
-use dope_quic::errors::{self, SendFailure};
+use dope_quic::errors;
 use dope_quic::proto::param;
-use dope_quic::runtime::mux::{app, handler, output, router};
+use dope_quic::runtime::mux::{app, handler, router};
 use dope_quic::stream::release::Event;
 use id::Handle;
 use o3::buffer::storage;
@@ -230,7 +229,7 @@ impl Credit {
         handle: Handle,
     ) -> Result<usize, CreditError> {
         let before = Self::long(mux, handle)?;
-        for flight in Capture::output(mux, self.now)
+        for flight in dispatch::Capture::output(mux, self.now)
             .map_err(Error::Output)
             .map_err(CreditError::Runtime)?
         {
@@ -264,41 +263,12 @@ impl Capture {
         packet: &mut [u8],
         now: Instant,
     ) -> Result<(), Error> {
-        let result = Pin::new(&mut *mux).observe(now, |mut turn| {
-            turn.protocol().recv(from, packet, epoch::WALL_CLOCK)
-        });
+        let result = dispatch::Capture::recv(mux, from, packet, now);
         let count = mux.handler().events.borrow().certificates;
         if count != 0 {
             return Err(Error::Certificates(count));
         }
         result.map_err(Error::Receive)
-    }
-
-    pub fn connect(
-        mux: &mut router::Router<Capture>,
-        peer: SocketAddr,
-        key: [u8; 32],
-        options: Options,
-        cid: Vec<u8>,
-        now: Instant,
-    ) -> Result<Handle, Error> {
-        let auth = tls::client(key).map_err(Error::Tls)?;
-        Pin::new(mux)
-            .observe(now, |mut turn| {
-                turn.protocol().connect(peer, &auth, options, cid)
-            })
-            .map_err(Error::Connect)
-    }
-
-    pub fn send(
-        mux: &mut router::Router<Capture>,
-        handle: Handle,
-        payload: Vec<u8>,
-        now: Instant,
-    ) -> Result<(), SendFailure<Vec<u8>>> {
-        Pin::new(mux).observe(now, |mut turn| {
-            turn.protocol().try_datagram(handle, payload)
-        })
     }
 
     pub fn with_conn<R>(
@@ -318,28 +288,13 @@ impl Capture {
         Pin::new(mux).observe(now, |mut turn| turn.protocol().try_close(handle))
     }
 
-    pub fn drive(
-        mux: &mut router::Router<Capture>,
-        now: Instant,
-    ) -> Result<usize, errors::Transmit> {
-        Pin::new(mux).observe(now, |mut turn| turn.output().drive())
-    }
-
-    pub fn output(
-        mux: &mut router::Router<Capture>,
-        now: Instant,
-    ) -> Result<Vec<output::Flight>, errors::Transmit> {
-        Self::drive(mux, now)?;
-        Ok(Pin::new(mux).observe(now, |mut turn| turn.output().drain().collect()))
-    }
-
     pub fn relay_once(
         src: &mut router::Router<Capture>,
         dst: &mut router::Router<Capture>,
         src_addr: SocketAddr,
         now: Instant,
     ) -> Result<usize, Error> {
-        let pkts = Self::output(src, now).map_err(Error::Output)?;
+        let pkts = dispatch::Capture::output(src, now).map_err(Error::Output)?;
         let n = pkts.iter().map(|flight| flight.packet_count().get()).sum();
         for mut out in pkts {
             for segment in out.segments_mut() {
@@ -399,7 +354,7 @@ impl Capture {
         cli_addr: SocketAddr,
         now: Instant,
     ) -> Result<Handle, Error> {
-        let handle = Self::connect(
+        let handle = dispatch::Capture::connect(
             client,
             srv_addr,
             key,
@@ -411,8 +366,8 @@ impl Capture {
         Self::relay_once(client, server, cli_addr, now)?;
         Self::relay_once(server, client, srv_addr, now)?;
         Self::relay_once(client, server, cli_addr, now)?;
-        Self::drive(server, now).map_err(Error::Output)?;
-        Self::drive(client, now).map_err(Error::Output)?;
+        dispatch::Capture::drive(server, now).map_err(Error::Output)?;
+        dispatch::Capture::drive(client, now).map_err(Error::Output)?;
         Ok(handle)
     }
 }

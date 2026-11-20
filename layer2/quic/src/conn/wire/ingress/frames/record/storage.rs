@@ -9,14 +9,9 @@ use std::{mem, ops};
 use crate::conn;
 use crate::conn::stream::resident;
 use crate::conn::wire::crypto::chunks;
-use crate::wire::{
-    frame::{self, Repr},
-    stream,
-};
+use crate::wire::{frame, stream};
 
-use crate::conn::wire::ingress::frames::record::{
-    FrameRecord, Kind, Receive, Stored, View,
-};
+use crate::conn::wire::ingress::frames::record::{FrameRecord, Kind, Parsed, Receive, Stored};
 
 type Rows<'a, 'slots, 'id> =
     init::Prefix<'a, 'slots, FrameRecord<'id>, { conn::MAX_FRAMES_PER_PACKET }>;
@@ -92,7 +87,7 @@ impl<'slots, 'id> Vacant<'_, '_, 'slots, 'id, '_, '_, '_, '_> {
         let send = app
             && matches!(
                 record.kind,
-                Kind::Stop(_) | Kind::Other(Repr::MaxStreamData { .. })
+                Kind::Stop(_) | Kind::Other(frame::View::MaxStreamData { .. })
             );
         let key = self.frame.insert(record);
         if receive {
@@ -129,8 +124,15 @@ impl<'a, 'f, 'slots, 'id> Group<'a, 'f, 'slots, 'id> {
     pub(in crate::conn) fn id(&self) -> stream::Id {
         self.id
     }
-    pub(in crate::conn) fn records(&self) -> impl Iterator<Item = &FrameRecord<'id>> {
-        self.indices.iter().map(|index| self.frames.get(*index))
+    pub(in crate::conn) fn has_reset(&self) -> bool {
+        self.indices
+            .iter()
+            .any(|index| matches!(self.frames.get(*index).kind, Kind::Reset(_)))
+    }
+    pub(in crate::conn) fn has_stored_stream(&self) -> bool {
+        self.indices
+            .iter()
+            .any(|index| self.frames.get(*index).stored_stream().is_some())
     }
     pub(in crate::conn) fn try_for_each<T, E>(
         &mut self,
@@ -300,7 +302,7 @@ impl<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> Records<'a, 'f, 'slots, 'id, 'r,
             .iter_mut()
             .filter_map(|record| match &mut record.kind {
                 Kind::Crypto(record) => Some(Control::Crypto(record.step.borrow())),
-                Kind::Other(wire) => Some(Control::Frame(wire.view())),
+                Kind::Other(wire) => Some(Control::Frame(wire)),
                 _ => None,
             })
     }
@@ -308,7 +310,7 @@ impl<'a, 'f, 'slots, 'id, 'r, 'recv, 's, 'send> Records<'a, 'f, 'slots, 'id, 'r,
 
 pub(in super::super) enum Control<'a, 'id> {
     Crypto(chunks::Access<'a, 'id>),
-    Frame(View<'a, 'id>),
+    Frame(&'a Parsed<'id>),
 }
 
 /// # Safety

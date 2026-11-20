@@ -1,5 +1,4 @@
 mod events;
-mod inputs;
 
 use crate::runtime::mux::handler::hook::{
     data::release,
@@ -15,16 +14,17 @@ use o3::buffer::bytes::scope::Owner;
 use o3::buffer::write::Sink as _;
 use runtime::civil;
 
+use crate::conn::wire::ingress;
 use crate::runtime::routing::LocalRoute as _;
 use crate::{
     conn, errors,
     proto::{epoch, path::Peer},
-    runtime::{brand, mux},
+    runtime::mux,
     security::relay::Ticket,
     stream,
     wire::packet::{long, version},
 };
-use inputs::Input;
+use long::sequence::Sequence;
 use mux::{app, auth, handler, output, protocol, router};
 use router::routing;
 use routing::issuer::Source as _;
@@ -35,16 +35,19 @@ where
     H: handler::Handler<DOMAIN, B, A::Send, A::Identity> + cert::Sink<DOMAIN, A::Identity>,
     B: stream::Recv,
 {
-    pub(in crate::runtime) fn recv_input<I, S>(
+    pub(in crate::runtime) fn recv_input<I, P, S>(
         &mut self,
         from: net::SocketAddr,
         input: I,
-        keep: I::Retain,
+        keep: P,
         now: time::Instant,
         epoch: epoch::Sample<S>,
     ) -> Result<(), errors::Receive>
     where
-        I: Input<DOMAIN, B, A>,
+        I: long::Buffer + o3::buffer::raw::Store,
+        for<'p> &'p mut I: Sequence,
+        P: ingress::Policy<I, B>,
+        for<'p> P: ingress::Policy<<&'p mut I as Sequence>::First, B>,
         S: civil::Source,
     {
         let mut mux = router::Turn::new(self.mux.as_mut());
@@ -160,16 +163,10 @@ where
                             ));
                         }
                     });
-                        let ((result, reset), mut dirty) = I::receive(
-                                input,
-                                keep,
-                                slot.conn.reborrow::<true>(),
-                                work,
-                                brand::Branded::new(scope.reborrow(), *local.value()),
-                                now,
-                                &mut events,
-                            )
-                            .into_parts();
+                        let mut access = slot.conn.reborrow::<true>();
+                        let mut rx = access.input(work).with_route(*local.value());
+                        let received = rx.receive(input, keep, now, &mut events);
+                        let ((result, reset), mut dirty) = rx.finish(received).into_parts();
                         if let Some(value) = ready.into_ready() {
                             dirty.set_ready(value);
                         }

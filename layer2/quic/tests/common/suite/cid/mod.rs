@@ -1,5 +1,4 @@
 use crate::common::peer;
-use crate::common::suite::peers::tls;
 use crate::common::{runtime, suite::mux::dispatch::Capture};
 use dope_quic::runtime::mux::builder;
 pub mod contract;
@@ -10,8 +9,6 @@ use dope_quic::conn::life::options::Options;
 use dope_quic::conn::scope::path::Rotation;
 use dope_quic::errors;
 use dope_quic::errors::Access;
-use dope_quic::errors::SendFailure;
-use dope_quic::proto::epoch;
 use dope_quic::proto::param;
 use dope_quic::runtime::mux::builder::Builder;
 use dope_quic::runtime::mux::builder::Failure;
@@ -103,24 +100,7 @@ impl Count {
         cid: Vec<u8>,
         now: Instant,
     ) -> Result<Handle, runtime::Error> {
-        let options = Self::options()?;
-        let auth = tls::client(key).map_err(runtime::Error::Tls)?;
-        Pin::new(client)
-            .observe(now, |mut turn| {
-                turn.protocol().connect(peer, &auth, options, cid)
-            })
-            .map_err(runtime::Error::Connect)
-    }
-
-    pub fn send(
-        client: &mut router::Router<Count>,
-        handle: Handle,
-        payload: Vec<u8>,
-        now: Instant,
-    ) -> Result<(), SendFailure<Vec<u8>>> {
-        Pin::new(client).observe(now, |mut turn| {
-            turn.protocol().try_datagram(handle, payload)
-        })
+        Capture::connect(client, peer, key, Self::options()?, cid, now)
     }
 
     pub fn receive(
@@ -129,9 +109,7 @@ impl Count {
         packet: &mut [u8],
         now: Instant,
     ) -> Result<(), runtime::Error> {
-        let result = Pin::new(&mut *dst).observe(now, |mut turn| {
-            turn.protocol().recv(src_addr, packet, epoch::WALL_CLOCK)
-        });
+        let result = Capture::recv(dst, src_addr, packet, now);
         if dst.handler().certificates != 0 {
             return Err(runtime::Error::Certificates(dst.handler().certificates));
         }

@@ -53,7 +53,7 @@ fn journal_keeps_prefix() {
             .expect("active fixture handle");
         let (result, activity) = Tracker::activity(|| {
             Tracker::fail_after(budget, || {
-                Pin::new(&mut pair.client).observe(pair.now, |mut turn| turn.output().drive())
+                Pin::new(&mut pair.client).output().drive_at(pair.now)
             })
         });
         let cause = result.err().map(|failure| {
@@ -63,13 +63,15 @@ fn journal_keeps_prefix() {
         complete = cause.is_none() && activity.allocations < budget;
         if complete {
             let idle = Pin::new(&mut pair.client)
-                .observe(pair.now, |mut turn| turn.output().drive())
+                .output()
+                .drive_at(pair.now)
                 .expect("empty follow-up emission preserves the queued flight");
             assert_eq!(idle, 0, "no empty packet may extend the committed prefix");
         }
-        let mut flights = Pin::new(&mut pair.client).observe(pair.now, |mut turn| {
-            turn.output().drain().collect::<Vec<_>>()
-        });
+        let mut flights = Pin::new(&mut pair.client)
+            .output()
+            .drain()
+            .collect::<Vec<_>>();
         let packets = flights
             .iter()
             .map(|flight| flight.packet_count().get())

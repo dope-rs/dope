@@ -109,17 +109,6 @@ impl<F: for<'a> FnMut(&'a rustls::Error) + Unpin> Capture<F> {
         }
         Ok(())
     }
-
-    pub fn output<B: Recv>(
-        router: &mut router::Router<Self, 0, B>,
-        now: Instant,
-    ) -> Result<Vec<Flight>, errors::Transmit> {
-        Pin::new(router).observe(now, |mut turn| {
-            let mut output = turn.output();
-            output.drive()?;
-            Ok(output.drain().collect())
-        })
-    }
 }
 
 pub struct Proof<F>(pub Option<Diagnostic>, pub F);

@@ -1,5 +1,6 @@
 use crate::common::peer;
 pub mod common;
+use common::suite::mux::dispatch;
 
 use common::peer::Config;
 use common::runtime::gso::{self, Capture, Pair};
@@ -127,7 +128,8 @@ fn wakes_at_pacing_deadline() {
     client.handler().events.streams.set(streams);
     assert_eq!(
         Pin::new(&mut client)
-            .observe(due, |mut turn| turn.output().drive())
+            .output()
+            .drive_at(due)
             .expect("consumed notification leaves the scheduler idle"),
         0
     );
@@ -181,7 +183,7 @@ fn wakes_under_backlog() {
         .expect("client router");
     let mut now = Instant::now();
     let handles = [1u64, 2].map(|cid| {
-        Capture::connect(
+        dispatch::Capture::connect(
             &mut client,
             gso::SERVER,
             key,

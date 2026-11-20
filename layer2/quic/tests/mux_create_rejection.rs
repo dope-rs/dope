@@ -61,7 +61,8 @@ fn reject_reuses_slot() {
             Err(errors::Access::Closed)
         );
         Pin::new(&mut mux)
-            .observe(now, |mut turn| turn.output().drive())
+            .output()
+            .drive_at(now)
             .expect("close notification");
         assert!(matches!(
             mux.handler().closed.as_slice(),

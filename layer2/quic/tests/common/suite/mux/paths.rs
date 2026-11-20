@@ -338,11 +338,9 @@ impl Pair {
         Self::access(router, handle, at, |conn| conn.view().path().received())
     }
     pub fn discard(router: &mut Router<Capture>, at: Instant) -> Result<(), errors::Transmit> {
-        Pin::new(router).observe(at, |mut turn| {
-            turn.output().drive()?;
-            while turn.output().drain().next().is_some() {}
-            Ok(())
-        })
+        Pin::new(&mut *router).output().drive_at(at)?;
+        while Pin::new(&mut *router).output().drain().next().is_some() {}
+        Ok(())
     }
     pub fn deliver(
         packets: &mut [Flight],

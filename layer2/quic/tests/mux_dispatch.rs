@@ -51,9 +51,12 @@ fn handshake() {
     )
     .expect("fixture connect");
 
-    Capture::relay(&mut client, &mut server, CLIENT, now).expect("fixture relay");
-    Capture::relay(&mut server, &mut client, SERVER, now).expect("fixture relay");
-    Capture::relay(&mut client, &mut server, CLIENT, now).expect("fixture relay");
+    Capture::relay(Pin::new(&mut client), Pin::new(&mut server), CLIENT, now)
+        .expect("fixture relay");
+    Capture::relay(Pin::new(&mut server), Pin::new(&mut client), SERVER, now)
+        .expect("fixture relay");
+    Capture::relay(Pin::new(&mut client), Pin::new(&mut server), CLIENT, now)
+        .expect("fixture relay");
     Capture::drive(&mut server, now).expect("fixture drive");
     Capture::drive(&mut client, now).expect("fixture drive");
 
@@ -87,7 +90,8 @@ fn handshake() {
     }
 
     Capture::send(&mut server, srv_h, b"hello client".to_vec(), now).expect("fixture send");
-    Capture::relay(&mut server, &mut client, SERVER, now).expect("fixture relay");
+    Capture::relay(Pin::new(&mut server), Pin::new(&mut client), SERVER, now)
+        .expect("fixture relay");
     {
         let events = cli_log.borrow();
         assert_eq!(events.datagrams.len(), 1);
@@ -112,7 +116,10 @@ fn handshake() {
             })
         })
         .expect("established client handle must expose its connection");
-    assert!(Capture::relay(&mut client, &mut server, CLIENT, at).expect("fixture relay") > 0);
+    assert!(
+        Capture::relay(Pin::new(&mut client), Pin::new(&mut server), CLIENT, at)
+            .expect("fixture relay")
+    );
     let visible = Pin::new(&mut server)
         .observe(at, |mut turn| {
             turn.protocol().with_conn(srv_h, |mut conn| {
@@ -144,7 +151,8 @@ fn handshake() {
     let closed = Pin::new(&mut client).observe(at, |mut turn| turn.protocol().try_close(cli_h));
     closed.expect("active client connection closes");
     Pin::new(&mut client)
-        .observe(at, |mut turn| turn.output().drive())
+        .output()
+        .drive_at(at)
         .expect("close notification");
     assert!(cli_log.borrow().closed == vec![cli_h]);
     assert_eq!(cli_log.borrow().certificates, 0);
@@ -196,9 +204,12 @@ fn deferred_reset() {
     )
     .expect("fixture connect");
 
-    Capture::relay(&mut client, &mut server, CLIENT, now).expect("fixture relay");
-    Capture::relay(&mut server, &mut client, SERVER, now).expect("fixture relay");
-    Capture::relay(&mut client, &mut server, CLIENT, now).expect("fixture relay");
+    Capture::relay(Pin::new(&mut client), Pin::new(&mut server), CLIENT, now)
+        .expect("fixture relay");
+    Capture::relay(Pin::new(&mut server), Pin::new(&mut client), SERVER, now)
+        .expect("fixture relay");
+    Capture::relay(Pin::new(&mut client), Pin::new(&mut server), CLIENT, now)
+        .expect("fixture relay");
     let ready = state.established.take();
     let srv_h = ready[0];
     state.established.set(ready);
@@ -220,7 +231,10 @@ fn deferred_reset() {
         })
         .expect("established client handle must expose its connection");
     Capture::drive(&mut client, at).expect("fixture drive");
-    assert!(Capture::relay(&mut client, &mut server, CLIENT, at).expect("fixture relay") > 0);
+    assert!(
+        Capture::relay(Pin::new(&mut client), Pin::new(&mut server), CLIENT, at)
+            .expect("fixture relay")
+    );
     let history = state.attempts.take();
     let key = history
         .iter()
@@ -247,7 +261,15 @@ fn deferred_reset() {
         })
         .expect("established client handle must expose its connection");
     Capture::drive(&mut client, reset_at).expect("fixture drive");
-    assert!(Capture::relay(&mut client, &mut server, CLIENT, reset_at).expect("fixture relay") > 0);
+    assert!(
+        Capture::relay(
+            Pin::new(&mut client),
+            Pin::new(&mut server),
+            CLIENT,
+            reset_at
+        )
+        .expect("fixture relay")
+    );
     Capture::drive(&mut server, reset_at).expect("fixture drive");
 
     let history = state.attempts.take();

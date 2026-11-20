@@ -199,7 +199,6 @@ where
     H: handler::Handler<ID, B, D, id::Driver<'d>>,
     B: stream::Recv,
     D: buffer::raw::Segment,
-    A: Driver<'d, H, ID, B, D>,
 {
     type Observer<'a>: Accepted
     where
@@ -212,7 +211,6 @@ where
     H: handler::Handler<ID, B, D, id::Driver<'d>>,
     B: stream::Recv,
     D: buffer::raw::Segment,
-    A: Driver<'d, H, ID, B, D>,
 {
     type Observer<'a>
         = Infallible

@@ -39,13 +39,13 @@ impl<DataMap, RangeMap, CidMap> Decoder<DataMap, RangeMap, CidMap> {
         let Self { data, ranges, cids } = self;
         let (ty, mut cursor) = Cursor::new(input)?;
         let decoded = match ty {
-            frame::TYPE_PADDING => Ok(frame::Repr::Padding),
-            frame::TYPE_PING => Ok(frame::Repr::Ping),
+            frame::TYPE_PADDING => Ok(frame::View::Padding),
+            frame::TYPE_PING => Ok(frame::View::Ping),
             frame::TYPE_RESET_STREAM => {
                 let id = cursor.id()?;
                 let code = cursor.varint()?;
                 let size = cursor.varint()?;
-                Ok(frame::Repr::ResetStream {
+                Ok(frame::View::ResetStream {
                     stream_id: id,
                     error_code: code.into(),
                     final_size: size,
@@ -54,38 +54,38 @@ impl<DataMap, RangeMap, CidMap> Decoder<DataMap, RangeMap, CidMap> {
             frame::TYPE_STOP_SENDING => {
                 let id = cursor.id()?;
                 let code = cursor.varint()?;
-                Ok(frame::Repr::StopSending {
+                Ok(frame::View::StopSending {
                     stream_id: id,
                     error_code: code.into(),
                 })
             }
             frame::TYPE_MAX_DATA => {
                 let max = cursor.varint()?;
-                Ok(frame::Repr::MaxData { maximum_data: max })
+                Ok(frame::View::MaxData { maximum_data: max })
             }
             frame::TYPE_MAX_STREAM_DATA => {
                 let id = cursor.id()?;
                 let max = cursor.varint()?;
-                Ok(frame::Repr::MaxStreamData {
+                Ok(frame::View::MaxStreamData {
                     stream_id: id,
                     maximum_stream_data: max,
                 })
             }
             frame::TYPE_DATA_BLOCKED => {
                 let max = cursor.varint()?;
-                Ok(frame::Repr::DataBlocked { maximum_data: max })
+                Ok(frame::View::DataBlocked { maximum_data: max })
             }
             frame::TYPE_STREAM_DATA_BLOCKED => {
                 let id = cursor.id()?;
                 let max = cursor.varint()?;
-                Ok(frame::Repr::StreamDataBlocked {
+                Ok(frame::View::StreamDataBlocked {
                     stream_id: id,
                     maximum_stream_data: max,
                 })
             }
             frame::TYPE_MAX_STREAMS_BIDI | frame::TYPE_MAX_STREAMS_UNI => {
                 let max = cursor.count()?;
-                Ok(frame::Repr::MaxStreams {
+                Ok(frame::View::MaxStreams {
                     direction: if ty == frame::TYPE_MAX_STREAMS_UNI {
                         stream::Direction::Uni
                     } else {
@@ -96,7 +96,7 @@ impl<DataMap, RangeMap, CidMap> Decoder<DataMap, RangeMap, CidMap> {
             }
             frame::TYPE_STREAMS_BLOCKED_BIDI | frame::TYPE_STREAMS_BLOCKED_UNI => {
                 let max = cursor.count()?;
-                Ok(frame::Repr::StreamsBlocked {
+                Ok(frame::View::StreamsBlocked {
                     direction: if ty == frame::TYPE_STREAMS_BLOCKED_UNI {
                         stream::Direction::Uni
                     } else {
@@ -142,7 +142,7 @@ impl<DataMap, RangeMap, CidMap> Decoder<DataMap, RangeMap, CidMap> {
                 };
                 error::Fault::check_span(offset, len)?;
                 let data = Data::from(data(bytes)?);
-                Ok(frame::Repr::Stream {
+                Ok(frame::View::Stream {
                     stream_id: id,
                     offset,
                     boundary,
@@ -164,7 +164,7 @@ impl<DataMap, RangeMap, CidMap> Decoder<DataMap, RangeMap, CidMap> {
                         cursor.skip()?;
                     }
                 }
-                Ok(frame::Repr::Ack {
+                Ok(frame::View::Ack {
                     largest,
                     delay,
                     first_range: first,
@@ -178,7 +178,7 @@ impl<DataMap, RangeMap, CidMap> Decoder<DataMap, RangeMap, CidMap> {
                 let bytes = cursor.data(length)?;
                 error::Fault::check_span(offset, length)?;
                 let data = Data::from(data(bytes)?);
-                Ok(frame::Repr::Crypto {
+                Ok(frame::View::Crypto {
                     offset,
                     len: length,
                     data,
@@ -191,41 +191,41 @@ impl<DataMap, RangeMap, CidMap> Decoder<DataMap, RangeMap, CidMap> {
                     return Err(error::Fault::InvalidToken { length: 0 }.into());
                 }
                 let token = Data::from(data(bytes)?);
-                Ok(frame::Repr::NewToken { len: length, token })
+                Ok(frame::View::NewToken { len: length, token })
             }
             frame::TYPE_DATAGRAM => {
                 let bytes = cursor.tail();
                 let data = Data::from(data(bytes)?);
-                Ok(frame::Repr::Datagram { data })
+                Ok(frame::View::Datagram { data })
             }
             frame::TYPE_DATAGRAM_LEN => {
                 let length = cursor.varint()?;
                 let bytes = cursor.data(length)?;
                 let data = Data::from(data(bytes)?);
-                Ok(frame::Repr::DatagramLen { len: length, data })
+                Ok(frame::View::DatagramLen { len: length, data })
             }
-            frame::TYPE_HANDSHAKE_DONE => Ok(frame::Repr::HandshakeDone),
+            frame::TYPE_HANDSHAKE_DONE => Ok(frame::View::HandshakeDone),
             frame::TYPE_NEW_CONNECTION_ID => {
                 let seq = cursor.varint()?;
                 let retire = cursor.varint()?;
                 let (value, retire) = Notice::decode(&mut cursor, seq, retire)?;
-                Ok(frame::Repr::NewConnectionId {
+                Ok(frame::View::NewConnectionId {
                     notice: cids(value),
                     retire,
                 })
             }
             frame::TYPE_RETIRE_CONNECTION_ID => {
                 let seq = cursor.varint()?;
-                Ok(frame::Repr::RetireConnectionId {
+                Ok(frame::View::RetireConnectionId {
                     sequence_number: seq,
                 })
             }
             frame::TYPE_PATH_CHALLENGE | frame::TYPE_PATH_RESPONSE => {
                 let data = *cursor.array::<8>()?;
                 let frame = if ty == frame::TYPE_PATH_CHALLENGE {
-                    frame::Repr::PathChallenge { data }
+                    frame::View::PathChallenge { data }
                 } else {
-                    frame::Repr::PathResponse { data }
+                    frame::View::PathResponse { data }
                 };
                 Ok(frame)
             }
@@ -244,7 +244,7 @@ impl<DataMap, RangeMap, CidMap> Decoder<DataMap, RangeMap, CidMap> {
                 let len = cursor.varint()?;
                 let bytes = cursor.data(len)?;
                 let reason = Data::from(data(bytes)?);
-                Ok(frame::Repr::ConnectionClose { code, len, reason })
+                Ok(frame::View::ConnectionClose { code, len, reason })
             }
             _ => Err(error::Fault::BadType { value: ty }),
         };

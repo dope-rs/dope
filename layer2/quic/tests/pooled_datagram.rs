@@ -1,7 +1,5 @@
 use crate::common::peer;
 use common::suite::peers::tls;
-use dope::core::driver::life::recovery::{Policy, Recovery};
-use std::convert::Infallible;
 pub mod common;
 use common::recovery;
 use common::runtime::pooled::{
@@ -72,98 +70,81 @@ fn slot_returns() {
         .expect("shutdown source");
 
     let free = {
-        let mut reports = Vec::new();
-        let output = executor.run(|executor| {
-            let result = executor.enter_with(
-                |mut session| {
-                    let (arena, large) = session.storage();
-                    let mut packet = large
-                        .try_acquire(PAYLOAD.len())
-                        .expect("oversized resident owner");
-                    packet.payload_mut().copy_from_slice(PAYLOAD);
-                    let srv_up = Rc::new(Cell::new(None));
-                    let cli_up = Rc::new(Cell::new(None));
-                    let errors = Rc::new(Errors::default());
-                    let (server, client, connect, timeout) = {
-                        let mut driver = session.driver();
-                        let timeout = driver
-                            .driver_ref()
-                            .clock()
-                            .now()
-                            .try_add(Duration::from_secs(2))
-                            .expect("fixture deadline range");
-                        let server = srv_plan
-                            .bind(
-                                Capture {
-                                    established: srv_up,
-                                    errors: Rc::clone(&errors),
-                                    received: Rc::clone(&received),
-                                    stop: Rc::clone(&stop),
-                                },
-                                &mut driver,
-                            )
-                            .expect("server");
-                        let connect = Connect {
-                            peer: server.local_addr(),
-                            authority: tls::client(key).expect("client TLS authority"),
-                            params: params.clone(),
-                        };
-                        let client = cli_plan
-                            .bind(
-                                Capture {
-                                    established: cli_up,
-                                    errors: Rc::clone(&errors),
-                                    received: Rc::clone(&received),
-                                    stop: Rc::clone(&stop),
-                                },
-                                &mut driver,
-                            )
-                            .expect("client");
-                        (server, client, connect, timeout)
-                    };
-                    let mut report = session::Completion::new();
-                    session
-                        .with_quiesce(
-                            &mut report,
-                            App {
-                                server,
-                                client,
-                                state: State {
-                                    arena,
-                                    connect: Some(connect),
-                                    packet: Some(packet),
-                                    errors: Rc::clone(&errors),
-                                    sent: false,
-                                },
-                                timeout,
-                            },
-                            TIMEOUT,
-                            |app| app.run_for(TIMEOUT).map(|_| ()),
-                        )
-                        .expect("session completion")
-                        .expect("application completion");
-                    let packets = errors.packets.take();
-                    let failures = errors.failures.take();
-                    assert!(packets.is_empty());
-                    assert!(!errors.certificates.get());
-                    assert!(failures.is_empty(), "{failures:?}");
-                    assert_eq!(errors.resident.get(), Some((8192, 4096)));
-                    assert_eq!(large.available(), 1);
-                    arena.available()
-                },
-                Policy::new(
-                    |event| reports.push(event),
-                    |failure: Recovery<'_, '_>| -> Infallible {
-                        panic!("native recovery: {:?}", failure.cause())
+        let (output, reports) = recovery::run(executor, |mut session| {
+            let (arena, large) = session.storage();
+            let mut packet = large
+                .try_acquire(PAYLOAD.len())
+                .expect("oversized resident owner");
+            packet.payload_mut().copy_from_slice(PAYLOAD);
+            let srv_up = Rc::new(Cell::new(None));
+            let cli_up = Rc::new(Cell::new(None));
+            let errors = Rc::new(Errors::default());
+            let (server, client, connect, timeout) = {
+                let mut driver = session.driver();
+                let timeout = driver
+                    .driver_ref()
+                    .clock()
+                    .now()
+                    .try_add(Duration::from_secs(2))
+                    .expect("fixture deadline range");
+                let server = srv_plan
+                    .bind(
+                        Capture {
+                            established: srv_up,
+                            errors: Rc::clone(&errors),
+                            received: Rc::clone(&received),
+                            stop: Rc::clone(&stop),
+                        },
+                        &mut driver,
+                    )
+                    .expect("server");
+                let connect = Connect {
+                    peer: server.local_addr(),
+                    authority: tls::client(key).expect("client TLS authority"),
+                    params: params.clone(),
+                };
+                let client = cli_plan
+                    .bind(
+                        Capture {
+                            established: cli_up,
+                            errors: Rc::clone(&errors),
+                            received: Rc::clone(&received),
+                            stop: Rc::clone(&stop),
+                        },
+                        &mut driver,
+                    )
+                    .expect("client");
+                (server, client, connect, timeout)
+            };
+            let mut report = session::Completion::new();
+            session
+                .with_quiesce(
+                    &mut report,
+                    App {
+                        server,
+                        client,
+                        state: State {
+                            arena,
+                            connect: Some(connect),
+                            packet: Some(packet),
+                            errors: Rc::clone(&errors),
+                            sent: false,
+                        },
+                        timeout,
                     },
-                ),
-            );
-            assert!(
-                result.is_ok(),
-                "{:?}",
-                result.as_ref().err().map(|error| error.cause())
-            );
-            result.ok().expect("domain completion")
+                    TIMEOUT,
+                    |app| app.run_for(TIMEOUT).map(|_| ()),
+                )
+                .expect("session completion")
+                .expect("application completion");
+            let packets = errors.packets.take();
+            let failures = errors.failures.take();
+            assert!(packets.is_empty());
+            assert!(!errors.certificates.get());
+            assert!(failures.is_empty(), "{failures:?}");
+            assert_eq!(errors.resident.get(), Some((8192, 4096)));
+            assert_eq!(large.available(), 1);
+            arena.available()
         });
         recovery::Teardown::new([Id::fixed::<SERVER_ROUTE>(), Id::fixed::<CLIENT_ROUTE>()])
             .verify(reports)
